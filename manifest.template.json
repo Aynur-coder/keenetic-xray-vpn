@@ -22,7 +22,10 @@
     {"src": "defaults/rules/domains.txt",               "dst": "/opt/etc/xray/rules/domains.txt",                     "mode": "644", "only_if_missing": true},
     {"src": "defaults/rules/ips.txt",                   "dst": "/opt/etc/xray/rules/ips.txt",                         "mode": "644", "only_if_missing": true},
     {"src": "defaults/rules/fullvpn_devices.txt",       "dst": "/opt/etc/xray/rules/fullvpn_devices.txt",             "mode": "644", "only_if_missing": true},
-    {"src": "defaults/rules/github_lists.json",         "dst": "/opt/etc/xray/rules/github_lists.json",               "mode": "644", "only_if_missing": true}
+    {"src": "defaults/rules/github_lists.json",         "dst": "/opt/etc/xray/rules/github_lists.json",               "mode": "644", "only_if_missing": true},
+    {"src": "defaults/AdGuardHome.yaml",                "dst": "/opt/etc/AdGuardHome/AdGuardHome.yaml",               "mode": "644", "only_if_missing": true},
+    {"src": "defaults/adguardhome.conf",                "dst": "/opt/etc/AdGuardHome/adguardhome.conf",               "mode": "644", "only_if_missing": true},
+    {"src": "defaults/ndm/netfilter.d/10-dns-redirect.sh", "dst": "/opt/etc/ndm/netfilter.d/10-dns-redirect.sh",     "mode": "755", "only_if_missing": false}
   ],
   "directories": [
     {"path": "/opt/share/www/xray",        "mode": "755"},
@@ -32,7 +35,10 @@
     {"path": "/opt/etc/xray/backups",      "mode": "755"},
     {"path": "/opt/etc/xray/migrations",   "mode": "755"},
     {"path": "/opt/etc/wireguard",         "mode": "700"},
-    {"path": "/opt/var/log/xray",          "mode": "755"}
+    {"path": "/opt/var/log/xray",          "mode": "755"},
+    {"path": "/opt/etc/AdGuardHome",       "mode": "755"},
+    {"path": "/opt/etc/ndm/netfilter.d",   "mode": "755"},
+    {"path": "/opt/etc/ndm/ifstatechanged.d", "mode": "755"}
   ],
   "post_install": ["migrate", "reload_lighttpd"],
   "opkg_packages": [

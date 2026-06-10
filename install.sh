@@ -310,23 +310,144 @@ install_packages() {
 }
 
 # -----------------------------------------------------------------------------
-# Step 4: AdGuard Home bootstrap (only on first install)
+# Step 4: AdGuard Home bootstrap
 # -----------------------------------------------------------------------------
 bootstrap_adguard() {
     [ "$SKIP_ADGUARD" = "1" ] && { info "Skipping AdGuard setup (--no-adguard)"; return; }
 
     step "AdGuard Home"
+
+    # --- 4a. Create directories ---
+    mkdir -p /opt/etc/AdGuardHome /opt/var/log /opt/etc/ndm/netfilter.d
+    if ! dryrun "create AGH dirs"; then :; fi
+
+    # --- 4b. Deploy AdGuardHome.yaml (only if missing) ---
     _agh_yaml="/opt/etc/AdGuardHome/AdGuardHome.yaml"
-    if [ -f "$_agh_yaml" ]; then
-        info "AdGuardHome.yaml already present, leaving as-is"
-        return
+    _agh_conf="/opt/etc/AdGuardHome/adguardhome.conf"
+    _agh_binary="$(command -v AdGuardHome 2>/dev/null || echo /opt/sbin/AdGuardHome)"
+
+    if [ ! -f "$_agh_yaml" ]; then
+        info "Creating AdGuardHome.yaml from template"
+        if ! dryrun "download AdGuardHome.yaml from staging"; then
+            _staged="$STAGING/defaults/defaults_AdGuardHome.yaml"
+            if [ -f "$_staged" ]; then
+                cp -f "$_staged" "$_agh_yaml"
+            else
+                # Inline minimal yaml if staging file not yet available (Step 3 runs before Step 5)
+                cat > "$_agh_yaml" << 'AGHYAML'
+http:
+  pprof:
+    port: 6060
+    enabled: false
+  address: 0.0.0.0:3000
+  session_ttl: 720h
+users: []
+auth_attempts: 5
+block_auth_min: 15
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  ratelimit: 20
+  refuse_any: true
+  upstream_dns:
+    - https://dns.cloudflare.com/dns-query
+    - https://dns.google/dns-query
+  bootstrap_dns:
+    - 1.1.1.1
+    - 8.8.8.8
+    - 94.140.14.14
+  fallback_dns:
+    - 1.1.1.1
+    - 8.8.8.8
+  upstream_mode: load_balance
+  cache_size: 4194304
+  cache_optimistic: true
+  aaaa_disabled: false
+  enable_dnssec: false
+  ipset: []
+  ipset_file: ""
+filtering:
+  filtering_enabled: true
+  parental_enabled: false
+  safebrowsing_enabled: false
+  protection_enabled: true
+os:
+  group: ""
+  user: ""
+  rlimit_nofile: 0
+schema_version: 29
+AGHYAML
+            fi
+        fi
+    else
+        info "AdGuardHome.yaml already present — leaving as-is"
     fi
-    warn "AdGuardHome.yaml not found. On first run AdGuard will start the setup wizard at http://192.168.1.1:3000"
-    warn "After AGH setup, set the router's upstream DNS to 127.0.0.1 (or to the LAN IP of this router for clients)."
+
+    # --- 4c. Deploy adguardhome.conf (options file, always overwrite) ---
+    if ! dryrun "write adguardhome.conf"; then
+        cat > "$_agh_conf" << 'AGHCONF'
+DIR="-w /opt/etc/AdGuardHome"
+LOG="-l /opt/var/log/AdGuardHome.log"
+PID="--pidfile /opt/var/run/AdGuardHome.pid"
+UPD="--no-check-update"
+OPTIONS="$DIR $LOG $PID $UPD"
+AGHCONF
+    fi
+
+    # --- 4d. DNS redirect hook for Keenetic netfilter ---
+    _dns_hook="/opt/etc/ndm/netfilter.d/10-dns-redirect.sh"
+    if ! dryrun "write DNS redirect hook"; then
+        cat > "$_dns_hook" << 'DNSHOOK'
+#!/bin/sh
+# Redirect all LAN DNS queries to AdGuard Home (port 53 on this router).
+# Called by Keenetic ndm on each firewall reload.
+[ "$type" = "ip6tables" ] && exit 0
+[ "$table" = "nat" ] || exit 0
+
+iptables -t nat -C PREROUTING -i br0 -p udp --dport 53 -j REDIRECT --to-port 53 2>/dev/null || \
+    iptables -t nat -I PREROUTING 1 -i br0 -p udp --dport 53 -j REDIRECT --to-port 53
+iptables -t nat -C PREROUTING -i br0 -p tcp --dport 53 -j REDIRECT --to-port 53 2>/dev/null || \
+    iptables -t nat -I PREROUTING 2 -i br0 -p tcp --dport 53 -j REDIRECT --to-port 53
+exit 0
+DNSHOOK
+        chmod 755 "$_dns_hook"
+    fi
+
+    # --- 4e. Apply DNS redirect NOW (don't wait for next firewall reload) ---
+    if ! dryrun "apply DNS redirect iptables rules"; then
+        type=iptables table=nat sh "$_dns_hook" 2>/dev/null || warn "DNS redirect rule already set or iptables unavailable"
+    fi
+
+    # --- 4f. Start AdGuard Home ---
     if [ -x /opt/etc/init.d/S99adguardhome ]; then
-        if dryrun "S99adguardhome start"; then return; fi
-        /opt/etc/init.d/S99adguardhome start >/dev/null 2>&1 || warn "AdGuardHome did not start cleanly"
+        if ! dryrun "S99adguardhome start"; then
+            /opt/etc/init.d/S99adguardhome start >/dev/null 2>&1 \
+                || warn "AdGuardHome did not start cleanly — check /opt/var/log/AdGuardHome.log"
+        fi
+    else
+        warn "S99adguardhome init script not found — AdGuard Home may not start automatically"
     fi
+
+    # Verify AGH is listening on port 53
+    _listening=0
+    _attempt=0
+    while [ "$_attempt" -lt 5 ]; do
+        if netstat -lnup 2>/dev/null | grep -q ':53 '; then
+            _listening=1; break
+        fi
+        sleep 1; _attempt=$((_attempt+1))
+    done
+
+    if [ "$_listening" = "1" ]; then
+        info "AdGuard Home is listening on port 53"
+    else
+        warn "Port 53 not detected. AdGuard Home may still be starting."
+    fi
+
+    info "AGH web UI: http://192.168.1.1:3000"
+    info "Complete the AdGuard Home wizard to set admin password and upstream DNS."
+    info "After the wizard, all LAN DNS will automatically go through AGH."
 }
 
 # -----------------------------------------------------------------------------
@@ -531,6 +652,9 @@ restart_services() {
 
     if [ "$SKIP_ADGUARD" != "1" ] && [ -x /opt/etc/init.d/S99adguardhome ]; then
         /opt/etc/init.d/S99adguardhome restart >/dev/null 2>&1 || warn "AdGuardHome restart issue"
+        # Re-apply DNS redirect after AGH restart (iptables rules may have been flushed)
+        _dns_hook="/opt/etc/ndm/netfilter.d/10-dns-redirect.sh"
+        [ -x "$_dns_hook" ] && type=iptables table=nat sh "$_dns_hook" 2>/dev/null || true
     fi
 
     # Restart Xray only if already onboarded (otherwise wizard will start it)
