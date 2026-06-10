@@ -229,8 +229,11 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .wizard-step.active{display:block}
 .wizard-step .step-num{font-size:11px;color:var(--accent2);text-transform:uppercase;letter-spacing:1px;font-weight:600}
 
-.wizard-server-list{max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:6px;background:var(--bg)}
-.wizard-server-list .skel{height:36px;background:linear-gradient(90deg,var(--card2) 0%,var(--card) 50%,var(--card2) 100%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:6px;margin-bottom:4px}
+.wizard-server-list{max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:6px;background:var(--bg)}
+.wizard-server-list .skel{height:52px;background:linear-gradient(90deg,var(--card2) 0%,var(--card) 50%,var(--card2) 100%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px;margin-bottom:4px}
+.wizard-server-list .radio-item{margin-bottom:4px;padding:10px 14px}
+.wizard-server-list .radio-item .name{font-size:14px;font-weight:600}
+.wizard-server-list .radio-item .meta{font-size:12px;color:var(--text2);margin-top:2px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
 .wizard-toggle{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--card2);border:1px solid var(--border);border-radius:10px;margin-bottom:16px}
@@ -1265,33 +1268,76 @@ $('#w3Next').addEventListener('click', async ()=>{
 });
 
 // Step 4: pick server
+// Parse vless:// ss:// trojan:// links → {proto, addr, port}
+function _parseLinkInfo(link){
+  if(!link) return {proto:'',addr:'',port:''};
+  const proto=(link.split('://')[0]||'').toUpperCase();
+  const rest=(link.split('://')[1]||'').split('#')[0];
+  const atIdx=rest.lastIndexOf('@');
+  if(atIdx<0) return {proto,addr:'',port:''};
+  const hostPart=rest.slice(atIdx+1).split('?')[0];
+  const lc=hostPart.lastIndexOf(':');
+  const addr=lc>0?hostPart.slice(0,lc).replace(/\/+$/,''):hostPart.replace(/\/+$/,'');
+  const port=lc>0?hostPart.slice(lc+1).replace(/[^0-9]/g,''):'';
+  return {proto,addr,port};
+}
+
 async function loadWizardServers(){
   const list=$('#w4Servers');
   list.innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
-  const srv=await api('subscription_servers','');
-  const keys=await api('keys','');
-  const all=[...(Array.isArray(srv)?srv:[]).map(s=>({...s, src:'sub'})), ...(Array.isArray(keys)?keys:[]).map(k=>({...k, src:'key'}))];
+  const [srv,keys]=await Promise.all([api('subscription_servers',''),api('keys','')]);
+  const all=[
+    ...(Array.isArray(srv)?srv:[]).filter(s=>s.enabled!==false).map(s=>({...s,src:'sub'})),
+    ...(Array.isArray(keys)?keys:[]).filter(k=>k.enabled!==false).map(k=>({...k,src:'key'}))
+  ];
   if(all.length===0){
     list.innerHTML='<div style="padding:24px;text-align:center;color:var(--text2);font-size:13px">Нет серверов. Можно добавить позже на вкладке «Серверы».</div>';
-    $('#w4Next').textContent='Пропустить';
-    $('#w4Next').disabled=false;
+    $('#w4Next').textContent='Пропустить';$('#w4Next').disabled=false;
     $('#w4Next').onclick=()=>{ wizardState.serverTag=null; nextStep(); };
     return;
   }
+
+  // Search bar for many servers
   list.innerHTML='';
-  all.forEach((s,i)=>{
-    const tag=s.tag||`sub_${i}`;
-    const proto=(s.protocol||'').toUpperCase();
-    const addr=s.address||s.server||'';
-    const port=s.port||'';
-    const div=document.createElement('label');
-    div.className='radio-item';
-    div.style.margin='4px';
-    div.innerHTML=`<div class="radio-dot"></div><div class="info"><div class="name">${esc(s.name||tag)} <span class="badge badge-${(proto||'vless').toLowerCase()}">${esc(proto)}</span></div><div class="meta">${esc(addr)}:${esc(port)}</div></div>`;
-    div.addEventListener('click', ()=>{
+  if(all.length>5){
+    const inp=document.createElement('input');
+    inp.type='text';inp.placeholder='Поиск…';
+    inp.style.cssText='width:100%;margin-bottom:6px;font-size:14px;padding:8px 10px';
+    inp.addEventListener('input',()=>{
+      const q=inp.value.toLowerCase();
+      list.querySelectorAll('.srv-item').forEach(el=>{
+        el.style.display=el.dataset.name.includes(q)?'':'none';
+      });
+    });
+    list.appendChild(inp);
+  }
+
+  all.forEach((s)=>{
+    const info=_parseLinkInfo(s.link);
+    const serverId=s.id;
+    const name=s.name||serverId||'Сервер';
+    const meta=[
+      info.proto||'VPN',
+      info.addr?(info.port?`${info.addr}:${info.port}`:info.addr):null
+    ].filter(Boolean).join(' · ');
+    const srcLabel=s.src==='key'?'ключ':(s.sub||'подписка');
+
+    const div=document.createElement('div');
+    div.className='radio-item srv-item';
+    div.dataset.name=name.toLowerCase();
+    div.innerHTML=`
+      <div class="radio-dot"></div>
+      <div class="info" style="min-width:0">
+        <div class="name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(name)}</div>
+        <div class="meta" style="display:flex;gap:8px;align-items:center">
+          <span>${esc(meta)}</span>
+          <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(99,102,241,.15);color:var(--accent2);flex-shrink:0">${esc(srcLabel)}</span>
+        </div>
+      </div>`;
+    div.addEventListener('click',()=>{
       list.querySelectorAll('.radio-item').forEach(x=>x.classList.remove('selected'));
       div.classList.add('selected');
-      wizardState.serverTag=tag;
+      wizardState.serverTag=serverId;
       $('#w4Next').disabled=false;
     });
     list.appendChild(div);
@@ -1301,7 +1347,7 @@ async function loadWizardServers(){
 $('#w4Next').addEventListener('click', async ()=>{
   const err=$('#w4Error'); err.textContent=' ';
   if(wizardState.serverTag){
-    const r=await api('select_server',{tag:wizardState.serverTag});
+    const r=await api('select_server',{id:wizardState.serverTag});
     if(r.error){ err.textContent='Ошибка: '+r.error; return; }
     // Start xray
     await api('start');
