@@ -37,6 +37,18 @@
   --shadow: 0 4px 24px rgba(15,23,42,.08);
 }
 *{margin:0;padding:0;box-sizing:border-box}
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.btn:focus-visible{outline-offset:3px}
+input:focus-visible,textarea:focus-visible,select:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.18)}
+/* Reduced motion: drop non-essential animations */
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important;animation-iteration-count:1 !important}}
+
+/* Live status dot in header */
+.live-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--text2);margin-left:8px;vertical-align:middle;box-shadow:0 0 0 0 rgba(16,185,129,0);transition:background .2s}
+.live-dot.on{background:var(--green);animation:livePulse 2s infinite}
+.live-dot.off{background:var(--red)}
+@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(16,185,129,.5)}70%{box-shadow:0 0 0 8px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
 body{font-family:-apple-system,'SF Pro Display','Inter','Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 .app{max-width:1120px;margin:0 auto;padding:20px}
 
@@ -51,7 +63,8 @@ body{font-family:-apple-system,'SF Pro Display','Inter','Segoe UI',sans-serif;ba
 .stat-card:hover{transform:translateY(-2px)}
 .stat-label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text2);margin-bottom:6px;display:flex;align-items:center;gap:6px}
 .stat-label svg{width:14px;height:14px;opacity:.6}
-.stat-value{font-size:18px;font-weight:700;word-break:break-all}
+.stat-value{font-size:18px;font-weight:700;word-break:break-all;min-height:22px;display:flex;align-items:center}
+.stat-value.loading::after{content:'';display:block;width:70%;height:16px;border-radius:6px;background:linear-gradient(90deg,var(--card2) 0%,var(--card) 50%,var(--card2) 100%);background-size:200% 100%;animation:shimmer 1.4s infinite}
 .green{color:var(--green)}.red{color:var(--red)}.orange{color:var(--orange)}.cyan{color:var(--cyan)}
 
 /* Tabs */
@@ -122,9 +135,19 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .log-view{background:#0a0c10;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'SF Mono','Fira Code','JetBrains Mono',monospace;font-size:11px;line-height:1.6;max-height:440px;overflow:auto;color:#94a3b8;white-space:pre-wrap;word-break:break-all}
 
 /* Toast */
-.toast{position:fixed;bottom:24px;right:24px;background:var(--green);color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;transform:translateY(80px);opacity:0;transition:all .3s;z-index:999;box-shadow:0 8px 32px rgba(0,0,0,.5)}
-.toast.show{transform:translateY(0);opacity:1}
-.toast.error{background:var(--red)}
+/* Toast container & toasts */
+.toast-container{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column-reverse;gap:8px;z-index:2000;max-width:calc(100vw - 40px);pointer-events:none}
+.toast{display:flex;align-items:flex-start;gap:10px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:12px 16px;border-radius:12px;font-size:13px;font-weight:500;min-width:260px;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,.4);transform:translateX(120%);opacity:0;transition:transform .25s ease-out,opacity .25s;pointer-events:auto;cursor:default}
+.toast.show{transform:translateX(0);opacity:1}
+.toast.hide{transform:translateX(120%);opacity:0}
+.toast .icon{flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:11px;color:#fff;font-weight:700}
+.toast .msg{flex:1;line-height:1.4;word-break:break-word}
+.toast .close{background:none;border:none;color:var(--text2);cursor:pointer;font-size:18px;line-height:1;padding:0 4px;margin:-4px -4px -4px 0;opacity:.5;transition:opacity .15s}
+.toast .close:hover{opacity:1}
+.toast.t-success{border-color:var(--green)} .toast.t-success .icon{background:var(--green)}
+.toast.t-error{border-color:var(--red)}     .toast.t-error .icon{background:var(--red)}
+.toast.t-warn{border-color:var(--orange)}   .toast.t-warn .icon{background:var(--orange);color:#111}
+.toast.t-info{border-color:var(--accent)}   .toast.t-info .icon{background:var(--accent)}
 
 /* WG config modal */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
@@ -142,13 +165,38 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .section-divider{height:1px;background:var(--border);margin:16px 0}
 
 /* Responsive */
+/* iOS Safari: 16px+ input prevents auto-zoom on focus */
+@media(max-width:640px){
+  input[type="text"],input[type="url"],input[type="password"],input[type="number"],textarea,select{font-size:16px !important}
+}
+
 @media(max-width:640px){
   .app{padding:10px}
-  .header{flex-direction:column;gap:12px;text-align:center}
-  .status-bar{grid-template-columns:1fr 1fr}
-  .tabs{flex-wrap:nowrap;overflow-x:auto}
+  .header{flex-direction:column;gap:12px;text-align:center;padding:16px}
+  .header h1{font-size:18px}
+  .header-controls{flex-wrap:wrap;justify-content:center}
+  .status-bar{grid-template-columns:1fr 1fr;gap:8px}
+  .stat-card{padding:12px}
+  .stat-value{font-size:15px}
+  .tabs{flex-wrap:nowrap;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{scroll-snap-align:start;flex-shrink:0;min-height:40px}
   .input-group{flex-direction:column}
-  input.flex1{min-width:auto}
+  input.flex1{min-width:auto;width:100%}
+  .btn{min-height:40px;font-size:14px}
+  .panel{padding:16px;border-radius:12px}
+  .toast-container{bottom:12px;right:12px;left:12px;max-width:none}
+  .toast{min-width:0;max-width:none;width:100%}
+}
+
+@media(max-width:480px){
+  .status-bar{grid-template-columns:1fr}
+}
+
+@media(max-width:600px){
+  .overlay{padding:0;align-items:stretch}
+  .overlay-card{border-radius:0;max-width:100%;min-height:100vh;padding:24px 18px}
+  .settings-card{max-height:100vh}
 }
 
 /* ============ Overlay (login + wizard) ============ */
@@ -465,6 +513,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
   <h1>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
     Xray VPN Manager
+    <span class="live-dot" id="liveDot" title="Состояние службы" aria-label="Состояние службы"></span>
   </h1>
   <div class="header-controls">
     <button class="btn btn-ghost btn-icon" id="btnUpdate" onclick="openUpdate()" title="Обновления" aria-label="Обновления">
@@ -488,23 +537,23 @@ textarea{resize:vertical;min-height:80px;width:100%}
 <div class="status-bar" id="statusBar">
   <div class="stat-card">
     <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Статус</div>
-    <div class="stat-value" id="stStatus">—</div>
+    <div class="stat-value loading" id="stStatus"></div>
   </div>
   <div class="stat-card">
     <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> VPN IP</div>
-    <div class="stat-value" id="stVpnIp">—</div>
+    <div class="stat-value loading" id="stVpnIp"></div>
   </div>
   <div class="stat-card">
     <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/></svg> Реальный IP</div>
-    <div class="stat-value" id="stRealIp">—</div>
+    <div class="stat-value loading" id="stRealIp"></div>
   </div>
   <div class="stat-card">
     <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Память</div>
-    <div class="stat-value" id="stMem">—</div>
+    <div class="stat-value loading" id="stMem"></div>
   </div>
   <div class="stat-card">
     <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> WireGuard</div>
-    <div class="stat-value" id="stWg">—</div>
+    <div class="stat-value loading" id="stWg"></div>
   </div>
 </div>
 
@@ -681,7 +730,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast-container" id="toasts" role="region" aria-live="polite" aria-label="Уведомления"></div>
 
 <script>
 const $=s=>document.querySelector(s);
@@ -699,10 +748,49 @@ async function api(action,data={}){
   catch(e){toast('Ошибка сети: '+e.message,true);return{error:e.message};}
 }
 
-function toast(msg,isErr=false){
-  const t=$('#toast');t.textContent=msg;
-  t.className='toast show'+(isErr?' error':'');
-  setTimeout(()=>t.className='toast',3000);
+function toast(msg, typeOrErr='info', opts={}){
+  // Back-compat: toast(msg, true) → error
+  let type = typeOrErr;
+  if(typeof typeOrErr==='boolean') type = typeOrErr ? 'error' : 'success';
+  if(!['success','error','warn','info'].includes(type)) type='info';
+  const container=$('#toasts');
+  if(!container) return;
+  const el=document.createElement('div');
+  el.className='toast t-'+type;
+  el.setAttribute('role', type==='error' ? 'alert' : 'status');
+  const icons={success:'✓', error:'!', warn:'!', info:'i'};
+  el.innerHTML = `<div class="icon" aria-hidden="true">${icons[type]}</div><div class="msg"></div><button class="close" aria-label="Закрыть">×</button>`;
+  el.querySelector('.msg').textContent = String(msg);
+  container.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('show'));
+
+  const ttl = opts.ttl || (type==='error' ? 6000 : 4000);
+  let timer = setTimeout(dismiss, ttl);
+  function dismiss(){
+    clearTimeout(timer);
+    el.classList.remove('show');
+    el.classList.add('hide');
+    setTimeout(()=>el.remove(), 250);
+  }
+  el.querySelector('.close').addEventListener('click', dismiss);
+  el.addEventListener('mouseenter', ()=>clearTimeout(timer));
+  el.addEventListener('mouseleave', ()=>{ timer = setTimeout(dismiss, 2500); });
+
+  // Swipe-to-dismiss on touch devices
+  let startX=null;
+  el.addEventListener('touchstart', e=>{ startX = e.touches[0].clientX; }, {passive:true});
+  el.addEventListener('touchmove', e=>{
+    if(startX===null) return;
+    const dx = e.touches[0].clientX - startX;
+    if(dx>0){ el.style.transform = `translateX(${dx}px)`; el.style.opacity = String(Math.max(0, 1 - dx/200)); }
+  }, {passive:true});
+  el.addEventListener('touchend', e=>{
+    if(startX===null) return;
+    const dx = (e.changedTouches[0]?.clientX ?? startX) - startX;
+    if(dx>80) dismiss();
+    else { el.style.transform=''; el.style.opacity=''; }
+    startX = null;
+  });
 }
 
 function doAction(act){
@@ -726,9 +814,11 @@ async function loadStatus(){
   if(s.running){
     stEl.textContent='Работает';stEl.className='stat-value green';
     $('#btnToggleText').textContent='Стоп';$('#btnToggle').className='btn btn-danger';
+    $('#liveDot').className='live-dot on';
   }else{
     stEl.textContent='Остановлен';stEl.className='stat-value red';
     $('#btnToggleText').textContent='Старт';$('#btnToggle').className='btn btn-success';
+    $('#liveDot').className='live-dot off';
   }
   $('#stVpnIp').textContent=s.external_ip||'—';
   $('#stVpnIp').className='stat-value '+(s.external_ip?'green':'red');
