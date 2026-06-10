@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-06-11
+### Fixed
+- `install.sh` crashed immediately on fresh install with `sh: REL_BASE: parameter not set`. The variable was only assigned inside the `--repo` CLI flag handler but not at the global level — so every install without `--repo` died before downloading the manifest.
+- Keenetic model detection no longer prints a scary `WARN` if the model string isn't found; changed to `INFO` and widened the awk pattern to match more firmware versions.
+
 ## [0.11.0] - 2026-06-11
 ### Added
 - AdGuard Home fully automated in `install.sh`: deploys `AdGuardHome.yaml` (DNS on port 53, Cloudflare+Google DOH upstreams, web UI on :3000), `adguardhome.conf` (Entware startup options), and the critical `10-dns-redirect.sh` Keenetic netfilter hook that redirects all LAN DNS queries through AGH. Applies iptables rules immediately, no reboot needed.
