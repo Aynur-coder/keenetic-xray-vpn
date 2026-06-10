@@ -415,8 +415,12 @@ function generate_xray_config() {
     $ips_list = lines_read($IPS_FILE);
     $fullvpn_macs = lines_read($FULLVPN_FILE);
 
+    // Use explicit private ranges instead of geoip:private — geoip.dat may not exist on MIPS Entware
+    $private_ranges = ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16',
+                       '127.0.0.0/8','169.254.0.0/16','224.0.0.0/4','240.0.0.0/4',
+                       'fc00::/7','::1/128'];
     $rules = [];
-    $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => ['geoip:private']];
+    $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => $private_ranges];
     foreach ($server_ips as $sip) {
         $resolved = gethostbyname($sip);
         $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => [$resolved !== $sip ? $resolved : $sip]];
