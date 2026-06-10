@@ -56,6 +56,12 @@ body{font-family:-apple-system,'SF Pro Display','Inter','Segoe UI',sans-serif;ba
 .header{display:flex;align-items:center;justify-content:space-between;padding:20px 24px;margin-bottom:24px;background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);border-radius:16px;box-shadow:var(--shadow)}
 .header h1{font-size:20px;font-weight:700;color:#fff;display:flex;align-items:center;gap:10px}
 .header-controls{display:flex;gap:8px}
+.header .btn-ghost{border-color:rgba(255,255,255,.3);color:rgba(255,255,255,.9);background:rgba(255,255,255,.08)}
+.header .btn-ghost:hover{border-color:rgba(255,255,255,.6);color:#fff;background:rgba(255,255,255,.18)}
+.header .btn-success{background:rgba(16,185,129,.8);border-color:transparent}
+.header .btn-success:hover{background:rgba(16,185,129,1)}
+.header .btn-danger{background:rgba(239,68,68,.8);border-color:transparent}
+.header .btn-danger:hover{background:rgba(239,68,68,1)}
 
 /* Status bar */
 .status-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}
@@ -275,7 +281,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
 <!-- ============ LOGIN OVERLAY ============ -->
 <div class="overlay" id="loginOverlay" role="dialog" aria-modal="true">
   <div class="overlay-card">
-    <h2>🔒 Вход в Xray VPN</h2>
+    <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Вход в Xray VPN</h2>
     <p class="lead">Удалённый доступ требует пароль. Если ты в локальной сети роутера — обнови страницу, авторизация не нужна.</p>
     <label for="loginPass">Пароль</label>
     <input type="password" id="loginPass" autocomplete="current-password" placeholder="••••••••">
@@ -296,7 +302,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <!-- Step 1: UI password -->
     <div class="wizard-step active" data-step="1">
       <div class="step-num">Шаг 1 из 5</div>
-      <h2>🔐 Пароль веб-интерфейса</h2>
+      <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Пароль веб-интерфейса</h2>
       <p class="lead">Понадобится, если ты будешь открывать UI извне локальной сети (например, через WireGuard). Минимум 4 символа.</p>
       <label for="w1Pass">Новый пароль</label>
       <input type="password" id="w1Pass" placeholder="Минимум 4 символа" autocomplete="new-password">
@@ -312,7 +318,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <!-- Step 2: Keenetic admin password -->
     <div class="wizard-step" data-step="2">
       <div class="step-num">Шаг 2 из 5</div>
-      <h2>🌐 Пароль Keenetic</h2>
+      <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Пароль Keenetic</h2>
       <p class="lead">Чтобы показывать список устройств в локальной сети (для маршрутизации по MAC), нужен пароль admin от роутера. Это тот же пароль, которым ты входишь на <code>http://192.168.1.1</code>.</p>
       <label for="w2Pass">Пароль admin</label>
       <input type="password" id="w2Pass" placeholder="Пароль роутера">
@@ -328,7 +334,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <!-- Step 3: First subscription -->
     <div class="wizard-step" data-step="3">
       <div class="step-num">Шаг 3 из 5</div>
-      <h2>📥 Первая подписка</h2>
+      <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Первая подписка</h2>
       <p class="lead">Вставь URL подписки на VPN-серверы (формат VLESS/SS). Сервера загрузятся автоматически. Если у тебя нет подписки — пропусти, ключи можно добавить вручную позже.</p>
       <label for="w3Name">Название</label>
       <input type="text" id="w3Name" placeholder="Например, MyVPN">
@@ -345,7 +351,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <!-- Step 4: Pick server -->
     <div class="wizard-step" data-step="4">
       <div class="step-num">Шаг 4 из 5</div>
-      <h2>🎯 Выбери сервер</h2>
+      <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> Выбери сервер</h2>
       <p class="lead">Выбери один сервер. Его можно поменять в любой момент во вкладке «Серверы».</p>
       <div class="wizard-server-list" id="w4Servers">
         <div class="skel"></div><div class="skel"></div><div class="skel"></div><div class="skel"></div>
@@ -360,7 +366,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <!-- Step 5: WireGuard -->
     <div class="wizard-step" data-step="5">
       <div class="step-num">Шаг 5 из 5</div>
-      <h2>📡 WireGuard сервер</h2>
+      <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg> WireGuard сервер</h2>
       <p class="lead">Включает встроенный WireGuard-сервер на роутере. Полезно если хочешь подключаться к домашней сети с телефона/ноутбука. Можно включить позже в настройках.</p>
       <div class="wizard-toggle">
         <div>
@@ -379,7 +385,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
 <!-- ============ UPDATE MODAL ============ -->
 <div class="overlay" id="updateOverlay" role="dialog" aria-modal="true">
   <div class="overlay-card update-modal-card">
-    <h2 id="updateTitle">🔄 Обновление</h2>
+    <h2 id="updateTitle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Обновление</h2>
     <div id="updateBody">
       <div class="update-version-row">
         <span class="from" id="updateFrom">—</span>
@@ -405,7 +411,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
 <!-- ============ SETTINGS MODAL ============ -->
 <div class="overlay" id="settingsOverlay" role="dialog" aria-modal="true">
   <div class="overlay-card settings-card">
-    <h2>⚙️ Настройки</h2>
+    <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Настройки</h2>
 
     <div class="settings-section">
       <h3>Общие</h3>
@@ -493,7 +499,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
         <div class="settings-row">
           <div>
             <div class="label">Перезапустить мастер</div>
-            <div class="desc">Удалит метку .onboarded — снова покажет 5 шагов настройки.</div>
+            <div class="desc">Данные (ключи, подписки, домены) <strong>не удаляются</strong>. Удаляется только метка завершения — снова покажет 5 шагов.</div>
           </div>
           <button class="btn btn-warn btn-sm" onclick="restartWizard()">Запустить мастер</button>
         </div>
@@ -823,7 +829,9 @@ async function loadStatus(){
   $('#stVpnIp').textContent=s.external_ip||'—';
   $('#stVpnIp').className='stat-value '+(s.external_ip?'green':'red');
   $('#stRealIp').textContent=s.real_ip||'—';
+  $('#stRealIp').className='stat-value';
   $('#stMem').textContent=s.mem_used&&s.mem_total?`${s.mem_used}/${s.mem_total} MB`:'—';
+  $('#stMem').className='stat-value';
   $('#stWg').textContent=s.wg_up?'Активен':'Выкл';
   $('#stWg').className='stat-value '+(s.wg_up?'green':'red');
 }
@@ -1462,7 +1470,7 @@ async function rollbackUpdate(){
 }
 
 async function restartWizard(){
-  if(!confirm('Удалить отметку завершения мастера и снова показать 5 шагов настройки?')) return;
+  if(!confirm('Показать мастер настройки снова?\n\nВсе данные (ключи, подписки, домены, WireGuard) останутся. Удаляется только метка "настройка завершена".')) return;
   await api('reset_onboarding', {});
   closeSettings();
   location.reload();

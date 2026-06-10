@@ -412,12 +412,34 @@ function generate_xray_config() {
     }
 
     if (!empty($fullvpn_macs)) {
-        $arp = shell_run('ip neigh');
+        // Exclude FAILED/INCOMPLETE ARP entries (no IP yet)
+        $arp_lines = array_filter(
+            explode("\n", shell_run('ip neigh show dev br0')),
+            fn($l) => !preg_match('/\b(FAILED|INCOMPLETE)\b/i', $l)
+        );
+        $arp = implode("\n", $arp_lines);
+
+        $dhcp_leases = @file_get_contents('/tmp/dhcp.leases') ?: '';
+
         $fullvpn_ips = [];
         foreach ($fullvpn_macs as $mac) {
-            if (preg_match_all('/(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/i', $arp, $am)) {
-                foreach ($am[1] as $ip) $fullvpn_ips[] = $ip;
+            $ip = '';
+            // Method 1: ARP table (REACHABLE / STALE)
+            if (preg_match('/^(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/im', $arp, $am)) {
+                $ip = $am[1];
             }
+            // Method 2: DHCP leases file (mac is field 2, ip is field 3)
+            if (!$ip && preg_match('/^\S+\s+' . preg_quote(strtolower($mac), '/') . '\s+(\d+\.\d+\.\d+\.\d+)/im', $dhcp_leases, $dm)) {
+                $ip = $dm[1];
+            }
+            // Method 3: ndmc show ip hotspot
+            if (!$ip) {
+                $hotspot = shell_run('ndmc -c "show ip hotspot" 2>/dev/null');
+                if (preg_match('/(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/i', $hotspot, $hm)) {
+                    $ip = $hm[1];
+                }
+            }
+            if ($ip) $fullvpn_ips[] = $ip;
         }
         if (!empty($fullvpn_ips)) {
             $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'source' => $fullvpn_ips];
