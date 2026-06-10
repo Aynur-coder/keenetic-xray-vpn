@@ -670,10 +670,19 @@ textarea{resize:vertical;min-height:80px;width:100%}
 <!-- DEVICES -->
 <div class="panel" id="panel-devices">
   <div class="panel-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg> Полный VPN для устройств</div>
-  <p class="panel-desc">Весь трафик устройства пойдет через VPN (по MAC-адресу). Имена устройств загружаются из Keenetic.</p>
+  <p class="panel-desc">
+    Устройства добавляются по <strong>MAC-адресу</strong> — он стабильный даже при смене IP.
+    IP определяется автоматически из Keenetic и используется для маршрутизации внутри Xray.
+    Если устройство было offline при последнем запуске Xray — <strong>перезапусти Xray</strong> когда оно онлайн.
+  </p>
   <div class="input-group">
     <input type="text" class="flex1" id="macInput" placeholder="MAC-адрес (AA:BB:CC:DD:EE:FF)">
     <button class="btn btn-primary" onclick="addDevice()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Добавить</button>
+  </div>
+  <div id="fullvpnNoIpWarn" style="display:none;padding:10px 14px;background:rgba(245,158,11,.1);border:1px solid var(--orange);border-radius:8px;font-size:12px;color:var(--orange);margin-bottom:12px">
+    <strong>⚠ IP не определён для одного или нескольких устройств.</strong>
+    Убедись что устройство онлайн, затем перезапусти Xray — маршрутизация применится.
+    <button class="btn btn-warn btn-sm" style="margin-left:8px;margin-top:4px" onclick="doAction('restart')">Перезапустить Xray</button>
   </div>
   <div style="margin-bottom:12px">
     <div class="panel-title" style="font-size:13px">Устройства с полным VPN:</div>
@@ -681,7 +690,8 @@ textarea{resize:vertical;min-height:80px;width:100%}
   </div>
   <div class="section-divider"></div>
   <div>
-    <div class="panel-title" style="font-size:13px">Устройства в сети:</div>
+    <div class="panel-title" style="font-size:13px">Все устройства в сети (из Keenetic):</div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px">Нажми «+» чтобы включить полный VPN для устройства.</p>
     <div id="lanList" class="list"></div>
   </div>
 </div>
@@ -1060,12 +1070,37 @@ async function toggleGhList(id){await api('toggle_github_list',{id});loadGhLists
 async function loadDevices(){
   const[vpn,lan]=await Promise.all([api('devices',''),api('lan_devices','')]);
   const fullList=$('#fullvpnList');fullList.innerHTML='';
-  if(Array.isArray(vpn)&&vpn.length){vpn.forEach(d=>{const el=document.createElement('div');el.className='list-item';el.innerHTML=`<div class="info"><div class="name">${esc(d.hostname||d.mac)}</div><div class="meta">${esc(d.mac)} ${d.ip?'• '+d.ip:''}</div></div><button class="btn btn-danger btn-icon btn-sm" onclick="deleteDevice('${esc(d.mac)}')" title="Удалить">&#10005;</button>`;fullList.appendChild(el)})}
-  else fullList.innerHTML='<div style="text-align:center;color:var(--text2);padding:10px;font-size:12px">Нет устройств с полным VPN</div>';
+
+  let hasNoIp=false;
+  if(Array.isArray(vpn)&&vpn.length){
+    vpn.forEach(d=>{
+      const hasIp=!!d.ip;
+      if(!hasIp) hasNoIp=true;
+      const dot=`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${hasIp?'var(--green)':'var(--orange)'};flex-shrink:0;margin-right:6px;vertical-align:middle" title="${hasIp?'IP определён: '+d.ip:'IP не найден — устройство offline?'}"></span>`;
+      const ipLabel=hasIp?`<span style="color:var(--green)">${esc(d.ip)}</span>`:`<span style="color:var(--orange)">нет IP</span>`;
+      const el=document.createElement('div');el.className='list-item';
+      el.innerHTML=`<div class="info"><div class="name">${dot}${esc(d.hostname||d.mac)}</div><div class="meta">${esc(d.mac)} • ${ipLabel}</div></div><button class="btn btn-danger btn-icon btn-sm" onclick="deleteDevice('${esc(d.mac)}')" title="Удалить" aria-label="Удалить">&#10005;</button>`;
+      fullList.appendChild(el);
+    });
+  } else {
+    fullList.innerHTML='<div style="text-align:center;color:var(--text2);padding:10px;font-size:12px">Нет устройств с полным VPN</div>';
+  }
+
+  const warn=$('#fullvpnNoIpWarn');
+  if(warn) warn.style.display=(hasNoIp&&Array.isArray(vpn)&&vpn.length)?'block':'none';
+
   const vpnMacs=new Set((vpn||[]).map(d=>d.mac.toUpperCase()));
   const lanList=$('#lanList');lanList.innerHTML='';
-  if(Array.isArray(lan)&&lan.length){lan.forEach(d=>{if(vpnMacs.has(d.mac.toUpperCase()))return;const el=document.createElement('div');el.className='list-item';el.innerHTML=`<div class="info"><div class="name">${esc(d.hostname||d.mac)}</div><div class="meta">${esc(d.mac)} • ${esc(d.ip)}${d.active?' • <span class="green">online</span>':''}</div></div><button class="btn btn-success btn-icon btn-sm" onclick="addDeviceByMac('${esc(d.mac)}')" title="Добавить в VPN">+</button>`;lanList.appendChild(el)})}
-  else lanList.innerHTML='<div style="text-align:center;color:var(--text2);padding:10px;font-size:12px">Не удалось получить список. Возможно Keenetic API недоступен.</div>';
+  if(Array.isArray(lan)&&lan.length){
+    lan.forEach(d=>{
+      if(vpnMacs.has(d.mac.toUpperCase()))return;
+      const el=document.createElement('div');el.className='list-item';
+      el.innerHTML=`<div class="info"><div class="name">${esc(d.hostname||d.mac)}</div><div class="meta">${esc(d.mac)} • ${esc(d.ip)}${d.active?' • <span class="green">online</span>':''}</div></div><button class="btn btn-success btn-icon btn-sm" onclick="addDeviceByMac('${esc(d.mac)}')" title="Добавить в полный VPN" aria-label="Добавить в VPN">+</button>`;
+      lanList.appendChild(el);
+    });
+  } else {
+    lanList.innerHTML='<div style="text-align:center;color:var(--text2);padding:10px;font-size:12px">Не удалось получить список. Возможно Keenetic API недоступен.</div>';
+  }
 }
 async function addDevice(){const mac=$('#macInput').value.trim().toUpperCase();if(!mac)return toast('Введите MAC',true);const r=await api('add_device',{mac});if(r.error)return toast(r.error,true);$('#macInput').value='';toast('Добавлено');loadDevices()}
 async function addDeviceByMac(mac){await api('add_device',{mac});toast('Добавлено');loadDevices()}
