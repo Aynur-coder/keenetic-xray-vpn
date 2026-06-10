@@ -155,11 +155,24 @@ _find_php() {
 
 # Write the CGI helper once; it reads manifest path + expression from $argv
 _init_php_helper() {
+    # Use getenv() instead of $argv — $argv is unreliable in CGI mode
     cat > "$_PHP_HELPER" << 'PHPEOF'
 <?php
-$m = json_decode(file_get_contents($argv[1]), true);
-eval($argv[2]);
+$m = json_decode(file_get_contents(getenv('_MF')), true);
+eval(getenv('_EXPR'));
 PHPEOF
+}
+
+# Strip HTTP response headers php-cgi may emit.
+# If first line looks like an HTTP header (Word: value), skip until blank line.
+# If no HTTP headers present, print everything as-is.
+_strip_cgi_headers() {
+    awk '
+        NR==1 && /^[A-Za-z][A-Za-z0-9-]*:[[:space:]]/ { in_hdr=1 }
+        in_hdr && /^[[:space:]]*$/ { in_hdr=0; next }
+        in_hdr { next }
+        { print }
+    '
 }
 
 # Parse manifest.json — detects CLI vs CGI PHP automatically.
@@ -171,7 +184,10 @@ mf_get() {
         "$_PHP_BIN" -r "\$m=json_decode(file_get_contents('$_mf'),true); $_expr"
     else
         [ -f "$_PHP_HELPER" ] || _init_php_helper
-        "$_PHP_BIN" -q -f "$_PHP_HELPER" -- "$_mf" "$_expr" 2>/dev/null
+        # Pass values via env vars (not $argv — unreliable in CGI)
+        # Pipe through awk to strip any HTTP headers php-cgi may emit
+        _MF="$_mf" _EXPR="$_expr" "$_PHP_BIN" -q -f "$_PHP_HELPER" 2>/dev/null \
+            | _strip_cgi_headers
     fi
 }
 
