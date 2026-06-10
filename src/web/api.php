@@ -780,8 +780,10 @@ if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
 switch ($action) {
 
 case 'status':
-    $pid = shell_run('cat /opt/var/run/xray.pid 2>/dev/null');
-    $running = $pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0';
+    $pid = trim(shell_run('cat /opt/var/run/xray.pid 2>/dev/null') ?? '');
+    $running = $pid && trim(shell_run("kill -0 $pid 2>/dev/null; echo \$?") ?? '') === '0';
+    // Fallback: pgrep in case PID file is stale or missing
+    if (!$running) $running = trim(shell_run('pgrep -x xray 2>/dev/null') ?? '') !== '';
     $state = json_read($STATE_FILE);
     $mem = shell_run("free -m | awk '/Mem:/{print \$2,\$3,\$4}'");
     $mp = explode(' ', $mem);
