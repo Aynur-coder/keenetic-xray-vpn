@@ -1,0 +1,59 @@
+{
+  "version": "__VERSION__",
+  "min_install_sh_version": "0.9.0",
+  "files": [
+    {"src": "src/web/index.php",                        "dst": "/opt/share/www/xray/index.php",                       "mode": "644"},
+    {"src": "src/web/api.php",                          "dst": "/opt/share/www/xray/api.php",                         "mode": "644"},
+    {"src": "src/etc/xray/xray-manager.sh",             "dst": "/opt/etc/xray/xray-manager.sh",                       "mode": "755"},
+    {"src": "src/etc/xray/update.sh",                   "dst": "/opt/etc/xray/update.sh",                             "mode": "755"},
+    {"src": "src/etc/xray/migrate.sh",                  "dst": "/opt/etc/xray/migrate.sh",                            "mode": "755"},
+    {"src": "src/etc/init.d/S22xray",                   "dst": "/opt/etc/init.d/S22xray",                             "mode": "755"},
+    {"src": "src/etc/init.d/S99wireguard",              "dst": "/opt/etc/init.d/S99wireguard",                        "mode": "755"},
+    {"src": "src/etc/lighttpd/conf.d/91-shadowsocks.conf", "dst": "/opt/etc/lighttpd/conf.d/91-shadowsocks.conf",     "mode": "644"}
+  ],
+  "defaults": [
+    {"src": "defaults/state.json",                      "dst": "/opt/etc/xray/state.json",                            "mode": "644", "only_if_missing": true},
+    {"src": "defaults/features.json",                   "dst": "/opt/etc/xray/features.json",                         "mode": "644", "only_if_missing": true},
+    {"src": "defaults/ui-auth.json",                    "dst": "/opt/etc/xray/ui-auth.json",                          "mode": "600", "only_if_missing": true},
+    {"src": "defaults/subscriptions/list.json",         "dst": "/opt/etc/xray/subscriptions/list.json",               "mode": "644", "only_if_missing": true},
+    {"src": "defaults/subscriptions/keys.json",         "dst": "/opt/etc/xray/subscriptions/keys.json",               "mode": "644", "only_if_missing": true},
+    {"src": "defaults/subscriptions/cached_servers.json","dst": "/opt/etc/xray/subscriptions/cached_servers.json",    "mode": "644", "only_if_missing": true},
+    {"src": "defaults/rules/domains.txt",               "dst": "/opt/etc/xray/rules/domains.txt",                     "mode": "644", "only_if_missing": true},
+    {"src": "defaults/rules/ips.txt",                   "dst": "/opt/etc/xray/rules/ips.txt",                         "mode": "644", "only_if_missing": true},
+    {"src": "defaults/rules/fullvpn_devices.txt",       "dst": "/opt/etc/xray/rules/fullvpn_devices.txt",             "mode": "644", "only_if_missing": true},
+    {"src": "defaults/rules/github_lists.json",         "dst": "/opt/etc/xray/rules/github_lists.json",               "mode": "644", "only_if_missing": true}
+  ],
+  "directories": [
+    {"path": "/opt/share/www/xray",        "mode": "755"},
+    {"path": "/opt/etc/xray",              "mode": "755"},
+    {"path": "/opt/etc/xray/rules",        "mode": "755"},
+    {"path": "/opt/etc/xray/subscriptions","mode": "755"},
+    {"path": "/opt/etc/xray/backups",      "mode": "755"},
+    {"path": "/opt/etc/xray/migrations",   "mode": "755"},
+    {"path": "/opt/etc/wireguard",         "mode": "700"},
+    {"path": "/opt/var/log/xray",          "mode": "755"}
+  ],
+  "post_install": ["migrate", "reload_lighttpd"],
+  "opkg_packages": [
+    "xray-core",
+    "wireguard-tools",
+    "php8",
+    "php8-cgi",
+    "php8-mod-curl",
+    "php8-mod-session",
+    "curl",
+    "lighttpd",
+    "lighttpd-mod-cgi",
+    "lighttpd-mod-redirect",
+    "lighttpd-mod-rewrite",
+    "lighttpd-mod-setenv",
+    "qrencode",
+    "libqrencode",
+    "libcurl",
+    "bind-dig",
+    "ipset",
+    "iptables",
+    "adguardhome-go",
+    "cron"
+  ]
+}

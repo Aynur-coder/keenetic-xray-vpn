@@ -1,0 +1,54 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: shellcheck install.sh
+        run: shellcheck -s sh install.sh
+      - name: shellcheck repo scripts
+        run: |
+          for f in src/etc/xray/*.sh src/etc/init.d/S* migrations/*.sh; do
+            [ -f "$f" ] || continue
+            echo "==> $f"
+            shellcheck -s sh "$f" || true   # warn-only for now; init.d may use /opt/bin/sh shebang
+          done
+
+  php-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup php
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      - name: php -l on web files
+        run: |
+          set -e
+          php -l src/web/index.php
+          php -l src/web/api.php
+
+  manifest-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate manifest.template.json
+        run: |
+          python3 -c "import json,sys; json.load(open('manifest.template.json')); print('ok')"
+      - name: validate default JSONs
+        run: |
+          set -e
+          for f in defaults/*.json defaults/**/*.json; do
+            [ -f "$f" ] || continue
+            echo "==> $f"
+            python3 -c "import json,sys; json.load(open('$f'))"
+          done

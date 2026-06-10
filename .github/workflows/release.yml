@@ -1,0 +1,79 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag matches VERSION
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME#v}"
+          FILE_VER=$(tr -d ' \r\n' < VERSION)
+          if [ "$TAG" != "$FILE_VER" ]; then
+            echo "::error::Tag v$TAG does not match VERSION file ($FILE_VER)"
+            exit 1
+          fi
+          echo "VERSION=$FILE_VER" >> "$GITHUB_ENV"
+
+      - name: Generate manifest.json with SHA256
+        run: |
+          set -e
+          python3 - <<'PY'
+          import json, hashlib, os, sys
+          with open('manifest.template.json') as f:
+              tpl = json.load(f)
+          ver = open('VERSION').read().strip()
+          tpl['version'] = ver
+          # Hash files[] entries
+          for item in tpl.get('files', []):
+              src = item['src']
+              if not os.path.isfile(src):
+                  sys.exit(f"Missing file declared in manifest: {src}")
+              h = hashlib.sha256(open(src, 'rb').read()).hexdigest()
+              item['sha256'] = h
+          # defaults[] don't get checksums (they're templates the user may edit)
+          with open('manifest.json', 'w') as f:
+              json.dump(tpl, f, indent=2, sort_keys=False)
+          print(f"manifest.json generated for v{ver} with {len(tpl['files'])} hashed files")
+          PY
+          cat manifest.json | head -50
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          set -e
+          ver="${{ env.VERSION }}"
+          # Pull section [X.Y.Z] from changelog.md up to next [
+          awk -v v="$ver" '
+            $0 ~ "^## \\[" v "\\]" {flag=1; next}
+            flag && /^## \[/ {flag=0}
+            flag {print}
+          ' changelog.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "Release v$ver" > release_notes.md
+          fi
+          echo "==> release_notes.md:"
+          cat release_notes.md
+
+      - name: Create GitHub Release with manifest.json attached
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: |
+            manifest.json
+            install.sh
+            VERSION

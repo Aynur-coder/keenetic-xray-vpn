@@ -1,0 +1,4 @@
+# One IP or CIDR per line. Lines starting with # are ignored.
+# Examples:
+# 1.1.1.1
+# 8.8.8.0/24

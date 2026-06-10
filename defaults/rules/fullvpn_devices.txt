@@ -1,0 +1,2 @@
+# MAC addresses (one per line) of devices that should route ALL traffic through VPN.
+# Format: aa:bb:cc:dd:ee:ff

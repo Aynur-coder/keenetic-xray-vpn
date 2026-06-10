@@ -1,0 +1,964 @@
+<?php
+header('Content-Type: application/json');
+header('Cache-Control: no-cache');
+
+$XRAY_DIR = '/opt/etc/xray';
+$RULES_DIR = "$XRAY_DIR/rules";
+$SUBS_FILE = "$XRAY_DIR/subscriptions/list.json";
+$KEYS_FILE = "$XRAY_DIR/subscriptions/keys.json";
+$CACHED_FILE = "$XRAY_DIR/subscriptions/cached_servers.json";
+$DOMAINS_FILE = "$RULES_DIR/domains.txt";
+$IPS_FILE = "$RULES_DIR/ips.txt";
+$FULLVPN_FILE = "$RULES_DIR/fullvpn_devices.txt";
+$GITHUB_LISTS_FILE = "$RULES_DIR/github_lists.json";
+$XRAY_CONF = "$XRAY_DIR/config.json";
+$STATE_FILE = "$XRAY_DIR/state.json";
+$LOG_ACCESS = '/opt/var/log/xray/access.log';
+$LOG_ERROR = '/opt/var/log/xray/error.log';
+$MANAGER = "$XRAY_DIR/xray-manager.sh";
+$AGH_CONF = '/opt/etc/AdGuardHome/AdGuardHome.yaml';
+$WG_DIR = '/opt/etc/wireguard';
+$WG_CONF = "$WG_DIR/wg0.conf";
+$SS_DOWNLOADER = '/opt/usr/bin/ss-downloader';
+$CATALOG_FILE = '/opt/etc/shadowsocks.d/catalog.json';
+$V2FLY_LISTS_DIR = '/opt/etc/shadowsocks.d/lists';
+
+function json_read($f) {
+    if (!file_exists($f)) return [];
+    $d = json_decode(file_get_contents($f), true);
+    return is_array($d) ? $d : [];
+}
+
+function json_write($f, $d) {
+    file_put_contents($f, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+}
+
+function lines_read($f) {
+    if (!file_exists($f)) return [];
+    return array_values(array_filter(array_map('trim', file($f)), function($l) {
+        return $l !== '' && (!isset($l[0]) || $l[0] !== '#');
+    }));
+}
+
+function lines_write($f, $lines) {
+    file_put_contents($f, implode("\n", $lines) . "\n");
+}
+
+function shell_run($cmd) {
+    return trim(shell_exec($cmd . ' 2>&1') ?? '');
+}
+
+function parse_vless_link($link) {
+    $name = 'VLESS';
+    if (preg_match('/#(.+)$/', $link, $nm)) {
+        $name = urldecode($nm[1]);
+        $link = preg_replace('/#.*$/', '', $link);
+    }
+    $link = urldecode($link);
+    if (!preg_match('/^vless:\/\/([^@]+)@([^:]+):(\d+)\??(.*)$/', $link, $m)) return null;
+    $params = [];
+    parse_str($m[4] ?? '', $params);
+    return [
+        'uuid' => $m[1], 'address' => $m[2], 'port' => (int)$m[3],
+        'security' => $params['security'] ?? 'none',
+        'type' => $params['type'] ?? 'tcp',
+        'sni' => $params['sni'] ?? '',
+        'fp' => $params['fp'] ?? 'chrome',
+        'pbk' => $params['pbk'] ?? '',
+        'sid' => $params['sid'] ?? '',
+        'flow' => $params['flow'] ?? '',
+        'host' => $params['host'] ?? '',
+        'path' => $params['path'] ?? '',
+        'mode' => $params['mode'] ?? '',
+        'name' => $name
+    ];
+}
+
+function parse_ss_link($link) {
+    $link = preg_replace('/#.*$/', '', $link);
+    $link = preg_replace('/\?.*@/', '@', $link);
+    if (preg_match('/^ss:\/\/([^@]+)@(.+):(\d+)/', $link, $m)) {
+        $decoded = base64_decode($m[1]);
+        if (!$decoded && strpos($m[1], '%') !== false) $decoded = base64_decode(urldecode($m[1]));
+        if ($decoded && preg_match('/^([^:]+):(.+)$/', $decoded, $dm)) {
+            return ['address' => $m[2], 'port' => (int)$m[3], 'method' => $dm[1], 'password' => $dm[2]];
+        }
+    }
+    return null;
+}
+
+function build_outbound_from_link($link, $tag) {
+    if (strpos($link, 'vless://') === 0) {
+        $v = parse_vless_link($link);
+        if (!$v) return null;
+        $out = [
+            'tag' => $tag, 'protocol' => 'vless',
+            'settings' => ['vnext' => [['address' => $v['address'], 'port' => $v['port'],
+                'users' => [['id' => $v['uuid'], 'encryption' => 'none', 'flow' => $v['flow'] ?: '']]
+            ]]],
+            'streamSettings' => ['network' => $v['type'] ?: 'tcp', 'security' => $v['security'] ?: 'none']
+        ];
+        if ($v['security'] === 'reality') {
+            $out['streamSettings']['realitySettings'] = [
+                'serverName' => $v['sni'], 'fingerprint' => $v['fp'] ?: 'chrome',
+                'publicKey' => $v['pbk'], 'shortId' => $v['sid'] ?: '', 'spiderX' => ''
+            ];
+        } elseif ($v['security'] === 'tls') {
+            $out['streamSettings']['tlsSettings'] = [
+                'serverName' => $v['sni'], 'fingerprint' => $v['fp'] ?: 'chrome'
+            ];
+        }
+        if ($v['type'] === 'xhttp') {
+            $out['streamSettings']['xhttpSettings'] = [];
+            if (!empty($v['host'])) $out['streamSettings']['xhttpSettings']['host'] = [$v['host']];
+            if (!empty($v['path'])) $out['streamSettings']['xhttpSettings']['path'] = $v['path'];
+            if (!empty($v['mode'])) $out['streamSettings']['xhttpSettings']['mode'] = $v['mode'];
+        }
+        return $out;
+    }
+    if (strpos($link, 'ss://') === 0) {
+        $s = parse_ss_link($link);
+        if (!$s) return null;
+        return ['tag' => $tag, 'protocol' => 'shadowsocks', 'settings' => ['servers' => [$s]]];
+    }
+    return null;
+}
+
+function fetch_subscription($url) {
+    $content = shell_run("/opt/bin/curl -s --max-time 20 " . escapeshellarg($url));
+    if (!$content) return [];
+    $decoded = base64_decode($content);
+    if ($decoded) $content = $decoded;
+    return array_values(array_filter(explode("\n", $content), function($l) {
+        $l = trim($l);
+        return strpos($l, 'vless://') === 0 || strpos($l, 'ss://') === 0 ||
+               strpos($l, 'trojan://') === 0 || strpos($l, 'vmess://') === 0;
+    }));
+}
+
+function generate_xray_config() {
+    global $XRAY_DIR, $XRAY_CONF, $KEYS_FILE, $CACHED_FILE, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE, $STATE_FILE;
+
+    $outbounds = [];
+    $server_ips = [];
+    $active_tag = '';
+    $state = json_read($STATE_FILE);
+    $active_id = $state['active_outbound'] ?? '';
+
+    $keys = json_read($KEYS_FILE);
+    foreach ($keys as $k) {
+        if (empty($k['enabled'])) continue;
+        $tag = 'key-' . ($k['id'] ?? uniqid());
+        $ob = build_outbound_from_link($k['link'], $tag);
+        if ($ob) {
+            $outbounds[] = $ob;
+            $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
+            if ($addr) $server_ips[] = $addr;
+            if ($active_id === $k['id'] || (!$active_tag && $active_id === '')) $active_tag = $tag;
+        }
+    }
+
+    $cached = json_read($CACHED_FILE);
+    foreach ($cached as $srv) {
+        if (empty($srv['enabled'])) continue;
+        $tag = 'sub-' . ($srv['id'] ?? uniqid());
+        $ob = build_outbound_from_link($srv['link'], $tag);
+        if ($ob) {
+            $outbounds[] = $ob;
+            $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
+            if ($addr) $server_ips[] = $addr;
+            if ($active_id === $srv['id']) $active_tag = $tag;
+        }
+    }
+
+    if (empty($outbounds)) return ['error' => 'No active outbounds'];
+    if (!$active_tag) {
+        foreach ($outbounds as $ob) {
+            if ($ob['tag'] !== 'direct' && $ob['tag'] !== 'block') { $active_tag = $ob['tag']; break; }
+        }
+    }
+
+    usort($outbounds, function($a, $b) use ($active_tag) {
+        if ($a['tag'] === $active_tag) return -1;
+        if ($b['tag'] === $active_tag) return 1;
+        return 0;
+    });
+
+    $domains = all_domains();
+    $ips_list = lines_read($IPS_FILE);
+    $fullvpn_macs = lines_read($FULLVPN_FILE);
+
+    $rules = [];
+    $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => ['geoip:private']];
+    foreach ($server_ips as $sip) {
+        $resolved = gethostbyname($sip);
+        $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => [$resolved !== $sip ? $resolved : $sip]];
+    }
+
+    if (!empty($fullvpn_macs)) {
+        $arp = shell_run('ip neigh');
+        $fullvpn_ips = [];
+        foreach ($fullvpn_macs as $mac) {
+            if (preg_match_all('/(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/i', $arp, $am)) {
+                foreach ($am[1] as $ip) $fullvpn_ips[] = $ip;
+            }
+        }
+        if (!empty($fullvpn_ips)) {
+            $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'source' => $fullvpn_ips];
+        }
+    }
+
+    if (!empty($domains)) $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'domain' => $domains];
+    if (!empty($ips_list)) $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'ip' => $ips_list];
+    $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'network' => 'tcp,udp'];
+
+    $outbounds[] = ['tag' => 'direct', 'protocol' => 'freedom'];
+    $outbounds[] = ['tag' => 'block', 'protocol' => 'blackhole'];
+
+    $config = [
+        'log' => ['loglevel' => 'warning', 'access' => '/opt/var/log/xray/access.log', 'error' => '/opt/var/log/xray/error.log'],
+        'inbounds' => [
+            ['tag' => 'tproxy-in', 'port' => 1080, 'protocol' => 'dokodemo-door',
+             'settings' => ['network' => 'tcp,udp', 'followRedirect' => true],
+             'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true],
+             'streamSettings' => ['sockopt' => ['tproxy' => 'redirect']]],
+            ['tag' => 'socks-in', 'port' => 1081, 'listen' => '0.0.0.0', 'protocol' => 'socks',
+             'settings' => ['auth' => 'noauth', 'udp' => true],
+             'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true]],
+            ['tag' => 'http-in', 'port' => 1082, 'listen' => '0.0.0.0', 'protocol' => 'http']
+        ],
+        'outbounds' => $outbounds,
+        'routing' => ['domainStrategy' => 'IPIfNonMatch', 'rules' => $rules]
+    ];
+
+    file_put_contents($XRAY_CONF, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    return ['ok' => true, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
+}
+
+function all_domains() {
+    global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
+    $manual = lines_read($DOMAINS_FILE);
+    $lists = json_read($GITHUB_LISTS_FILE);
+    $extra = [];
+    foreach ($lists as $l) {
+        if (empty($l['enabled'])) continue;
+        if (($l['source'] ?? '') === 'v2fly' && !empty($l['name'])) {
+            $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
+            if (file_exists($f)) {
+                $extra = array_merge($extra, array_filter(array_map('trim', file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($x) => $x !== '' && $x[0] !== '#'));
+            }
+        }
+    }
+    return array_values(array_unique(array_merge($manual, $extra)));
+}
+
+function quick_apply() {
+    global $MANAGER;
+    $r = generate_xray_config();
+    if (isset($r['error'])) return;
+    shell_run('killall xray 2>/dev/null; sleep 1');
+    shell_run("$MANAGER firewall 2>/dev/null");
+    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    reload_adguard();
+    warmup_ipset();
+}
+
+function reload_adguard() {
+    shell_run('/opt/etc/init.d/S99adguardhome restart 2>/dev/null');
+}
+
+function warmup_ipset() {
+    shell_exec('pkill -f vpn_warmup 2>/dev/null');
+    $domains = all_domains();
+    $tmpfile = '/tmp/vpn_warmup.txt';
+    file_put_contents($tmpfile, implode("\n", $domains) . "\n");
+    shell_exec("nohup sh -c 'sleep 12; while read d; do dig @127.0.0.1 \"\$d\" +short A +timeout=2 +tries=1 >/dev/null 2>&1; done < $tmpfile; rm -f $tmpfile' >/dev/null 2>&1 &");
+}
+
+function update_adguard_ipset() {
+    global $AGH_CONF;
+    if (!file_exists($AGH_CONF)) return;
+    $domains = all_domains();
+    $yaml = file_get_contents($AGH_CONF);
+    $entries = [];
+    foreach ($domains as $d) $entries[] = "    - $d/vpn1";
+    $ipset_block = "  ipset:\n" . implode("\n", $entries) . "\n  ipset_file:";
+    $yaml = preg_replace('/  ipset:\n(    - .+\n)*  ipset_file:/', $ipset_block, $yaml);
+    file_put_contents($AGH_CONF, $yaml);
+}
+
+function keenetic_get_devices() {
+    // Keenetic NDW2 auth: 2-step challenge + SHA256
+    $pass = trim(@file_get_contents('/opt/etc/xray/.kn_pass') ?: '');
+    if (!$pass) return keenetic_fallback_devices();
+
+    // Step 1: get challenge
+    $ch = curl_init('http://192.168.1.1/auth');
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_HEADER => true]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+
+    $challenge = $session_id = $cookie_name = $cookie_val = '';
+    if (preg_match('/X-NDM-Challenge:\s*(\S+)/i', $resp, $m)) $challenge = $m[1];
+    if (preg_match('/Set-Cookie:\s*(\w+)=(\w+)/i', $resp, $m)) { $cookie_name = $m[1]; $cookie_val = $m[2]; }
+    if (preg_match('/session_id="([^"]+)"/', $resp, $m)) $session_id = $m[1];
+
+    if (!$challenge || !$cookie_val) return keenetic_fallback_devices();
+
+    // Step 2: SHA256(challenge + MD5(admin:realm:password))
+    $realm = 'Keenetic Hopper';
+    if (preg_match('/realm="([^"]+)"/', $resp, $m)) $realm = $m[1];
+    $inner = md5('admin:' . $realm . ':' . $pass);
+    $token = hash('sha256', $challenge . $inner);
+
+    $ch = curl_init('http://192.168.1.1/auth');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode(['login' => 'admin', 'password' => $token]),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', "Cookie: $cookie_name=$cookie_val"],
+        CURLOPT_HEADER => true,
+    ]);
+    $resp2 = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($http_code !== 200) return keenetic_fallback_devices();
+
+    // Step 3: get devices
+    $ch = curl_init('http://192.168.1.1/rci/show/ip/hotspot');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5,
+        CURLOPT_HTTPHEADER => ["Cookie: $cookie_name=$cookie_val"],
+    ]);
+    $body = curl_exec($ch);
+    curl_close($ch);
+
+    $data = json_decode($body, true);
+    if (!is_array($data)) return keenetic_fallback_devices();
+
+    $devices = [];
+    if (isset($data['host'])) {
+        foreach ($data['host'] as $h) {
+            $devices[] = [
+                'ip' => $h['ip'] ?? '', 'mac' => strtoupper($h['mac'] ?? ''),
+                'hostname' => $h['name'] ?? $h['hostname'] ?? '',
+                'active' => !empty($h['active']),
+            ];
+        }
+    }
+    return $devices;
+}
+
+function keenetic_fallback_devices() {
+    $arp = shell_run('ip neigh show dev br0');
+    $dhcp = shell_run('cat /tmp/dhcp.leases 2>/dev/null');
+    $devices = [];
+    if (preg_match_all('/(\d+\.\d+\.\d+\.\d+).*?(([0-9a-f]{2}:){5}[0-9a-f]{2})/i', $arp, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $m) {
+            $hostname = '';
+            if (preg_match('/' . preg_quote($m[2], '/') . '\s+\S+\s+(\S+)/i', $dhcp, $hm)) $hostname = $hm[1];
+            $devices[] = ['ip' => $m[1], 'mac' => strtoupper($m[2]), 'hostname' => $hostname, 'active' => true];
+        }
+    }
+    return $devices;
+}
+
+function fetch_github_domains($url) {
+    $content = shell_run("/opt/bin/curl -sL --max-time 15 " . escapeshellarg($url));
+    if (!$content) return [];
+    $domains = [];
+    foreach (explode("\n", $content) as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#' || $line[0] === '!') continue;
+        if (preg_match('/^\|\|([a-z0-9][\w\-.]+\.[a-z]{2,})\^?$/i', $line, $m)) {
+            $domains[] = strtolower($m[1]);
+        } elseif (preg_match('/^(?:server|address)=\/([^\/]+)\//i', $line, $m)) {
+            $domains[] = strtolower($m[1]);
+        } elseif (preg_match('/^(?:0\.0\.0\.0|127\.0\.0\.1)\s+([a-z0-9][\w\-.]+\.[a-z]{2,})$/i', $line, $m)) {
+            $domains[] = strtolower($m[1]);
+        } elseif (preg_match('/^\*?\.?([a-z0-9][\w\-.]+\.[a-z]{2,})$/i', $line, $m)) {
+            $domains[] = strtolower($m[1]);
+        }
+    }
+    return array_unique($domains);
+}
+
+function wg_list_peers() {
+    global $WG_DIR, $WG_CONF;
+    if (!file_exists($WG_CONF)) return [];
+    $content = file_get_contents($WG_CONF);
+    $configs = glob("$WG_DIR/*.conf");
+    $client_map = [];
+    foreach ($configs as $cf) {
+        $bn = basename($cf, '.conf');
+        if ($bn === 'wg0') continue;
+        $cc = file_get_contents($cf);
+        if (preg_match('/PrivateKey\s*=\s*(.+)/', $cc, $m)) {
+            $pk = trim(shell_run("echo " . escapeshellarg(trim($m[1])) . " | /opt/bin/wg pubkey 2>/dev/null"));
+            if ($pk) $client_map[$pk] = $bn;
+        }
+    }
+
+    $status = shell_run("/opt/bin/wg show wg0 2>/dev/null");
+    $peers = [];
+    if (preg_match_all('/\[Peer\]\s*\n((?:[^\[]+?)(?=\[|$))/s', $content, $pm)) {
+        foreach ($pm[1] as $block) {
+            $pubkey = ''; $allowed_ips = '';
+            if (preg_match('/PublicKey\s*=\s*(.+)/', $block, $m)) $pubkey = trim($m[1]);
+            if (preg_match('/AllowedIPs\s*=\s*(.+)/', $block, $m)) $allowed_ips = trim($m[1]);
+            $name = $client_map[$pubkey] ?? '';
+            $ip = preg_replace('/\/\d+$/', '', $allowed_ips);
+            $last_handshake = ''; $rx = ''; $tx = '';
+            if ($pubkey && preg_match('/peer:\s*' . preg_quote($pubkey, '/') . '\s+(.*?)(?=peer:|$)/s', $status, $sm)) {
+                if (preg_match('/latest handshake:\s*(.+)/', $sm[1], $hm)) $last_handshake = trim($hm[1]);
+                if (preg_match('/transfer:\s*([\d.]+\s+\w+)\s+received,\s*([\d.]+\s+\w+)\s+sent/', $sm[1], $tm)) {
+                    $rx = $tm[1]; $tx = $tm[2];
+                }
+            }
+            $peers[] = [
+                'name' => $name, 'pubkey' => $pubkey, 'allowed_ips' => $allowed_ips,
+                'ip' => $ip, 'last_handshake' => $last_handshake,
+                'rx' => $rx, 'tx' => $tx, 'has_config' => !empty($name),
+            ];
+        }
+    }
+    return $peers;
+}
+
+function wg_get_next_ip() {
+    global $WG_CONF;
+    $content = file_get_contents($WG_CONF);
+    $max_ip = 1;
+    if (preg_match_all('/AllowedIPs\s*=\s*10\.50\.0\.(\d+)/', $content, $m))
+        $max_ip = max(array_map('intval', $m[1]));
+    return '10.50.0.' . ($max_ip + 1);
+}
+
+function wg_get_server_pubkey() {
+    global $WG_CONF;
+    $content = file_get_contents($WG_CONF);
+    if (preg_match('/PrivateKey\s*=\s*(.+)/', $content, $m))
+        return trim(shell_run("echo " . escapeshellarg(trim($m[1])) . " | /opt/bin/wg pubkey 2>/dev/null"));
+    return '';
+}
+
+function wg_get_endpoint() {
+    global $WG_CONF;
+    $ip = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');
+    $content = file_get_contents($WG_CONF);
+    $port = '500';
+    if (preg_match('/ListenPort\s*=\s*(\d+)/', $content, $m)) $port = $m[1];
+    return ($ip ?: '95.105.78.232') . ':' . $port;
+}
+
+function wg_add_peer($name) {
+    global $WG_DIR, $WG_CONF;
+    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
+    if (!$name) return ['error' => 'Invalid name'];
+    $conf_file = "$WG_DIR/$name.conf";
+    if (file_exists($conf_file)) return ['error' => 'Client already exists'];
+
+    $privkey = trim(shell_run("/opt/bin/wg genkey"));
+    $pubkey = trim(shell_run("echo " . escapeshellarg($privkey) . " | /opt/bin/wg pubkey"));
+    if (!$privkey || !$pubkey) return ['error' => 'Failed to generate keys'];
+
+    $client_ip = wg_get_next_ip();
+    $server_pubkey = wg_get_server_pubkey();
+    $endpoint = wg_get_endpoint();
+
+    file_put_contents($WG_CONF, file_get_contents($WG_CONF) . "\n[Peer]\nPublicKey = $pubkey\nAllowedIPs = $client_ip/32\n");
+    $client_conf = "[Interface]\nPrivateKey = $privkey\nAddress = $client_ip/24\nDNS = 192.168.1.1\nMTU = 1400\n\n[Peer]\nPublicKey = $server_pubkey\nEndpoint = $endpoint\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n";
+    file_put_contents($conf_file, $client_conf);
+    shell_run("/opt/bin/wg set wg0 peer $pubkey allowed-ips $client_ip/32 2>/dev/null");
+
+    return ['ok' => true, 'name' => $name, 'ip' => $client_ip];
+}
+
+function wg_delete_peer($name) {
+    global $WG_DIR, $WG_CONF;
+    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
+    $conf_file = "$WG_DIR/$name.conf";
+    if (file_exists($conf_file)) {
+        $cc = file_get_contents($conf_file);
+        if (preg_match('/PrivateKey\s*=\s*(.+)/', $cc, $m)) {
+            $pubkey = trim(shell_run("echo " . escapeshellarg(trim($m[1])) . " | /opt/bin/wg pubkey 2>/dev/null"));
+            if ($pubkey) {
+                $wg = file_get_contents($WG_CONF);
+                $wg = preg_replace('/\n\[Peer\]\s*\nPublicKey\s*=\s*' . preg_quote($pubkey, '/') . '\s*\n[^\[]*/', '', $wg);
+                file_put_contents($WG_CONF, $wg);
+                shell_run("/opt/bin/wg set wg0 peer $pubkey remove 2>/dev/null");
+            }
+        }
+        unlink($conf_file);
+    }
+    foreach (["$WG_DIR/{$name}_private.key", "$WG_DIR/{$name}_public.key"] as $kf) {
+        if (file_exists($kf)) unlink($kf);
+    }
+    return ['ok' => true];
+}
+
+function wg_get_client_config($name) {
+    global $WG_DIR;
+    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
+    $conf_file = "$WG_DIR/$name.conf";
+    if (!file_exists($conf_file)) return ['error' => 'Config not found'];
+    return ['ok' => true, 'config' => file_get_contents($conf_file), 'name' => $name];
+}
+
+// ===== API Router =====
+$action = $_GET['action'] ?? $_POST['action'] ?? '';
+
+switch ($action) {
+
+case 'status':
+    $pid = shell_run('cat /opt/var/run/xray.pid 2>/dev/null');
+    $running = $pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0';
+    $state = json_read($STATE_FILE);
+    $mem = shell_run("free -m | awk '/Mem:/{print \$2,\$3,\$4}'");
+    $mp = explode(' ', $mem);
+    $wg_up = shell_run("/opt/bin/wg show wg0 2>/dev/null | head -1") !== '';
+    echo json_encode([
+        'running' => $running, 'pid' => $pid,
+        'active_outbound' => $state['active_outbound'] ?? '',
+        'mode' => $state['mode'] ?? 'selective',
+        'mem_total' => (int)(($mp[0] ?? 0) / 1024), 'mem_used' => (int)(($mp[1] ?? 0) / 1024),
+        'uptime' => shell_run('uptime'),
+        'external_ip' => shell_run('/opt/bin/curl -s --max-time 5 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null'),
+        'real_ip' => shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null'),
+        'wg_up' => $wg_up,
+    ]);
+    break;
+
+case 'start':
+    update_adguard_ipset();
+    $r = generate_xray_config();
+    if (isset($r['error'])) { echo json_encode($r); break; }
+    shell_run('killall xray 2>/dev/null; sleep 1');
+    shell_run("$MANAGER firewall 2>/dev/null");
+    shell_run(': > /opt/var/log/xray/access.log; : > /opt/var/log/xray/error.log');
+    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    reload_adguard();
+    warmup_ipset();
+    sleep(2);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'stop':
+    shell_run('killall xray 2>/dev/null; rm -f /opt/var/run/xray.pid');
+    shell_run("$MANAGER cleanup_firewall 2>/dev/null");
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'restart':
+    shell_run('killall xray 2>/dev/null; sleep 1');
+    update_adguard_ipset();
+    $r = generate_xray_config();
+    if (isset($r['error'])) { echo json_encode($r); break; }
+    shell_run("$MANAGER firewall 2>/dev/null");
+    shell_run(': > /opt/var/log/xray/access.log');
+    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    reload_adguard();
+    warmup_ipset();
+    sleep(2);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'warmup_ipset':
+    warmup_ipset();
+    echo json_encode(['ok' => true, 'domains' => count(all_domains())]);
+    break;
+
+case 'keys': echo json_encode(json_read($KEYS_FILE)); break;
+
+case 'add_key':
+    $keys = json_read($KEYS_FILE);
+    $link = trim($_POST['link'] ?? '');
+    $name = trim($_POST['name'] ?? 'Key ' . (count($keys) + 1));
+    if (!$link) { echo json_encode(['error' => 'No link']); break; }
+    $type = 'unknown';
+    if (strpos($link, 'vless://') === 0) $type = 'vless';
+    elseif (strpos($link, 'ss://') === 0) $type = 'shadowsocks';
+    elseif (strpos($link, 'trojan://') === 0) $type = 'trojan';
+    $keys[] = ['id' => uniqid(), 'name' => $name, 'link' => $link, 'enabled' => true, 'type' => $type];
+    json_write($KEYS_FILE, $keys);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'delete_key':
+    $keys = json_read($KEYS_FILE);
+    $id = $_POST['id'] ?? '';
+    $keys = array_values(array_filter($keys, fn($k) => ($k['id'] ?? '') !== $id));
+    json_write($KEYS_FILE, $keys);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'toggle_key':
+    $keys = json_read($KEYS_FILE);
+    $id = $_POST['id'] ?? '';
+    foreach ($keys as &$k) { if (($k['id'] ?? '') === $id) $k['enabled'] = !$k['enabled']; }
+    json_write($KEYS_FILE, $keys);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'subscriptions': echo json_encode(json_read($SUBS_FILE)); break;
+
+case 'add_subscription':
+    $subs = json_read($SUBS_FILE);
+    $url = trim($_POST['url'] ?? '');
+    $name = trim($_POST['name'] ?? 'Sub ' . (count($subs) + 1));
+    if (!$url) { echo json_encode(['error' => 'No URL']); break; }
+    $subs[] = ['id' => uniqid(), 'name' => $name, 'url' => $url, 'enabled' => true, 'updated' => ''];
+    json_write($SUBS_FILE, $subs);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'delete_subscription':
+    $subs = json_read($SUBS_FILE);
+    $id = $_POST['id'] ?? '';
+    $subs = array_values(array_filter($subs, fn($s) => ($s['id'] ?? '') !== $id));
+    json_write($SUBS_FILE, $subs);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'update_subscriptions':
+    $subs = json_read($SUBS_FILE);
+    $all_servers = [];
+    foreach ($subs as &$sub) {
+        if (empty($sub['enabled']) || empty($sub['url'])) continue;
+        $links = fetch_subscription($sub['url']);
+        foreach ($links as $l) {
+            $l = trim($l);
+            $name = '';
+            if (preg_match('/#(.+)$/', $l, $nm)) $name = urldecode($nm[1]);
+            $all_servers[] = ['id' => md5($l), 'name' => $name ?: 'Server', 'link' => preg_replace('/#.*$/', '', $l), 'enabled' => true, 'sub' => $sub['id'] ?? ''];
+        }
+        $sub['updated'] = date('Y-m-d H:i:s');
+    }
+    json_write($SUBS_FILE, $subs);
+    json_write($CACHED_FILE, $all_servers);
+    echo json_encode(['ok' => true, 'count' => count($all_servers)]);
+    break;
+
+case 'subscription_servers': echo json_encode(json_read($CACHED_FILE)); break;
+
+case 'toggle_server':
+    $servers = json_read($CACHED_FILE);
+    $id = $_POST['id'] ?? '';
+    foreach ($servers as &$s) { if (($s['id'] ?? '') === $id) $s['enabled'] = !$s['enabled']; }
+    json_write($CACHED_FILE, $servers);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'select_server':
+    $id = $_POST['id'] ?? '';
+    $state = json_read($STATE_FILE);
+    $state['active_outbound'] = $id;
+    json_write($STATE_FILE, $state);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'domains':
+    $manual = lines_read($DOMAINS_FILE);
+    $lists = json_read($GITHUB_LISTS_FILE);
+    $v2flyDomains = [];
+    foreach ($lists as $l) {
+        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly') continue;
+        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
+        if (!file_exists($f)) continue;
+        $doms = array_filter(array_map('trim', file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($x) => $x !== '' && $x[0] !== '#');
+        foreach ($doms as $d) $v2flyDomains[$d] = $l['name'];
+    }
+    echo json_encode(['manual' => $manual, 'v2fly' => $v2flyDomains]);
+    break;
+
+case 'add_domains':
+    $domains = lines_read($DOMAINS_FILE);
+    $new = trim($_POST['domains'] ?? '');
+    if (!$new) { echo json_encode(['error' => 'No domains']); break; }
+    $newList = array_filter(array_map(fn($d) => strtolower(trim($d)), preg_split('/[\s,;\n]+/', $new)));
+    $domains = array_values(array_unique(array_merge($domains, $newList)));
+    lines_write($DOMAINS_FILE, $domains);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true, 'count' => count($domains)]);
+    break;
+
+case 'delete_domain':
+    $domains = lines_read($DOMAINS_FILE);
+    $d = trim($_POST['domain'] ?? '');
+    $domains = array_values(array_filter($domains, fn($x) => $x !== $d));
+    lines_write($DOMAINS_FILE, $domains);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'ips': echo json_encode(lines_read($IPS_FILE)); break;
+
+case 'add_ips':
+    $ips = lines_read($IPS_FILE);
+    $new = trim($_POST['ips'] ?? '');
+    if (!$new) { echo json_encode(['error' => 'No IPs']); break; }
+    $newList = array_filter(array_map('trim', preg_split('/[\s,;\n]+/', $new)));
+    $ips = array_values(array_unique(array_merge($ips, $newList)));
+    lines_write($IPS_FILE, $ips);
+    quick_apply();
+    echo json_encode(['ok' => true, 'count' => count($ips)]);
+    break;
+
+case 'delete_ip':
+    $ips = lines_read($IPS_FILE);
+    $ip = trim($_POST['ip'] ?? '');
+    $ips = array_values(array_filter($ips, fn($x) => $x !== $ip));
+    lines_write($IPS_FILE, $ips);
+    quick_apply();
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'devices':
+    $macs = lines_read($FULLVPN_FILE);
+    $all = keenetic_get_devices();
+    $devices = [];
+    foreach ($macs as $mac) {
+        $info = ['mac' => $mac, 'ip' => '', 'hostname' => ''];
+        foreach ($all as $d) {
+            if (strtoupper($d['mac']) === strtoupper($mac)) { $info['ip'] = $d['ip']; $info['hostname'] = $d['hostname']; break; }
+        }
+        $devices[] = $info;
+    }
+    echo json_encode($devices);
+    break;
+
+case 'add_device':
+    $macs = lines_read($FULLVPN_FILE);
+    $mac = strtoupper(trim($_POST['mac'] ?? ''));
+    if (!preg_match('/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/', $mac)) { echo json_encode(['error' => 'Invalid MAC']); break; }
+    if (!in_array($mac, $macs)) $macs[] = $mac;
+    lines_write($FULLVPN_FILE, $macs);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'delete_device':
+    $macs = lines_read($FULLVPN_FILE);
+    $mac = strtoupper(trim($_POST['mac'] ?? ''));
+    $macs = array_values(array_filter($macs, fn($m) => strtoupper($m) !== $mac));
+    lines_write($FULLVPN_FILE, $macs);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'lan_devices': echo json_encode(keenetic_get_devices()); break;
+
+case 'github_lists': echo json_encode(json_read($GITHUB_LISTS_FILE)); break;
+
+case 'add_github_list':
+    $lists = json_read($GITHUB_LISTS_FILE);
+    $url = trim($_POST['url'] ?? '');
+    $name = trim($_POST['name'] ?? '');
+    if (!$url) { echo json_encode(['error' => 'No URL']); break; }
+    if (!$name) $name = basename(parse_url($url, PHP_URL_PATH));
+    $id = md5($url);
+    foreach ($lists as $l) { if (($l['id'] ?? '') === $id) { echo json_encode(['error' => 'Already exists']); break 2; } }
+    $lists[] = ['id' => $id, 'name' => $name, 'url' => $url, 'enabled' => true, 'count' => 0, 'updated' => ''];
+    json_write($GITHUB_LISTS_FILE, $lists);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'delete_github_list':
+    $lists = json_read($GITHUB_LISTS_FILE);
+    $id = $_POST['id'] ?? '';
+    // Remove v2fly list file if exists
+    foreach ($lists as $l) {
+        if (($l['id'] ?? '') === $id && ($l['source'] ?? '') === 'v2fly' && !empty($l['name'])) {
+            @unlink("$V2FLY_LISTS_DIR/{$l['name']}.txt");
+        }
+    }
+    $lists = array_values(array_filter($lists, fn($l) => ($l['id'] ?? '') !== $id));
+    json_write($GITHUB_LISTS_FILE, $lists);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'toggle_github_list':
+    $lists = json_read($GITHUB_LISTS_FILE);
+    $id = $_POST['id'] ?? '';
+    foreach ($lists as &$l) { if (($l['id'] ?? '') === $id) $l['enabled'] = !$l['enabled']; }
+    json_write($GITHUB_LISTS_FILE, $lists);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'update_github_lists':
+    $lists = json_read($GITHUB_LISTS_FILE);
+    $domains = lines_read($DOMAINS_FILE);
+    $total_new = 0;
+    foreach ($lists as &$list) {
+        if (empty($list['enabled']) || empty($list['url'])) continue;
+        $fetched = fetch_github_domains($list['url']);
+        $list['count'] = count($fetched);
+        $list['updated'] = date('Y-m-d H:i:s');
+        foreach ($fetched as $d) {
+            if (!in_array($d, $domains)) { $domains[] = $d; $total_new++; }
+        }
+    }
+    json_write($GITHUB_LISTS_FILE, $lists);
+    $domains = array_values(array_unique($domains));
+    lines_write($DOMAINS_FILE, $domains);
+    update_adguard_ipset();
+    echo json_encode(['ok' => true, 'new_domains' => $total_new, 'total' => count($domains)]);
+    break;
+
+case 'v2fly_search':
+    $q = strtolower(trim($_GET['q'] ?? ''));
+    if (strlen($q) < 1) { echo json_encode(['results' => []]); break; }
+    // Aliases: single-letter or short queries map to full service names
+    $aliases = [
+        'x' => 'twitter', 'tw' => 'twitter', 'twt' => 'twitter',
+        'g' => 'google', 'yt' => 'youtube', 'fb' => 'facebook',
+        'ig' => 'instagram', 'tt' => 'tiktok', 'tg' => 'telegram',
+        'wh' => 'whatsapp', 'ds' => 'discord', 'gh' => 'github',
+        'nb' => 'notion', 'nt' => 'netflix', 'sp' => 'spotify',
+        'st' => 'steam', 'tv' => 'twitch', 'rd' => 'reddit',
+        'li' => 'linkedin', 'am' => 'amazon', 'op' => 'openai',
+        'an' => 'anthropic', 'cl' => 'claude', 'th' => 'threads',
+    ];
+    $catalog = [];
+    if (file_exists($CATALOG_FILE)) {
+        $catalog = json_decode(file_get_contents($CATALOG_FILE), true) ?: [];
+    }
+    if (empty($catalog) && file_exists($SS_DOWNLOADER)) {
+        shell_run(escapeshellcmd($SS_DOWNLOADER) . ' -catalog ' . escapeshellarg($CATALOG_FILE));
+        $catalog = json_decode(file_get_contents($CATALOG_FILE), true) ?: [];
+    }
+    if (empty($catalog)) {
+        $catalog = ['openai','anthropic','google','youtube','facebook','instagram',
+            'twitter','whatsapp','telegram','discord','github','notion','tiktok',
+            'netflix','spotify','steam','twitch','reddit','linkedin','amazon'];
+    }
+    // Resolve aliases: if query matches an alias, use the target name
+    $resolved = $q;
+    if (isset($aliases[$q])) $resolved = $aliases[$q];
+    // Also add alias as a search result if it maps to a real catalog entry
+    $results = array_values(array_filter($catalog, fn($n) => strpos($n, $resolved) !== false));
+    // If alias resolved to something, also include the alias itself as a clickable result
+    if ($resolved !== $q && in_array($resolved, $catalog) && !in_array($q, $results)) {
+        array_unshift($results, $q);
+    }
+    $added = array_column(json_read($GITHUB_LISTS_FILE), 'name');
+    echo json_encode(['results' => array_slice($results, 0, 30), 'added' => $added]);
+    break;
+
+case 'v2fly_add':
+    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '', trim($_POST['name'] ?? ''));
+    if (!$name) { echo json_encode(['error' => 'No name']); break; }
+    if (!file_exists($SS_DOWNLOADER)) { echo json_encode(['error' => 'ss-downloader not found']); break; }
+    @mkdir($V2FLY_LISTS_DIR, 0755, true);
+    $out = shell_run(escapeshellcmd($SS_DOWNLOADER) . ' -list ' . escapeshellarg($name) . ' ' . escapeshellarg($V2FLY_LISTS_DIR));
+    $listFile = "$V2FLY_LISTS_DIR/$name.txt";
+    if (!file_exists($listFile)) { echo json_encode(['error' => 'Download failed: ' . $out]); break; }
+    $newDomains = array_filter(array_map('trim', file($listFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($l) => $l !== '' && $l[0] !== '#');
+    // v2fly domains stay in their own list file, NOT in domains.txt
+    $lists = json_read($GITHUB_LISTS_FILE);
+    $exists = false;
+    foreach ($lists as &$el) { if (($el['name'] ?? '') === $name) { $el['count'] = count($newDomains); $el['updated'] = date('Y-m-d H:i:s'); $el['enabled'] = true; $exists = true; } }
+    if (!$exists) $lists[] = ['id' => md5($name), 'name' => $name, 'url' => '', 'enabled' => true, 'count' => count($newDomains), 'updated' => date('Y-m-d H:i:s'), 'source' => 'v2fly'];
+    json_write($GITHUB_LISTS_FILE, $lists);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true, 'name' => $name, 'count' => count($newDomains)]);
+    break;
+
+case 'v2fly_refresh':
+    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '', trim($_POST['name'] ?? ''));
+    if (!$name || !file_exists($SS_DOWNLOADER)) { echo json_encode(['error' => 'Invalid']); break; }
+    shell_run(escapeshellcmd($SS_DOWNLOADER) . ' -list ' . escapeshellarg($name) . ' ' . escapeshellarg($V2FLY_LISTS_DIR));
+    $listFile = "$V2FLY_LISTS_DIR/$name.txt";
+    if (!file_exists($listFile)) { echo json_encode(['error' => 'Refresh failed']); break; }
+    $newDomains = array_filter(array_map('trim', file($listFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($l) => $l !== '' && $l[0] !== '#');
+    $lists = json_read($GITHUB_LISTS_FILE);
+    foreach ($lists as &$l) { if (($l['name'] ?? '') === $name) { $l['count'] = count($newDomains); $l['updated'] = date('Y-m-d H:i:s'); } }
+    json_write($GITHUB_LISTS_FILE, $lists);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true, 'count' => count($newDomains)]);
+    break;
+
+case 'wg_peers': echo json_encode(wg_list_peers()); break;
+
+case 'wg_add_peer':
+    $name = trim($_POST['name'] ?? '');
+    if (!$name) { echo json_encode(['error' => 'No name']); break; }
+    echo json_encode(wg_add_peer($name));
+    break;
+
+case 'wg_delete_peer':
+    $name = trim($_POST['name'] ?? '');
+    if (!$name) { echo json_encode(['error' => 'No name']); break; }
+    echo json_encode(wg_delete_peer($name));
+    break;
+
+case 'wg_get_config':
+    $name = trim($_GET['name'] ?? '');
+    if (!$name) { echo json_encode(['error' => 'No name']); break; }
+    echo json_encode(wg_get_client_config($name));
+    break;
+
+case 'wg_qrcode':
+    $name = trim($_GET['name'] ?? '');
+    if (!$name) { echo json_encode(['error' => 'No name']); break; }
+    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
+    $conf_file = "$WG_DIR/$name.conf";
+    if (!file_exists($conf_file)) { echo json_encode(['error' => 'Not found']); break; }
+    $qr = shell_run("/opt/bin/qrencode -t UTF8 < " . escapeshellarg($conf_file));
+    echo json_encode(['ok' => true, 'qr' => $qr, 'name' => $name]);
+    break;
+
+case 'wg_restart':
+    shell_run('/opt/etc/init.d/S99wireguard restart 2>/dev/null');
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'logs':
+    $type = $_GET['type'] ?? 'error';
+    $lines = min((int)($_GET['lines'] ?? 50), 500);
+    $file = $type === 'access' ? $LOG_ACCESS : $LOG_ERROR;
+    if (!file_exists($file)) { echo json_encode([]); break; }
+    $content = shell_run("tail -n " . escapeshellarg($lines) . " " . escapeshellarg($file));
+    echo json_encode(explode("\n", $content));
+    break;
+
+case 'clear_logs':
+    @file_put_contents($LOG_ACCESS, '');
+    @file_put_contents($LOG_ERROR, '');
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'raw_config': echo file_get_contents($XRAY_CONF) ?: '{}'; break;
+
+case 'test_connection':
+    $real_ip = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');
+    $proxy_ip = shell_run('/opt/bin/curl -s --max-time 10 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null');
+    $pid = shell_run('cat /opt/var/run/xray.pid 2>/dev/null');
+    $running = $pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0';
+    $domains = lines_read($DOMAINS_FILE);
+    $test_domain = '';
+    foreach (['github.com','google.com','anthropic.com'] as $td) {
+        if (in_array($td, $domains)) { $test_domain = $td; break; }
+    }
+    $vpn_route_ok = false;
+    if ($test_domain) {
+        $code = shell_run('/opt/bin/curl -s -o /dev/null -w "%{http_code}" --max-time 8 --socks5-hostname 127.0.0.1:1081 https://' . escapeshellarg($test_domain) . ' 2>/dev/null');
+        $vpn_route_ok = $code && $code !== '000';
+    }
+    echo json_encode([
+        'real_ip' => $real_ip, 'proxy_ip' => $proxy_ip,
+        'running' => $running, 'vpn_route_ok' => $vpn_route_ok,
+        'test_domain' => $test_domain,
+        'selective' => $proxy_ip === $real_ip,
+        'ok' => $running && ($vpn_route_ok || !empty($proxy_ip))
+    ]);
+    break;
+
+default:
+    echo json_encode(['error' => 'Unknown action']);
+}

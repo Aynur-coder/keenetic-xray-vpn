@@ -1,0 +1,11 @@
+#!/bin/sh
+ENABLED=yes
+DESC="Xray VPN"
+PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+case "$1" in
+    start) /opt/etc/xray/xray-manager.sh start ;;
+    stop) /opt/etc/xray/xray-manager.sh stop ;;
+    restart) /opt/etc/xray/xray-manager.sh restart ;;
+    *) echo "Usage: $0 {start|stop|restart}" ;;
+esac
