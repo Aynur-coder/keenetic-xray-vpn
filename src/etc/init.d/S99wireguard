@@ -1,10 +1,52 @@
 #!/opt/bin/sh
+# WireGuard interface manager for keenetic-xray-vpn.
+# Reads /opt/etc/xray/features.json; if wireguard=false, does nothing on start.
+# Iptables rules are owned by /opt/etc/ndm/netfilter.d/100-wireguard.sh.
 
-# WireGuard interface only (iptables handled by netfilter.d)
-ip link add dev wg0 type wireguard 2>/dev/null || true
-wg setconf wg0 /opt/etc/wireguard/wg0.conf
-ip addr add 10.50.0.1/24 dev wg0 2>/dev/null || true
-ip link set wg0 mtu 1280
-ip link set wg0 up
+FEATURES="/opt/etc/xray/features.json"
+WG_CONF="/opt/etc/wireguard/wg0.conf"
+WG_IP="10.50.0.1/24"
+WG_MTU=1280
 
-echo "WireGuard started"
+wg_enabled() {
+    [ -f "$FEATURES" ] || { echo 1; return; }
+    grep -q '"wireguard"[[:space:]]*:[[:space:]]*false' "$FEATURES" 2>/dev/null && echo 0 || echo 1
+}
+
+wg_start() {
+    if [ "$(wg_enabled)" = "0" ]; then
+        echo "WireGuard disabled in features.json — skipping"
+        return 0
+    fi
+    if [ ! -f "$WG_CONF" ]; then
+        echo "No $WG_CONF — skipping"
+        return 0
+    fi
+    ip link add dev wg0 type wireguard 2>/dev/null || true
+    wg setconf wg0 "$WG_CONF"
+    ip addr add "$WG_IP" dev wg0 2>/dev/null || true
+    ip link set wg0 mtu "$WG_MTU"
+    ip link set wg0 up
+    echo "WireGuard started"
+}
+
+wg_stop() {
+    ip link set wg0 down 2>/dev/null || true
+    ip link delete wg0 2>/dev/null || true
+    echo "WireGuard stopped"
+}
+
+case "${1:-start}" in
+    start)   wg_start ;;
+    stop)    wg_stop ;;
+    restart) wg_stop; sleep 1; wg_start ;;
+    status)
+        if ip link show wg0 >/dev/null 2>&1; then
+            echo "wg0 is up"
+            wg show wg0 2>/dev/null | head -1
+        else
+            echo "wg0 is down"
+        fi
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

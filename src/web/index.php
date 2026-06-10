@@ -21,6 +21,21 @@
   --shadow: 0 4px 24px rgba(0,0,0,.4);
   --radius: 12px;
 }
+:root[data-theme="light"] {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --card2: #f0f2f8;
+  --border: #e1e5ee;
+  --accent: #4f46e5;
+  --accent2: #6366f1;
+  --green: #059669;
+  --red: #dc2626;
+  --orange: #d97706;
+  --cyan: #0891b2;
+  --text: #1e293b;
+  --text2: #64748b;
+  --shadow: 0 4px 24px rgba(15,23,42,.08);
+}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,'SF Pro Display','Inter','Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 .app{max-width:1120px;margin:0 auto;padding:20px}
@@ -192,6 +207,19 @@ textarea{resize:vertical;min-height:80px;width:100%}
 @keyframes updateProgressIndet{0%{margin-left:-30%}100%{margin-left:100%}}
 .update-progress-msg{font-size:13px;color:var(--text)}
 .update-log{margin-top:12px;font-family:monospace;font-size:11px;color:var(--text2);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:140px;overflow-y:auto;white-space:pre-wrap}
+
+/* ============ Settings modal ============ */
+.settings-card{max-width:560px;max-height:90vh;overflow-y:auto}
+.settings-section{margin-bottom:24px}
+.settings-section h3{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text2);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);font-weight:700}
+.settings-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
+.settings-row:last-child{border-bottom:none}
+.settings-row .label{font-weight:600;font-size:14px}
+.settings-row .desc{font-size:12px;color:var(--text2);margin-top:2px}
+.settings-row .meta{font-size:11px;color:var(--text2);font-family:monospace}
+.settings-row .actions{display:flex;gap:6px;flex-shrink:0}
+.danger-zone{border:1px solid var(--red);border-radius:10px;padding:14px;background:rgba(239,68,68,.05);margin-top:12px}
+.danger-zone h3{color:var(--red);border:none}
 </style>
 </head>
 <body>
@@ -326,6 +354,111 @@ textarea{resize:vertical;min-height:80px;width:100%}
   </div>
 </div>
 
+<!-- ============ SETTINGS MODAL ============ -->
+<div class="overlay" id="settingsOverlay" role="dialog" aria-modal="true">
+  <div class="overlay-card settings-card">
+    <h2>⚙️ Настройки</h2>
+
+    <div class="settings-section">
+      <h3>Общие</h3>
+      <div class="settings-row">
+        <div>
+          <div class="label">Версия</div>
+          <div class="meta" id="setVersion">—</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-ghost btn-sm" onclick="closeSettings();openUpdate()">Проверить обновления</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="label">Автообновление</div>
+          <div class="desc">Cron проверяет GitHub раз в день в 04:30 и ставит свежую версию.</div>
+        </div>
+        <div class="tog" id="togAutoUpdate"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Функции</h3>
+      <div class="settings-row">
+        <div>
+          <div class="label">WireGuard</div>
+          <div class="desc">Сервер для VPN-клиентов (телефон, ноутбук). 10.50.0.0/24.</div>
+        </div>
+        <div class="tog" id="togWireguard"></div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="label">AdGuard Home</div>
+          <div class="desc">DNS-маршрутизация: какие домены идут через VPN.</div>
+        </div>
+        <div class="tog" id="togAdguard"></div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="label">Тема</div>
+          <div class="desc">Тёмная, светлая или авто (по системе).</div>
+        </div>
+        <div class="actions">
+          <select id="themeSelect" style="font-size:13px">
+            <option value="auto">Авто</option>
+            <option value="dark">Тёмная</option>
+            <option value="light">Светлая</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Безопасность</h3>
+      <div class="settings-row">
+        <div>
+          <div class="label">Пароль веб-интерфейса</div>
+          <div class="desc">Используется при удалённом доступе. Локалка без пароля.</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-ghost btn-sm" onclick="changeUiPassword()">Сменить</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="label">Пароль admin Keenetic</div>
+          <div class="desc" id="setKnPassStatus">—</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-ghost btn-sm" onclick="resetKnPassword()">Перезаписать</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Опасная зона</h3>
+      <div class="danger-zone">
+        <div class="settings-row">
+          <div>
+            <div class="label">Откатить обновление</div>
+            <div class="desc">Восстановить предыдущую версию из последнего бэкапа.</div>
+          </div>
+          <button class="btn btn-warn btn-sm" onclick="rollbackUpdate()">Откатить</button>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="label">Перезапустить мастер</div>
+            <div class="desc">Удалит метку .onboarded — снова покажет 5 шагов настройки.</div>
+          </div>
+          <button class="btn btn-warn btn-sm" onclick="restartWizard()">Запустить мастер</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn btn-ghost" onclick="closeSettings()">Закрыть</button>
+      <button class="btn btn-danger btn-sm" onclick="doLogout()" id="btnLogoutSettings" hidden>Выйти</button>
+    </div>
+  </div>
+</div>
+
 <div class="app">
 
 <div class="header">
@@ -337,6 +470,9 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <button class="btn btn-ghost btn-icon" id="btnUpdate" onclick="openUpdate()" title="Обновления" aria-label="Обновления">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
       <span class="update-badge" id="updateBadge" hidden></span>
+    </button>
+    <button class="btn btn-ghost btn-icon" onclick="openSettings()" title="Настройки" aria-label="Настройки">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
     <button class="btn btn-success" onclick="doAction('restart')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -380,7 +516,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
   <button class="tab" data-tab="ips"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg> IP-адреса</button>
   <button class="tab" data-tab="github"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Списки v2fly</button>
   <button class="tab" data-tab="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg> Устройства</button>
-  <button class="tab" data-tab="wireguard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> WireGuard</button>
+  <button class="tab" data-tab="wireguard" data-feature="wireguard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> WireGuard</button>
   <button class="tab" data-tab="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> Логи</button>
 </div>
 
@@ -1138,13 +1274,149 @@ async function _backgroundUpdateCheck(){
   try{ localStorage.setItem('xrayvpn:update:check', JSON.stringify({r, ts:Date.now()})); }catch(e){}
 }
 
+// ============ SETTINGS ============
+let _features={wireguard:true, adguard:true, auto_update:false, theme:'auto'};
+
+function _applyTog(el, on){ el.classList.toggle('on', !!on); }
+
+async function loadSettings(){
+  const s=await api('status','');
+  $('#setVersion').textContent='v'+(s.version||'dev');
+  const ob=await api('get_onboarding_status','');
+  $('#setKnPassStatus').textContent = ob.kn_pass_set ? 'Установлен' : 'Не задан';
+
+  _features = s.features || _features;
+  _applyTog($('#togWireguard'), _features.wireguard);
+  _applyTog($('#togAdguard'), _features.adguard);
+  _applyTog($('#togAutoUpdate'), _features.auto_update);
+  $('#themeSelect').value = _features.theme || 'auto';
+
+  $('#btnLogoutSettings').hidden = !!s.local;
+}
+
+function openSettings(){
+  $('#settingsOverlay').classList.add('show');
+  loadSettings();
+}
+function closeSettings(){ $('#settingsOverlay').classList.remove('show'); }
+
+async function _setFeature(key, val){
+  const r=await api('set_features', {[key]: val ? '1' : '0'});
+  if(r && !r.error) _features = r;
+  return r;
+}
+
+// Wire toggles (set after DOM)
+function _wireSettings(){
+  $('#togWireguard').addEventListener('click', async ()=>{
+    const cur=$('#togWireguard').classList.contains('on');
+    _applyTog($('#togWireguard'), !cur);
+    await _setFeature('wireguard', !cur);
+    applyFeatureVisibility();
+    toast(cur ? 'WireGuard выключен' : 'WireGuard включён');
+  });
+  $('#togAdguard').addEventListener('click', async ()=>{
+    const cur=$('#togAdguard').classList.contains('on');
+    _applyTog($('#togAdguard'), !cur);
+    await _setFeature('adguard', !cur);
+    toast(cur ? 'AdGuard отключён' : 'AdGuard включён');
+  });
+  $('#togAutoUpdate').addEventListener('click', async ()=>{
+    const cur=$('#togAutoUpdate').classList.contains('on');
+    _applyTog($('#togAutoUpdate'), !cur);
+    await _setFeature('auto_update', !cur);
+    toast(cur ? 'Автообновление выключено' : 'Автообновление включено');
+  });
+  $('#themeSelect').addEventListener('change', async (e)=>{
+    const t=e.target.value;
+    document.documentElement.dataset.theme = t;
+    _features.theme = t;
+    await api('set_features', {theme: t});
+    try{ localStorage.setItem('xrayvpn:theme', t); }catch(e){}
+    toast('Тема: '+(t==='auto'?'авто':t==='dark'?'тёмная':'светлая'));
+  });
+}
+
+async function changeUiPassword(){
+  const p=prompt('Новый пароль (минимум 4 символа):');
+  if(p===null) return;
+  if(p.length<4){ toast('Минимум 4 символа', true); return; }
+  const p2=prompt('Повтори пароль:');
+  if(p!==p2){ toast('Пароли не совпадают', true); return; }
+  const r=await api('set_ui_password', {password:p});
+  if(r.error){ toast('Ошибка: '+r.error, true); return; }
+  toast('Пароль обновлён');
+}
+
+async function resetKnPassword(){
+  const p=prompt('Новый пароль admin Keenetic (тот же, что на http://192.168.1.1):');
+  if(p===null) return;
+  if(!p){ toast('Пустой пароль', true); return; }
+  const t=await api('test_kn_password', {password:p});
+  if(!t.ok){ toast('Пароль не подходит — проверь', true); return; }
+  await api('set_kn_password', {password:p});
+  toast('Пароль сохранён ('+t.count+' устройств)');
+  loadSettings();
+}
+
+async function rollbackUpdate(){
+  if(!confirm('Откатить на предыдущую версию? Сервисы перезапустятся.')) return;
+  const r=await api('rollback_update', {});
+  if(r.error){ toast('Ошибка: '+r.error, true); return; }
+  closeSettings();
+  openUpdate();
+  $('#updateBody').hidden=true;
+  $('#updateProgress').hidden=false;
+  $('#updateProgressMsg').textContent='Откатываю...';
+  _updatePollHandle=setInterval(pollUpdateStatus, 2000);
+}
+
+async function restartWizard(){
+  if(!confirm('Удалить отметку завершения мастера и снова показать 5 шагов настройки?')) return;
+  await api('reset_onboarding', {});
+  closeSettings();
+  location.reload();
+}
+
+async function doLogout(){
+  await api('logout', {});
+  location.reload();
+}
+
+// Theme: load from localStorage and apply early in init
+function applyTheme(t){
+  if(t==='auto'){
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    document.documentElement.dataset.theme = mq.matches ? 'light' : 'dark';
+  } else {
+    document.documentElement.dataset.theme = t;
+  }
+}
+
+function applyFeatureVisibility(){
+  // Hide WG tab when feature disabled
+  document.querySelectorAll('[data-feature]').forEach(el=>{
+    const feat = el.dataset.feature;
+    const enabled = _features[feat];
+    el.hidden = !enabled;
+  });
+}
+
 // ============ INIT ============
 async function init(){
+  // Theme early
+  let t='auto';
+  try{ t = localStorage.getItem('xrayvpn:theme') || 'auto'; }catch(e){}
+  applyTheme(t);
+
   const s=await api('status','');
   if(s.error==='auth_required' || (s.authenticated===false && s.local===false)){
     showLogin();
     return;
   }
+  _features = s.features || _features;
+  applyFeatureVisibility();
+
   if(s.onboarded===false){
     showWizard();
     return;
@@ -1152,6 +1424,7 @@ async function init(){
   // Normal startup
   loadStatus(); loadServers();
   setInterval(loadStatus, 30000);
+  _wireSettings();
   _backgroundUpdateCheck();
 }
 init();
