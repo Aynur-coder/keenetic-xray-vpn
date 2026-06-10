@@ -822,7 +822,7 @@ function toggleService(){
   doAction(st.includes('Работает')?'stop':'start');
 }
 
-// Status
+// Status — fast path: no IP checks
 async function loadStatus(){
   const s=await api('status','');
   if(s.error)return;
@@ -836,14 +836,34 @@ async function loadStatus(){
     $('#btnToggleText').textContent='Старт';$('#btnToggle').className='btn btn-success';
     $('#liveDot').className='live-dot off';
   }
-  $('#stVpnIp').textContent=s.external_ip||'—';
-  $('#stVpnIp').className='stat-value '+(s.external_ip?'green':'red');
-  $('#stRealIp').textContent=s.real_ip||'—';
-  $('#stRealIp').className='stat-value';
   $('#stMem').textContent=s.mem_used&&s.mem_total?`${s.mem_used}/${s.mem_total} MB`:'—';
   $('#stMem').className='stat-value';
   $('#stWg').textContent=s.wg_up?'Активен':'Выкл';
   $('#stWg').className='stat-value '+(s.wg_up?'green':'red');
+
+  // IPs are slow (curl through VPN) — start async, don't block
+  _loadIPs();
+}
+
+// IP check — async, called from loadStatus and periodically
+let _ipsLoading=false;
+async function _loadIPs(){
+  if(_ipsLoading)return;
+  _ipsLoading=true;
+  // Show "проверка..." while waiting, but don't show skeleton
+  const vpnEl=$('#stVpnIp'), realEl=$('#stRealIp');
+  if(vpnEl.className.includes('loading')){ vpnEl.textContent='…'; vpnEl.className='stat-value'; }
+  if(realEl.className.includes('loading')){ realEl.textContent='…'; realEl.className='stat-value'; }
+  try{
+    const r=await api('check_ips','');
+    vpnEl.textContent=r.vpn_ip||'—';
+    vpnEl.className='stat-value '+(r.vpn_ip?'green':'red');
+    realEl.textContent=r.real_ip||'—';
+    realEl.className='stat-value';
+  }catch(e){
+    vpnEl.textContent='—';vpnEl.className='stat-value red';
+    realEl.textContent='—';realEl.className='stat-value';
+  }finally{_ipsLoading=false;}
 }
 
 // Tabs

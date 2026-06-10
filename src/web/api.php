@@ -752,7 +752,7 @@ $action = $_GET['action'] ?? $_POST['action'] ?? '';
 $PUBLIC_READ_ACTIONS = [
     'status', 'login', 'logout', 'auth_status',
     'get_onboarding_status', 'get_features', 'get_version',
-    'check_update', 'status_update',
+    'check_update', 'status_update', 'check_ips',
     'keys', 'subscriptions', 'subscription_servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search',
@@ -772,14 +772,13 @@ case 'status':
     $mp = explode(' ', $mem);
     $wg_up = shell_run("/opt/bin/wg show wg0 2>/dev/null | head -1") !== '';
     $features = get_features();
+    // IP checks are intentionally excluded — fetched separately via check_ips to keep this fast.
     echo json_encode([
         'running' => $running, 'pid' => $pid,
         'active_outbound' => $state['active_outbound'] ?? '',
         'mode' => $state['mode'] ?? 'selective',
         'mem_total' => (int)(($mp[0] ?? 0) / 1024), 'mem_used' => (int)(($mp[1] ?? 0) / 1024),
         'uptime' => shell_run('uptime'),
-        'external_ip' => shell_run('/opt/bin/curl -s --max-time 5 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null'),
-        'real_ip' => shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null'),
         'wg_up' => $wg_up,
         'onboarded' => file_exists($ONBOARDED_FILE),
         'authenticated' => is_authenticated(),
@@ -1319,6 +1318,18 @@ case 'set_features':
 case 'get_version':
     echo json_encode([
         'installed' => get_installed_version(),
+    ]);
+    break;
+
+case 'check_ips':
+    // Slow endpoint — separated from status() so the main status bar loads instantly.
+    $vpn_ip  = shell_run('/opt/bin/curl -s --max-time 7 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null');
+    $real_ip = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');
+    // Basic sanity: must look like an IPv4 address
+    $ip_re = '/^\d{1,3}(\.\d{1,3}){3}$/';
+    echo json_encode([
+        'vpn_ip'  => preg_match($ip_re, trim($vpn_ip))  ? trim($vpn_ip)  : null,
+        'real_ip' => preg_match($ip_re, trim($real_ip)) ? trim($real_ip) : null,
     ]);
     break;
 
