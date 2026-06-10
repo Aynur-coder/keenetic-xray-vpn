@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-06-11
+### Fixed
+- `install.sh` crashed with `sh: php: not found` on routers where PHP is not yet installed (chicken-and-egg: PHP is one of the packages being installed, but `mf_get` needed PHP to parse the manifest). Added `bootstrap_php()` that runs before `download_manifest()` — it tries `php8`, `php8-cli`, `php` via opkg and exits cleanly as soon as one installs. PHP is a required dependency anyway; this just ensures it's available before the manifest is read. The direct `php -r` call for reading `features.json` in `restart_services` was replaced with a plain `grep` that needs no interpreter.
+
 ## [0.11.1] - 2026-06-11
 ### Fixed
 - `install.sh` crashed immediately on fresh install with `sh: REL_BASE: parameter not set`. The variable was only assigned inside the `--repo` CLI flag handler but not at the global level — so every install without `--repo` died before downloading the manifest.

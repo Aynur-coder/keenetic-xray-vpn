@@ -131,11 +131,27 @@ is_pkg_installed() {
     opkg list-installed 2>/dev/null | awk '{print $1}' | grep -qx "$1"
 }
 
-# Parse a key like .version or .files[].src from manifest.json via php
+# Parse manifest.json — requires php (installed by bootstrap_php before first call).
+# Usage: mf_get <manifest.json> '<php-style expression>'
 mf_get() {
-    # mf_get <staging-manifest> <php-expr returning string/JSON>
     _mf="$1"; _expr="$2"
     php -r "\$m=json_decode(file_get_contents('$_mf'),true); $_expr"
+}
+
+# Install PHP early so mf_get works before the full package list is applied.
+# PHP is a required dependency anyway — we just need it before manifest parsing.
+bootstrap_php() {
+    command -v php >/dev/null 2>&1 && return 0
+    step "Bootstrap PHP (needed for manifest parsing)"
+    opkg update >/dev/null 2>&1 || warn "opkg update had errors"
+    # Try package names used in different Entware builds
+    for _p in php8 php8-cli php; do
+        if opkg install "$_p" >/dev/null 2>&1 && command -v php >/dev/null 2>&1; then
+            info "PHP installed: $(php --version 2>/dev/null | head -1 | cut -d' ' -f1-2)"
+            return 0
+        fi
+    done
+    die "Could not install PHP. Run manually: opkg install php8"
 }
 
 # Compare semver A B: print 'newer' / 'same' / 'older' (A relative to B)
@@ -667,7 +683,7 @@ restart_services() {
     fi
 
     # WireGuard only if enabled in features.json
-    _wg_enabled="$(php -r '$f=json_decode(@file_get_contents("/opt/etc/xray/features.json"),true);echo (isset($f["wireguard"]) && $f["wireguard"]) ? "1" : "0";' 2>/dev/null)"
+    _wg_enabled="$(grep -q '"wireguard"[[:space:]]*:[[:space:]]*false' /opt/etc/xray/features.json 2>/dev/null && echo 0 || echo 1)"
     if [ "$_wg_enabled" = "1" ] && [ -x /opt/etc/init.d/S99wireguard ]; then
         /opt/etc/init.d/S99wireguard restart >/dev/null 2>&1 \
             || /opt/etc/init.d/S99wireguard start >/dev/null 2>&1 \
@@ -719,6 +735,7 @@ main() {
 
     preflight
     check_entware
+    bootstrap_php       # must run before download_manifest (mf_get needs php)
 
     # Remember old version (for migrations + skip-same)
     OLD_VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo "0.0.0")"
