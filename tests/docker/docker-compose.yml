@@ -1,0 +1,18 @@
+services:
+  keenetic-mock:
+    build: .
+    container_name: keenetic-xray-vpn-mock
+    ports:
+      - "9191:91"
+    privileged: true   # iptables/ipset need it; safe locally
+    tmpfs:
+      - /opt/tmp
+    volumes:
+      - ../../:/repo:ro
+    command: >
+      sh -c "
+        lighttpd -f /opt/etc/lighttpd/lighttpd.conf &
+        echo '=== mock router ready. UI: http://localhost:9191 ==='
+        echo '=== to run installer: docker exec -it keenetic-xray-vpn-mock sh /repo/install.sh --repo Aynur-coder/keenetic-xray-vpn ==='
+        tail -f /opt/var/log/lighttpd-error.log
+      "

@@ -1,0 +1,5 @@
+#!/bin/sh
+case "${1:-}" in
+    start|restart) crond -b -L /opt/var/log/cron.log 2>/dev/null || true ;;
+    stop) pkill -x crond 2>/dev/null || true ;;
+esac

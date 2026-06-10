@@ -1,0 +1,19 @@
+#!/bin/sh
+# Mock xray binary — accepts the same flags as the real one in install.sh.
+case "${1:-}" in
+    -version|--version|version)
+        echo "Xray v0.0.0-fake (linux/amd64)"
+        ;;
+    -test|--test|test)
+        # Pretend the config is valid as long as -config points somewhere
+        case "${2:-}" in
+            -config|--config) shift 2; [ -f "$1" ] && echo "Configuration OK." && exit 0 ;;
+        esac
+        echo "Configuration OK."
+        ;;
+    *)
+        # Pretend to run; sleep so the pid file is meaningful
+        echo "$$" > /opt/var/run/xray.pid
+        exec sleep 1d
+        ;;
+esac

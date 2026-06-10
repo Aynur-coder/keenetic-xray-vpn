@@ -1,0 +1,32 @@
+#!/bin/sh
+# Minimal ndmc shim: returns canned text for the commands install.sh uses.
+
+case "$2" in
+    "show version"|"show version raw")
+        cat <<EOF
+                  release: 5.0.11
+                   sandbox: stable
+                     title: Keenetic OS
+              build_arch  : mips
+                    device: Keenetic Hopper (fake)
+                     hw_id: KN-3810-fake
+EOF
+        ;;
+    "show interface"*)
+        echo "  Home (br0): up"
+        ;;
+    "show ip hotspot")
+        cat <<'EOF'
+{
+  "host": [
+    {"ip":"192.168.1.100","mac":"aa:bb:cc:00:00:01","name":"Phone","active":true},
+    {"ip":"192.168.1.101","mac":"aa:bb:cc:00:00:02","name":"Laptop","active":true}
+  ]
+}
+EOF
+        ;;
+    *)
+        echo "fake-ndmc: unknown command: $*" >&2
+        exit 0
+        ;;
+esac

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Minimal opkg shim: pretends to install/list packages so install.sh is happy.
+PKG_DB="/opt/etc/.opkg-installed"
+mkdir -p "$(dirname "$PKG_DB")"
+touch "$PKG_DB"
+
+case "${1:-}" in
+    update)
+        echo "Updated list of available packages."
+        exit 0
+        ;;
+    install)
+        shift
+        for p in "$@"; do
+            grep -qx "$p" "$PKG_DB" && continue
+            echo " Installing $p (1.0.0)"
+            echo "$p" >> "$PKG_DB"
+        done
+        ;;
+    list-installed)
+        # Required format: "<name> - <version>"
+        awk '{print $0 " - 1.0.0-fake"}' "$PKG_DB"
+        ;;
+    --version|-v)
+        echo "opkg v1.0-fake (Entware mock)"
+        ;;
+    *)
+        echo "fake-opkg: unsupported subcommand: ${1:-}" >&2
+        exit 0
+        ;;
+esac
