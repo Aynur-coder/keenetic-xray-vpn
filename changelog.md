@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-06-11
+### Fixed
+- `install.sh` on older Entware (2024): `php8-cgi` was outputting HTTP response headers (`X-Powered-By`, `Content-Type`) even with `-q`, causing `mf_get` to return garbage instead of the manifest field. Added `_strip_cgi_headers()` awk filter and switched from `$argv` to `getenv()` for passing values to the PHP helper (more reliable across CGI versions).
+- `geoip:private` in Xray routing config caused `failed to open file: geoip.dat` — MIPS Entware xray-core does not include geo data files. Replaced with explicit private IP ranges.
+- `status` action always showed "Остановлен" after page refresh: `shell_exec` returns `"0\n"` (with newline), but comparison was `=== '0'`. Added `trim()` and `pgrep -x xray` fallback.
+
 ## [0.11.2] - 2026-06-11
 ### Fixed
 - `install.sh` crashed with `sh: php: not found`. Root cause: `mf_get` used `php -r` to parse the manifest, but PHP wasn't installed yet (chicken-and-egg). Added `bootstrap_php()` before `download_manifest()` to ensure PHP is ready first. Also fixed for Entware setups where only `php8-cgi`/`php-cgi` is present (no CLI `php` binary — CGI binaries don't support `-r`): `_find_php()` auto-detects the available binary and mode; in CGI mode `mf_get` writes a one-line helper script to `/tmp` and calls `php8-cgi -f`. Verified on Keenetic Hopper where `php` doesn't exist but `php8-cgi` is installed.
