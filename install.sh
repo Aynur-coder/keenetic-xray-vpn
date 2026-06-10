@@ -17,6 +17,7 @@ REPO_OWNER="${REPO_OWNER:-Aynur-coder}"
 REPO_NAME="${REPO_NAME:-keenetic-xray-vpn}"
 REPO="$REPO_OWNER/$REPO_NAME"
 RAW_BASE="https://raw.githubusercontent.com/$REPO"
+REL_BASE="https://github.com/$REPO/releases/download"
 
 INSTALL_LOG="/opt/var/log/xray-vpn-install.log"
 LOCK_FILE="/opt/var/run/xray-vpn-install.lock"
@@ -207,13 +208,16 @@ preflight() {
     curl -fsS --max-time 10 https://raw.githubusercontent.com/ >/dev/null \
         || die "Cannot reach GitHub. Check internet and DNS."
 
-    # Keenetic model (warn-only)
+    # Keenetic model detection (informational only, never blocks install)
     if command -v ndmc >/dev/null 2>&1; then
-        _model="$(ndmc -c "show version" 2>/dev/null | awk -F': *' '/device|hw_id/ {print $2; exit}')"
-        [ -n "$_model" ] && info "Detected Keenetic: $_model" \
-            || warn "Could not detect Keenetic model"
+        _model="$(ndmc -c "show version" 2>/dev/null | awk -F': *' '/device|hw_id|Device|title/ {print $2; exit}')"
+        if [ -n "$_model" ]; then
+            info "Keenetic: $_model"
+        else
+            info "Keenetic model not identified — OK, continuing"
+        fi
     else
-        warn "ndmc not available — Keenetic-specific features may not work"
+        info "ndmc not found — continuing without model check"
     fi
 }
 
