@@ -454,6 +454,13 @@ textarea{resize:vertical;min-height:80px;width:100%}
       </div>
       <div class="settings-row">
         <div>
+          <div class="label">Запись логов</div>
+          <div class="desc">access.log и error.log в /opt/var/log/xray/. При выключении Xray работает с <code>loglevel: none</code>.</div>
+        </div>
+        <div class="tog" id="togLogs"></div>
+      </div>
+      <div class="settings-row">
+        <div>
           <div class="label">Тема</div>
           <div class="desc">Тёмная, светлая или авто (по системе).</div>
         </div>
@@ -1488,6 +1495,7 @@ async function loadSettings(){
   _applyTog($('#togWireguard'), _features.wireguard);
   _applyTog($('#togAdguard'), _features.adguard);
   _applyTog($('#togAutoUpdate'), _features.auto_update);
+  _applyTog($('#togLogs'), _features.logs_enabled !== false);
   $('#themeSelect').value = _features.theme || 'auto';
 
   $('#btnLogoutSettings').hidden = !!s.local;
@@ -1525,6 +1533,14 @@ function _wireSettings(){
     _applyTog($('#togAutoUpdate'), !cur);
     await _setFeature('auto_update', !cur);
     toast(cur ? 'Автообновление выключено' : 'Автообновление включено');
+  });
+  $('#togLogs').addEventListener('click', async ()=>{
+    const cur=$('#togLogs').classList.contains('on');
+    _applyTog($('#togLogs'), !cur);
+    toast(cur ? 'Логи отключаются…' : 'Логи включаются…', 'info');
+    const r=await _setFeature('logs_enabled', !cur);
+    if(r && !r.error) toast(cur ? 'Логи отключены — Xray перезапущен' : 'Логи включены — Xray перезапущен', 'success');
+    else toast('Ошибка при изменении логов', 'error');
   });
   $('#themeSelect').addEventListener('change', async (e)=>{
     const t=e.target.value;

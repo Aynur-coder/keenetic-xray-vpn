@@ -184,17 +184,18 @@ function get_features() {
     global $FEATURES_FILE;
     $d = json_read($FEATURES_FILE);
     return [
-        'wireguard'   => $d['wireguard']   ?? true,
-        'adguard'     => $d['adguard']     ?? true,
-        'auto_update' => $d['auto_update'] ?? false,
-        'theme'       => $d['theme']       ?? 'auto',
+        'wireguard'    => $d['wireguard']    ?? true,
+        'adguard'      => $d['adguard']      ?? true,
+        'auto_update'  => $d['auto_update']  ?? false,
+        'logs_enabled' => $d['logs_enabled'] ?? true,
+        'theme'        => $d['theme']        ?? 'auto',
     ];
 }
 
 function set_features_patch($patch) {
     global $FEATURES_FILE;
     $cur = get_features();
-    foreach (['wireguard', 'adguard', 'auto_update'] as $k) {
+    foreach (['wireguard', 'adguard', 'auto_update', 'logs_enabled'] as $k) {
         if (isset($patch[$k])) $cur[$k] = (bool)$patch[$k];
     }
     if (isset($patch['theme']) && in_array($patch['theme'], ['auto', 'dark', 'light'], true)) {
@@ -208,6 +209,16 @@ function set_features_patch($patch) {
             shell_run('/opt/etc/init.d/S99wireguard start 2>/dev/null');
         } else {
             shell_run('ip link set wg0 down 2>/dev/null; ip link delete wg0 2>/dev/null');
+        }
+    }
+    // Side effects: toggle logs — regenerate config and restart Xray if running
+    if (isset($patch['logs_enabled'])) {
+        $r = generate_xray_config();
+        if (!isset($r['error'])) {
+            $pid = trim(shell_run('cat /opt/var/run/xray.pid 2>/dev/null'));
+            if ($pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0') {
+                shell_run("kill -HUP $pid 2>/dev/null || (killall xray 2>/dev/null; sleep 1; /opt/sbin/xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo \$! > /opt/var/run/xray.pid)");
+            }
         }
     }
     return $cur;
@@ -453,8 +464,12 @@ function generate_xray_config() {
     $outbounds[] = ['tag' => 'direct', 'protocol' => 'freedom'];
     $outbounds[] = ['tag' => 'block', 'protocol' => 'blackhole'];
 
+    $features = get_features();
+    $logs_enabled = $features['logs_enabled'] ?? true;
     $config = [
-        'log' => ['loglevel' => 'warning', 'access' => '/opt/var/log/xray/access.log', 'error' => '/opt/var/log/xray/error.log'],
+        'log' => $logs_enabled
+            ? ['loglevel' => 'warning', 'access' => '/opt/var/log/xray/access.log', 'error' => '/opt/var/log/xray/error.log']
+            : ['loglevel' => 'none',    'access' => '',                              'error'  => ''],
         'inbounds' => [
             ['tag' => 'tproxy-in', 'port' => 1080, 'protocol' => 'dokodemo-door',
              'settings' => ['network' => 'tcp,udp', 'followRedirect' => true],
@@ -1308,7 +1323,7 @@ case 'get_features':
 case 'set_features':
     $patch = [];
     $truthy = ['1', 1, 'true', true, 'on', 'yes'];
-    foreach (['wireguard', 'adguard', 'auto_update'] as $k) {
+    foreach (['wireguard', 'adguard', 'auto_update', 'logs_enabled'] as $k) {
         if (isset($_POST[$k])) $patch[$k] = in_array($_POST[$k], $truthy, true);
     }
     if (isset($_POST['theme'])) $patch['theme'] = $_POST['theme'];
