@@ -6,7 +6,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [0.11.2] - 2026-06-11
 ### Fixed
-- `install.sh` crashed with `sh: php: not found` on routers where PHP is not yet installed (chicken-and-egg: PHP is one of the packages being installed, but `mf_get` needed PHP to parse the manifest). Added `bootstrap_php()` that runs before `download_manifest()` — it tries `php8`, `php8-cli`, `php` via opkg and exits cleanly as soon as one installs. PHP is a required dependency anyway; this just ensures it's available before the manifest is read. The direct `php -r` call for reading `features.json` in `restart_services` was replaced with a plain `grep` that needs no interpreter.
+- `install.sh` crashed with `sh: php: not found`. Root cause: `mf_get` used `php -r` to parse the manifest, but PHP wasn't installed yet (chicken-and-egg). Added `bootstrap_php()` before `download_manifest()` to ensure PHP is ready first. Also fixed for Entware setups where only `php8-cgi`/`php-cgi` is present (no CLI `php` binary — CGI binaries don't support `-r`): `_find_php()` auto-detects the available binary and mode; in CGI mode `mf_get` writes a one-line helper script to `/tmp` and calls `php8-cgi -f`. Verified on Keenetic Hopper where `php` doesn't exist but `php8-cgi` is installed.
 
 ## [0.11.1] - 2026-06-11
 ### Fixed

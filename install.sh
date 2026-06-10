@@ -131,23 +131,63 @@ is_pkg_installed() {
     opkg list-installed 2>/dev/null | awk '{print $1}' | grep -qx "$1"
 }
 
-# Parse manifest.json — requires php (installed by bootstrap_php before first call).
-# Usage: mf_get <manifest.json> '<php-style expression>'
+# PHP binary path and mode (set by _find_php)
+_PHP_BIN=""
+_PHP_MODE=""  # "cli" (-r flag) or "cgi" (file execution)
+_PHP_HELPER="/tmp/_xray_mfget_$$.php"
+
+# Detect available PHP binary — sets _PHP_BIN and _PHP_MODE
+_find_php() {
+    # CLI binaries support -r (inline code)
+    for _b in php php8; do
+        if command -v "$_b" >/dev/null 2>&1 && "$_b" -r 'echo 1;' >/dev/null 2>&1; then
+            _PHP_BIN="$_b"; _PHP_MODE=cli; return 0
+        fi
+    done
+    # CGI binaries only support -f (file); need a temp script wrapper
+    for _b in php8-cgi php-cgi /opt/bin/php8-cgi /opt/bin/php-cgi; do
+        if command -v "$_b" >/dev/null 2>&1 || [ -x "$_b" ]; then
+            _PHP_BIN="$_b"; _PHP_MODE=cgi; return 0
+        fi
+    done
+    return 1
+}
+
+# Write the CGI helper once; it reads manifest path + expression from $argv
+_init_php_helper() {
+    cat > "$_PHP_HELPER" << 'PHPEOF'
+<?php
+$m = json_decode(file_get_contents($argv[1]), true);
+eval($argv[2]);
+PHPEOF
+}
+
+# Parse manifest.json — detects CLI vs CGI PHP automatically.
+# Usage: mf_get <manifest.json> '<php-expression>'
 mf_get() {
     _mf="$1"; _expr="$2"
-    php -r "\$m=json_decode(file_get_contents('$_mf'),true); $_expr"
+    [ -n "$_PHP_BIN" ] || _find_php || die "PHP not found. Run: opkg install php8"
+    if [ "$_PHP_MODE" = "cli" ]; then
+        "$_PHP_BIN" -r "\$m=json_decode(file_get_contents('$_mf'),true); $_expr"
+    else
+        [ -f "$_PHP_HELPER" ] || _init_php_helper
+        "$_PHP_BIN" -q -f "$_PHP_HELPER" -- "$_mf" "$_expr" 2>/dev/null
+    fi
 }
 
 # Install PHP early so mf_get works before the full package list is applied.
 # PHP is a required dependency anyway — we just need it before manifest parsing.
 bootstrap_php() {
-    command -v php >/dev/null 2>&1 && return 0
+    _find_php && {
+        info "PHP ready: $_PHP_BIN ($_PHP_MODE mode)"
+        return 0
+    }
     step "Bootstrap PHP (needed for manifest parsing)"
     opkg update >/dev/null 2>&1 || warn "opkg update had errors"
-    # Try package names used in different Entware builds
     for _p in php8 php8-cli php; do
-        if opkg install "$_p" >/dev/null 2>&1 && command -v php >/dev/null 2>&1; then
-            info "PHP installed: $(php --version 2>/dev/null | head -1 | cut -d' ' -f1-2)"
+        opkg install "$_p" >/dev/null 2>&1 || true
+        if _find_php; then
+            info "PHP ready: $_PHP_BIN ($_PHP_MODE mode)"
             return 0
         fi
     done
