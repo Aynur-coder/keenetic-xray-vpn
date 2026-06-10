@@ -132,10 +132,15 @@ cmd_apply() {
 
         write_state "downloading" "Скачиваю установщик v$_new"
         _inst="/opt/tmp/xray-vpn-install-$$.sh"
-        if ! curl -fsSL --max-time 60 -o "$_inst" "$RAW_BASE/main/install.sh"; then
-            write_state "failed" "Не удалось скачать install.sh"
-            echo "ERROR: install.sh download failed"
-            exit 1
+        # Download install.sh from the tagged release asset (stable) or fall back to main branch
+        _inst_url="https://github.com/$REPO/releases/download/v$_new/install.sh"
+        if ! curl -fsSL --max-time 60 -o "$_inst" "$_inst_url"; then
+            # Fallback: latest release download (no version in URL)
+            if ! curl -fsSL --max-time 60 -o "$_inst" "https://github.com/$REPO/releases/latest/download/install.sh"; then
+                write_state "failed" "Не удалось скачать install.sh"
+                echo "ERROR: install.sh download failed"
+                exit 1
+            fi
         fi
         chmod 755 "$_inst"
 

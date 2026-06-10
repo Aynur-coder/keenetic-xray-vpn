@@ -7,8 +7,10 @@
 Подключись к роутеру по SSH (с включённым Entware) и запусти:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/install.sh | sh
+curl -fsSL https://github.com/Aynur-coder/keenetic-xray-vpn/releases/latest/download/install.sh | sh
 ```
+
+Эта ссылка **всегда** скачивает последнюю стабильную версию.
 
 После завершения открой **http://192.168.1.1:91** — мастер настройки проведёт за 5 шагов:
 
@@ -17,6 +19,12 @@ curl -fsSL https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/
 3. URL первой подписки.
 4. Выбор активного сервера.
 5. Включение/отключение WireGuard.
+
+После мастера: открой **http://192.168.1.1:3000** (AdGuard Home), задай пароль и upstream DNS в его мастере.
+
+## Последний релиз
+
+[Перейти к последнему релизу →](https://github.com/Aynur-coder/keenetic-xray-vpn/releases/latest)
 
 ## Обновление
 
@@ -33,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/
 ## Удаление
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/install.sh | sh -s -- --uninstall
+curl -fsSL https://github.com/Aynur-coder/keenetic-xray-vpn/releases/latest/download/install.sh | sh -s -- --uninstall
 ```
 
 ## Требования
