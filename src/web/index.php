@@ -175,6 +175,23 @@ textarea{resize:vertical;min-height:80px;width:100%}
 @media(max-width:640px){
   .overlay-card{padding:24px 20px;border-radius:16px}
 }
+
+/* ============ Update bell + modal ============ */
+#btnUpdate{position:relative}
+.update-badge{position:absolute;top:-2px;right:-2px;background:var(--red);color:#fff;font-size:9px;font-weight:700;border-radius:8px;min-width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;padding:0 4px;border:2px solid #4f46e5}
+.update-modal-card{max-width:560px}
+.update-version-row{display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--card2);border-radius:10px;margin-bottom:16px;border:1px solid var(--border)}
+.update-version-row .from{color:var(--text2);text-decoration:line-through}
+.update-version-row .arrow{color:var(--accent2)}
+.update-version-row .to{color:var(--green);font-weight:700;font-size:16px}
+.update-changelog{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px;max-height:240px;overflow-y:auto;font-size:13px;line-height:1.6;white-space:pre-wrap;color:var(--text);margin-bottom:16px;font-family:monospace}
+.update-progress{margin-top:16px}
+.update-progress-bar{width:100%;height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:10px}
+.update-progress-bar .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0;transition:width .4s ease;border-radius:3px}
+.update-progress-bar.indeterminate .fill{width:30%;animation:updateProgressIndet 1.4s infinite ease-in-out}
+@keyframes updateProgressIndet{0%{margin-left:-30%}100%{margin-left:100%}}
+.update-progress-msg{font-size:13px;color:var(--text)}
+.update-log{margin-top:12px;font-family:monospace;font-size:11px;color:var(--text2);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:140px;overflow-y:auto;white-space:pre-wrap}
 </style>
 </head>
 <body>
@@ -283,6 +300,32 @@ textarea{resize:vertical;min-height:80px;width:100%}
   </div>
 </div>
 
+<!-- ============ UPDATE MODAL ============ -->
+<div class="overlay" id="updateOverlay" role="dialog" aria-modal="true">
+  <div class="overlay-card update-modal-card">
+    <h2 id="updateTitle">🔄 Обновление</h2>
+    <div id="updateBody">
+      <div class="update-version-row">
+        <span class="from" id="updateFrom">—</span>
+        <span class="arrow">→</span>
+        <span class="to" id="updateTo">—</span>
+      </div>
+      <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Что нового</div>
+      <div class="update-changelog" id="updateChangelog">Загружаю…</div>
+    </div>
+    <div id="updateProgress" class="update-progress" hidden>
+      <div class="update-progress-bar indeterminate"><div class="fill"></div></div>
+      <div class="update-progress-msg" id="updateProgressMsg">Запускаю…</div>
+      <div class="update-log" id="updateProgressLog"></div>
+    </div>
+    <div class="btn-row" id="updateButtons">
+      <button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button>
+      <button class="btn btn-ghost" onclick="checkUpdate(true)">Проверить</button>
+      <button class="btn btn-primary" id="updateApplyBtn" onclick="applyUpdate()" hidden>Применить</button>
+    </div>
+  </div>
+</div>
+
 <div class="app">
 
 <div class="header">
@@ -291,6 +334,10 @@ textarea{resize:vertical;min-height:80px;width:100%}
     Xray VPN Manager
   </h1>
   <div class="header-controls">
+    <button class="btn btn-ghost btn-icon" id="btnUpdate" onclick="openUpdate()" title="Обновления" aria-label="Обновления">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+      <span class="update-badge" id="updateBadge" hidden></span>
+    </button>
     <button class="btn btn-success" onclick="doAction('restart')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       Перезапуск
@@ -997,6 +1044,100 @@ document.querySelectorAll('[data-skip]').forEach(b=>{
   });
 });
 
+// ============ UPDATES ============
+let _updateLatest=null;
+let _updatePollHandle=null;
+
+async function checkUpdate(force=false){
+  const r=await api('check_update', force?'force=1':'');
+  if(r.error){ $('#updateChangelog').textContent='Не удалось проверить обновления'; return null; }
+  _updateLatest=r;
+  $('#updateFrom').textContent='v'+(r.current||'?');
+  $('#updateTo').textContent='v'+(r.latest||'?');
+  if(r.available){
+    $('#updateChangelog').textContent=r.changelog||'(нет описания)';
+    $('#updateApplyBtn').hidden=false;
+    $('#updateBadge').textContent='1';
+    $('#updateBadge').hidden=false;
+  }else{
+    $('#updateChangelog').textContent='Установлена последняя версия v'+(r.current||'?');
+    $('#updateApplyBtn').hidden=true;
+    $('#updateBadge').hidden=true;
+  }
+  // cache
+  try{ localStorage.setItem('xrayvpn:update:check', JSON.stringify({r, ts:Date.now()})); }catch(e){}
+  return r;
+}
+
+function openUpdate(){
+  $('#updateOverlay').classList.add('show');
+  $('#updateBody').hidden=false;
+  $('#updateProgress').hidden=true;
+  $('#updateButtons').style.display='flex';
+  checkUpdate(false);
+}
+
+function closeUpdate(){
+  $('#updateOverlay').classList.remove('show');
+  if(_updatePollHandle){ clearInterval(_updatePollHandle); _updatePollHandle=null; }
+}
+
+async function applyUpdate(){
+  if(!confirm('Применить обновление? Сервисы будут перезапущены.')) return;
+  $('#updateBody').hidden=true;
+  $('#updateProgress').hidden=false;
+  $('#updateProgressMsg').textContent='Запускаю...';
+  $('#updateProgressLog').textContent='';
+  $('#updateButtons').style.display='none';
+  const r=await api('apply_update',{});
+  if(r.error){ toast('Ошибка: '+r.error,true); $('#updateButtons').style.display='flex'; return; }
+  _updatePollHandle=setInterval(pollUpdateStatus, 2000);
+}
+
+async function pollUpdateStatus(){
+  const r=await api('status_update','');
+  if(r.error) return;
+  $('#updateProgressMsg').textContent=r.message||r.status||'…';
+  if(r.log_tail) $('#updateProgressLog').textContent=r.log_tail;
+  if(r.status==='done' || r.status==='failed'){
+    if(_updatePollHandle){ clearInterval(_updatePollHandle); _updatePollHandle=null; }
+    const ok=r.status==='done';
+    const bar=$('#updateProgress .update-progress-bar');
+    if(bar){ bar.classList.remove('indeterminate'); }
+    const fill=$('#updateProgress .update-progress-bar .fill');
+    if(fill){ fill.style.width='100%'; }
+    $('#updateButtons').innerHTML = ok
+      ? '<button class="btn btn-success" onclick="location.reload()">Обновить страницу</button>'
+      : '<button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button><button class="btn btn-warn" onclick="api(\'rollback_update\',{}).then(()=>{toast(\'Откат запущен\'); _updatePollHandle=setInterval(pollUpdateStatus,2000)})">Откатить</button>';
+    $('#updateButtons').style.display='flex';
+    toast(ok?'Обновление установлено':'Обновление не удалось', !ok);
+  }
+}
+
+// Fire-and-forget background check at startup (cached 6h server-side too)
+async function _backgroundUpdateCheck(){
+  // Use localStorage cache to avoid even hitting api.php within 6h
+  try{
+    const raw=localStorage.getItem('xrayvpn:update:check');
+    if(raw){
+      const c=JSON.parse(raw);
+      if(Date.now()-c.ts < 6*3600*1000){
+        if(c.r && c.r.available){
+          $('#updateBadge').textContent='1';
+          $('#updateBadge').hidden=false;
+        }
+        return;
+      }
+    }
+  }catch(e){}
+  const r=await api('check_update','');
+  if(r && !r.error && r.available){
+    $('#updateBadge').textContent='1';
+    $('#updateBadge').hidden=false;
+  }
+  try{ localStorage.setItem('xrayvpn:update:check', JSON.stringify({r, ts:Date.now()})); }catch(e){}
+}
+
 // ============ INIT ============
 async function init(){
   const s=await api('status','');
@@ -1011,6 +1152,7 @@ async function init(){
   // Normal startup
   loadStatus(); loadServers();
   setInterval(loadStatus, 30000);
+  _backgroundUpdateCheck();
 }
 init();
 </script>

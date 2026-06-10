@@ -730,6 +730,7 @@ $action = $_GET['action'] ?? $_POST['action'] ?? '';
 $PUBLIC_READ_ACTIONS = [
     'status', 'login', 'logout', 'auth_status',
     'get_onboarding_status', 'get_features', 'get_version',
+    'check_update', 'status_update',
     'keys', 'subscriptions', 'subscription_servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search',
@@ -1297,6 +1298,59 @@ case 'get_version':
     echo json_encode([
         'installed' => get_installed_version(),
     ]);
+    break;
+
+// ============ UPDATES ============
+
+case 'check_update':
+    // Cache 6h to avoid hammering GitHub
+    $cache = '/opt/tmp/xray-vpn-update-check.json';
+    $fresh = file_exists($cache) && (time() - filemtime($cache)) < 6 * 3600;
+    if (!$fresh || !empty($_GET['force']) || !empty($_POST['force'])) {
+        $raw = shell_run('/opt/etc/xray/update.sh --check 2>/dev/null');
+        if ($raw === '' || strpos($raw, '{') !== 0) {
+            echo json_encode(['error' => 'check_failed', 'raw' => $raw]);
+            break;
+        }
+        @file_put_contents($cache, $raw);
+        echo $raw;
+    } else {
+        echo @file_get_contents($cache);
+    }
+    break;
+
+case 'apply_update':
+    // Mutating — auth already enforced. Run install.sh --upgrade in background.
+    @unlink('/opt/tmp/xray-vpn-update-check.json');
+    @file_put_contents('/opt/tmp/xray-vpn-update.state', "starting\n" . time() . "\nЗапускаю обновление...\n");
+    shell_exec('nohup /opt/etc/xray/update.sh --apply > /dev/null 2>&1 &');
+    echo json_encode(['ok' => true, 'started' => true]);
+    break;
+
+case 'status_update':
+    $sf = '/opt/tmp/xray-vpn-update.state';
+    $lf = '/opt/var/log/xray/update.log';
+    $state = file_exists($sf) ? @file_get_contents($sf) : '';
+    $parts = explode("\n", trim($state));
+    $status = $parts[0] ?? 'idle';
+    $ts = (int)($parts[1] ?? 0);
+    $message = $parts[2] ?? '';
+    $tail = '';
+    if (file_exists($lf)) {
+        $tail = shell_run('tail -n 30 ' . escapeshellarg($lf));
+    }
+    echo json_encode([
+        'status' => $status,
+        'updated_at' => $ts,
+        'message' => $message,
+        'log_tail' => $tail,
+    ]);
+    break;
+
+case 'rollback_update':
+    @file_put_contents('/opt/tmp/xray-vpn-update.state', "starting\n" . time() . "\nЗапускаю откат...\n");
+    shell_exec('nohup /opt/etc/xray/update.sh --rollback > /dev/null 2>&1 &');
+    echo json_encode(['ok' => true, 'started' => true]);
     break;
 
 default:

@@ -9,7 +9,8 @@
     {"src": "src/etc/xray/migrate.sh",                  "dst": "/opt/etc/xray/migrate.sh",                            "mode": "755"},
     {"src": "src/etc/init.d/S22xray",                   "dst": "/opt/etc/init.d/S22xray",                             "mode": "755"},
     {"src": "src/etc/init.d/S99wireguard",              "dst": "/opt/etc/init.d/S99wireguard",                        "mode": "755"},
-    {"src": "src/etc/lighttpd/conf.d/91-shadowsocks.conf", "dst": "/opt/etc/lighttpd/conf.d/91-shadowsocks.conf",     "mode": "644"}
+    {"src": "src/etc/lighttpd/conf.d/91-shadowsocks.conf", "dst": "/opt/etc/lighttpd/conf.d/91-shadowsocks.conf",     "mode": "644"},
+    {"src": "migrations/0001_init.sh",                  "dst": "/opt/etc/xray/migrations/0001_init.sh",               "mode": "755"}
   ],
   "defaults": [
     {"src": "defaults/state.json",                      "dst": "/opt/etc/xray/state.json",                            "mode": "644", "only_if_missing": true},
