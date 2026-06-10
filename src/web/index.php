@@ -135,9 +135,154 @@ textarea{resize:vertical;min-height:80px;width:100%}
   .input-group{flex-direction:column}
   input.flex1{min-width:auto}
 }
+
+/* ============ Overlay (login + wizard) ============ */
+.overlay{position:fixed;inset:0;background:rgba(15,17,23,.85);backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;z-index:1000;padding:20px;overflow-y:auto}
+.overlay.show{display:flex}
+.overlay-card{background:var(--card);border:1px solid var(--border);border-radius:20px;max-width:480px;width:100%;padding:32px;box-shadow:0 24px 64px rgba(0,0,0,.5);animation:cardIn .25s ease-out}
+@keyframes cardIn{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}
+.overlay-card h2{font-size:22px;margin-bottom:8px;display:flex;align-items:center;gap:10px}
+.overlay-card .lead{color:var(--text2);font-size:13px;margin-bottom:24px;line-height:1.5}
+.overlay-card label{display:block;font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.overlay-card input[type=text],.overlay-card input[type=password],.overlay-card input[type=url]{width:100%;font-size:16px;padding:12px 14px;margin-bottom:16px}
+.overlay-card .btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.overlay-card .btn-row .btn{flex:1;justify-content:center}
+.overlay-error{color:var(--red);font-size:12px;margin-top:-8px;margin-bottom:12px;min-height:16px}
+.overlay-info{color:var(--text2);font-size:12px;margin-top:8px}
+
+/* Wizard progress dots */
+.wizard-progress{display:flex;gap:6px;margin-bottom:24px;justify-content:center}
+.wizard-progress .dot{width:8px;height:8px;border-radius:50%;background:var(--border);transition:all .2s}
+.wizard-progress .dot.done{background:var(--green)}
+.wizard-progress .dot.current{background:var(--accent);transform:scale(1.4)}
+
+.wizard-step{display:none}
+.wizard-step.active{display:block}
+.wizard-step .step-num{font-size:11px;color:var(--accent2);text-transform:uppercase;letter-spacing:1px;font-weight:600}
+
+.wizard-server-list{max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:6px;background:var(--bg)}
+.wizard-server-list .skel{height:36px;background:linear-gradient(90deg,var(--card2) 0%,var(--card) 50%,var(--card2) 100%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:6px;margin-bottom:4px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+.wizard-toggle{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--card2);border:1px solid var(--border);border-radius:10px;margin-bottom:16px}
+.wizard-toggle .label{font-weight:600;font-size:14px}
+.wizard-toggle .desc{font-size:12px;color:var(--text2);margin-top:2px}
+.tog{position:relative;width:42px;height:24px;border-radius:12px;background:var(--border);cursor:pointer;transition:background .2s;flex-shrink:0}
+.tog::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s}
+.tog.on{background:var(--green)}
+.tog.on::after{transform:translateX(18px)}
+
+@media(max-width:640px){
+  .overlay-card{padding:24px 20px;border-radius:16px}
+}
 </style>
 </head>
 <body>
+
+<!-- ============ LOGIN OVERLAY ============ -->
+<div class="overlay" id="loginOverlay" role="dialog" aria-modal="true">
+  <div class="overlay-card">
+    <h2>🔒 Вход в Xray VPN</h2>
+    <p class="lead">Удалённый доступ требует пароль. Если ты в локальной сети роутера — обнови страницу, авторизация не нужна.</p>
+    <label for="loginPass">Пароль</label>
+    <input type="password" id="loginPass" autocomplete="current-password" placeholder="••••••••">
+    <div class="overlay-error" id="loginError">&nbsp;</div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnLogin">Войти</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ WIZARD OVERLAY ============ -->
+<div class="overlay" id="wizardOverlay" role="dialog" aria-modal="true">
+  <div class="overlay-card">
+    <div class="wizard-progress" id="wizardDots">
+      <span class="dot current"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </div>
+
+    <!-- Step 1: UI password -->
+    <div class="wizard-step active" data-step="1">
+      <div class="step-num">Шаг 1 из 5</div>
+      <h2>🔐 Пароль веб-интерфейса</h2>
+      <p class="lead">Понадобится, если ты будешь открывать UI извне локальной сети (например, через WireGuard). Минимум 4 символа.</p>
+      <label for="w1Pass">Новый пароль</label>
+      <input type="password" id="w1Pass" placeholder="Минимум 4 символа" autocomplete="new-password">
+      <label for="w1Pass2">Повтори</label>
+      <input type="password" id="w1Pass2" placeholder="Повтори пароль" autocomplete="new-password">
+      <div class="overlay-error" id="w1Error">&nbsp;</div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" data-skip="1">Пропустить</button>
+        <button class="btn btn-primary" data-next="1">Далее</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Keenetic admin password -->
+    <div class="wizard-step" data-step="2">
+      <div class="step-num">Шаг 2 из 5</div>
+      <h2>🌐 Пароль Keenetic</h2>
+      <p class="lead">Чтобы показывать список устройств в локальной сети (для маршрутизации по MAC), нужен пароль admin от роутера. Это тот же пароль, которым ты входишь на <code>http://192.168.1.1</code>.</p>
+      <label for="w2Pass">Пароль admin</label>
+      <input type="password" id="w2Pass" placeholder="Пароль роутера">
+      <div class="overlay-error" id="w2Error">&nbsp;</div>
+      <div class="overlay-info" id="w2Info">&nbsp;</div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" data-skip="2">Пропустить</button>
+        <button class="btn btn-ghost" id="w2Test">Проверить</button>
+        <button class="btn btn-primary" data-next="2" disabled id="w2Next">Далее</button>
+      </div>
+    </div>
+
+    <!-- Step 3: First subscription -->
+    <div class="wizard-step" data-step="3">
+      <div class="step-num">Шаг 3 из 5</div>
+      <h2>📥 Первая подписка</h2>
+      <p class="lead">Вставь URL подписки на VPN-серверы (формат VLESS/SS). Сервера загрузятся автоматически. Если у тебя нет подписки — пропусти, ключи можно добавить вручную позже.</p>
+      <label for="w3Name">Название</label>
+      <input type="text" id="w3Name" placeholder="Например, MyVPN">
+      <label for="w3Url">URL подписки</label>
+      <input type="url" id="w3Url" placeholder="https://...">
+      <div class="overlay-error" id="w3Error">&nbsp;</div>
+      <div class="overlay-info" id="w3Info">&nbsp;</div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" data-skip="3">Пропустить</button>
+        <button class="btn btn-primary" data-next="3" id="w3Next">Загрузить</button>
+      </div>
+    </div>
+
+    <!-- Step 4: Pick server -->
+    <div class="wizard-step" data-step="4">
+      <div class="step-num">Шаг 4 из 5</div>
+      <h2>🎯 Выбери сервер</h2>
+      <p class="lead">Выбери один сервер. Его можно поменять в любой момент во вкладке «Серверы».</p>
+      <div class="wizard-server-list" id="w4Servers">
+        <div class="skel"></div><div class="skel"></div><div class="skel"></div><div class="skel"></div>
+      </div>
+      <div class="overlay-error" id="w4Error">&nbsp;</div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" data-skip="4">Пропустить</button>
+        <button class="btn btn-primary" data-next="4" id="w4Next" disabled>Применить и запустить</button>
+      </div>
+    </div>
+
+    <!-- Step 5: WireGuard -->
+    <div class="wizard-step" data-step="5">
+      <div class="step-num">Шаг 5 из 5</div>
+      <h2>📡 WireGuard сервер</h2>
+      <p class="lead">Включает встроенный WireGuard-сервер на роутере. Полезно если хочешь подключаться к домашней сети с телефона/ноутбука. Можно включить позже в настройках.</p>
+      <div class="wizard-toggle">
+        <div>
+          <div class="label">Использовать WireGuard</div>
+          <div class="desc">Слушать порт 500, сеть 10.50.0.0/24</div>
+        </div>
+        <div class="tog on" id="w5Tog"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" data-next="5" id="w5Finish">Завершить настройку</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="app">
 
 <div class="header">
@@ -696,9 +841,178 @@ async function clearLogs(){await api('clear_logs');toast('Очищено');loadL
 
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML}
 
-// Init
-loadStatus();loadServers();
-setInterval(loadStatus,30000);
+// ============ LOGIN ============
+function showLogin(){
+  $('#loginOverlay').classList.add('show');
+  setTimeout(()=>$('#loginPass').focus(),100);
+}
+function hideLogin(){ $('#loginOverlay').classList.remove('show'); }
+async function tryLogin(){
+  const pass=$('#loginPass').value;
+  const errEl=$('#loginError');
+  errEl.textContent=' ';
+  if(!pass){ errEl.textContent='Введи пароль'; return; }
+  const r=await api('login',{password:pass});
+  if(r.ok){ hideLogin(); init(); return; }
+  if(r.error==='too_many_attempts'){ errEl.textContent=`Слишком много попыток. Попробуй через ${Math.ceil(r.retry_after/60)} мин`; return; }
+  errEl.textContent='Неверный пароль'+(r.remaining!==undefined?` (осталось попыток: ${r.remaining})`:'');
+  $('#loginPass').value='';
+}
+$('#btnLogin').addEventListener('click', tryLogin);
+$('#loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') tryLogin(); });
+
+// ============ WIZARD ============
+let wizardStep=1;
+let wizardState={wg:true};
+
+function showWizard(){
+  $('#wizardOverlay').classList.add('show');
+  setWizardStep(1);
+}
+function hideWizard(){ $('#wizardOverlay').classList.remove('show'); }
+
+function setWizardStep(n){
+  wizardStep=n;
+  document.querySelectorAll('.wizard-step').forEach(el=>el.classList.toggle('active', +el.dataset.step===n));
+  document.querySelectorAll('#wizardDots .dot').forEach((d,i)=>{
+    d.classList.remove('done','current');
+    if(i+1<n) d.classList.add('done');
+    if(i+1===n) d.classList.add('current');
+  });
+}
+
+function nextStep(){ setWizardStep(wizardStep+1); }
+
+// Step 1: set UI password
+document.querySelector('[data-next="1"]').addEventListener('click', async ()=>{
+  const p1=$('#w1Pass').value, p2=$('#w1Pass2').value;
+  const err=$('#w1Error'); err.textContent=' ';
+  if(p1.length<4){ err.textContent='Минимум 4 символа'; return; }
+  if(p1!==p2){ err.textContent='Пароли не совпадают'; return; }
+  const r=await api('set_ui_password',{password:p1});
+  if(r.error){ err.textContent='Ошибка: '+r.error; return; }
+  nextStep();
+});
+
+// Step 2: test/save Keenetic password
+$('#w2Test').addEventListener('click', async ()=>{
+  const p=$('#w2Pass').value;
+  const err=$('#w2Error'), info=$('#w2Info');
+  err.textContent=' '; info.textContent='Проверяю...';
+  $('#w2Next').disabled=true;
+  if(!p){ err.textContent='Введи пароль'; info.textContent=' '; return; }
+  const r=await api('test_kn_password',{password:p});
+  if(!r.ok){ err.textContent='Не удалось подключиться к Keenetic. Проверь пароль.'; info.textContent=' '; return; }
+  info.textContent=`✓ OK. Найдено устройств: ${r.count}`;
+  await api('set_kn_password',{password:p});
+  $('#w2Next').disabled=false;
+});
+document.querySelector('[data-next="2"]').addEventListener('click', ()=>{ nextStep(); loadWizardServers(); });
+
+// Step 3: subscription
+$('#w3Next').addEventListener('click', async ()=>{
+  const name=$('#w3Name').value.trim() || 'Subscription';
+  const url=$('#w3Url').value.trim();
+  const err=$('#w3Error'), info=$('#w3Info');
+  err.textContent=' ';
+  if(!url){ err.textContent='Введи URL подписки'; return; }
+  info.textContent='Сохраняю...';
+  $('#w3Next').disabled=true;
+  let r=await api('add_subscription',{name, url});
+  if(r.error){ err.textContent='Ошибка: '+r.error; $('#w3Next').disabled=false; info.textContent=' '; return; }
+  info.textContent='Загружаю серверы...';
+  r=await api('update_subscriptions');
+  $('#w3Next').disabled=false;
+  if(r.error){ err.textContent='Ошибка обновления: '+r.error; info.textContent=' '; return; }
+  info.textContent=`✓ Готово`;
+  setTimeout(()=>{ nextStep(); loadWizardServers(); }, 400);
+});
+
+// Step 4: pick server
+async function loadWizardServers(){
+  const list=$('#w4Servers');
+  list.innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
+  const srv=await api('subscription_servers','');
+  const keys=await api('keys','');
+  const all=[...(Array.isArray(srv)?srv:[]).map(s=>({...s, src:'sub'})), ...(Array.isArray(keys)?keys:[]).map(k=>({...k, src:'key'}))];
+  if(all.length===0){
+    list.innerHTML='<div style="padding:24px;text-align:center;color:var(--text2);font-size:13px">Нет серверов. Можно добавить позже на вкладке «Серверы».</div>';
+    $('#w4Next').textContent='Пропустить';
+    $('#w4Next').disabled=false;
+    $('#w4Next').onclick=()=>{ wizardState.serverTag=null; nextStep(); };
+    return;
+  }
+  list.innerHTML='';
+  all.forEach((s,i)=>{
+    const tag=s.tag||`sub_${i}`;
+    const proto=(s.protocol||'').toUpperCase();
+    const addr=s.address||s.server||'';
+    const port=s.port||'';
+    const div=document.createElement('label');
+    div.className='radio-item';
+    div.style.margin='4px';
+    div.innerHTML=`<div class="radio-dot"></div><div class="info"><div class="name">${esc(s.name||tag)} <span class="badge badge-${(proto||'vless').toLowerCase()}">${esc(proto)}</span></div><div class="meta">${esc(addr)}:${esc(port)}</div></div>`;
+    div.addEventListener('click', ()=>{
+      list.querySelectorAll('.radio-item').forEach(x=>x.classList.remove('selected'));
+      div.classList.add('selected');
+      wizardState.serverTag=tag;
+      $('#w4Next').disabled=false;
+    });
+    list.appendChild(div);
+  });
+}
+
+$('#w4Next').addEventListener('click', async ()=>{
+  const err=$('#w4Error'); err.textContent=' ';
+  if(wizardState.serverTag){
+    const r=await api('select_server',{tag:wizardState.serverTag});
+    if(r.error){ err.textContent='Ошибка: '+r.error; return; }
+    // Start xray
+    await api('start');
+  }
+  nextStep();
+});
+
+// Step 5: WireGuard toggle + finish
+$('#w5Tog').addEventListener('click', ()=>{
+  wizardState.wg=!wizardState.wg;
+  $('#w5Tog').classList.toggle('on', wizardState.wg);
+});
+
+$('#w5Finish').addEventListener('click', async ()=>{
+  await api('set_features',{wireguard: wizardState.wg ? '1' : '0'});
+  await api('complete_onboarding');
+  hideWizard();
+  loadStatus();
+  loadServers();
+  toast('Готово! Можно пользоваться.');
+});
+
+// Skip buttons (work for any step)
+document.querySelectorAll('[data-skip]').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    if(wizardStep===4 && !wizardState.serverTag) wizardState.serverTag=null;
+    if(wizardStep<5) nextStep();
+    else $('#w5Finish').click();
+  });
+});
+
+// ============ INIT ============
+async function init(){
+  const s=await api('status','');
+  if(s.error==='auth_required' || (s.authenticated===false && s.local===false)){
+    showLogin();
+    return;
+  }
+  if(s.onboarded===false){
+    showWizard();
+    return;
+  }
+  // Normal startup
+  loadStatus(); loadServers();
+  setInterval(loadStatus, 30000);
+}
+init();
 </script>
 </body>
 </html>
