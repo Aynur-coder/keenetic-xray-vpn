@@ -8,6 +8,8 @@ XRAY_CONF="$XRAY_DIR/config.json"
 XRAY_PID="/opt/var/run/xray.pid"
 RULES_DIR="$XRAY_DIR/rules"
 SUBS_FILE="$XRAY_DIR/subscriptions/list.json"
+KEYS_FILE="$XRAY_DIR/subscriptions/keys.json"
+CACHED_FILE="$XRAY_DIR/subscriptions/cached_servers.json"
 LOG_DIR="/opt/var/log/xray"
 DOMAINS_FILE="$RULES_DIR/domains.txt"
 IPS_FILE="$RULES_DIR/ips.txt"
@@ -17,6 +19,9 @@ IPSET6_NAME="vpn6"
 REDIR_PORT=1080
 
 log() { logger -t xray-mgr "$1"; echo "$1"; }
+
+# URL-decode %XX sequences (handles base64 key chars: +, /, =)
+_urldecode() { printf '%b' "$(printf '%s' "$1" | sed 's/%2[Bb]/+/g; s/%2[Ff]/\//g; s/%3[Dd]/=/g; s/%2[Ee]/./g')"; }
 
 # Parse ss:// link -> JSON outbound
 parse_ss_link() {
@@ -32,56 +37,86 @@ parse_ss_link() {
     echo "{\"address\":\"$host\",\"port\":$port,\"method\":\"$method\",\"password\":\"$password\"}"
 }
 
-# Parse vless:// link -> JSON outbound
-parse_vless_link() {
+# Build vless:// -> JSON outbound
+build_vless_outbound() {
     local link="$1"
+    local tag="$2"
+    link=$(echo "$link" | sed 's/#.*//')
     local uuid=$(echo "$link" | sed 's|vless://||' | sed 's|@.*||')
     local rest=$(echo "$link" | sed 's|vless://[^@]*@||')
     local host=$(echo "$rest" | cut -d: -f1)
     local port=$(echo "$rest" | cut -d: -f2 | cut -d'?' -f1)
-    local params=$(echo "$rest" | cut -d'?' -f2 | cut -d'#' -f1)
+    local params=$(echo "$rest" | sed 's/^[^?]*?//')
     local security=$(echo "$params" | tr '&' '\n' | grep '^security=' | cut -d= -f2)
     local type=$(echo "$params" | tr '&' '\n' | grep '^type=' | cut -d= -f2)
     local sni=$(echo "$params" | tr '&' '\n' | grep '^sni=' | cut -d= -f2)
     local fp=$(echo "$params" | tr '&' '\n' | grep '^fp=' | cut -d= -f2)
-    local pbk=$(echo "$params" | tr '&' '\n' | grep '^pbk=' | cut -d= -f2)
+    local pbk=$(_urldecode "$(echo "$params" | tr '&' '\n' | grep '^pbk=' | cut -d= -f2)")
     local sid=$(echo "$params" | tr '&' '\n' | grep '^sid=' | cut -d= -f2)
     local flow=$(echo "$params" | tr '&' '\n' | grep '^flow=' | cut -d= -f2)
-    echo "VLESS|$uuid|$host|$port|$security|$type|$sni|$fp|$pbk|$sid|$flow"
+    [ -z "$type" ] && type="tcp"
+    [ -z "$security" ] && security="none"
+    [ -z "$fp" ] && fp="chrome"
+    local stream_extra=""
+    if [ "$security" = "reality" ]; then
+        stream_extra=",\"realitySettings\":{\"serverName\":\"$sni\",\"fingerprint\":\"$fp\",\"publicKey\":\"$pbk\",\"shortId\":\"$sid\",\"spiderX\":\"\"}"
+    elif [ "$security" = "tls" ]; then
+        stream_extra=",\"tlsSettings\":{\"serverName\":\"$sni\",\"fingerprint\":\"$fp\"}"
+    fi
+    printf '{"tag":"%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":%s,"users":[{"id":"%s","encryption":"none","flow":"%s"}]}]},"streamSettings":{"network":"%s","security":"%s"%s}}' \
+        "$tag" "$host" "$port" "$uuid" "$flow" "$type" "$security" "$stream_extra"
+}
+
+# Add one server link to outbounds (ss:// or vless://)
+_add_link_outbound() {
+    local link="$1"
+    [ -z "$link" ] && return
+    local type=$(echo "$link" | cut -d: -f1)
+    local tag="proxy-$idx"
+    local ob=""
+    if [ "$type" = "ss" ]; then
+        local server=$(parse_ss_link "$link")
+        ob="{\"tag\":\"$tag\",\"protocol\":\"shadowsocks\",\"settings\":{\"servers\":[$server]}}"
+    elif [ "$type" = "vless" ]; then
+        ob=$(build_vless_outbound "$link" "$tag")
+    fi
+    [ -z "$ob" ] && return
+    if [ $idx -eq 0 ]; then active_tag="$tag"; fi
+    if [ -n "$outbounds" ]; then outbounds="$outbounds,"; fi
+    outbounds="$outbounds$ob"
+    idx=$((idx+1))
+}
+
+# Iterate a JSON array file, call _add_link_outbound for each enabled entry
+_parse_link_file() {
+    local file="$1"
+    [ -f "$file" ] || return
+    local count=$(jsonfilter -i "$file" -t '@.length' 2>/dev/null || echo 0)
+    local i=0
+    while [ "$i" -lt "$count" ] 2>/dev/null; do
+        local enabled=$(jsonfilter -i "$file" -e "@[$i].enabled" 2>/dev/null)
+        if [ "$enabled" = "true" ]; then
+            local link=$(jsonfilter -i "$file" -e "@[$i].link" 2>/dev/null)
+            _add_link_outbound "$link"
+        fi
+        i=$((i+1))
+    done
 }
 
 # Generate xray config from subscriptions + rules
 generate_config() {
     log "Generating xray config..."
-    
+
     local outbounds=""
     local active_tag="proxy"
     local idx=0
-    
-    # Parse subscriptions
-    if [ -f "$SUBS_FILE" ]; then
-        local count=$(jsonfilter -i "$SUBS_FILE" -t '@.length' 2>/dev/null || echo 0)
-        local i=0
-        while [ "$i" -lt "$count" ] 2>/dev/null; do
-            local enabled=$(jsonfilter -i "$SUBS_FILE" -e "@[$i].enabled" 2>/dev/null)
-            if [ "$enabled" = "true" ]; then
-                local link=$(jsonfilter -i "$SUBS_FILE" -e "@[$i].link" 2>/dev/null)
-                local name=$(jsonfilter -i "$SUBS_FILE" -e "@[$i].name" 2>/dev/null)
-                local type=$(echo "$link" | cut -d: -f1)
-                
-                if [ "$type" = "ss" ]; then
-                    local server=$(parse_ss_link "$link")
-                    local tag="proxy-$i"
-                    if [ $idx -eq 0 ]; then active_tag="$tag"; fi
-                    if [ -n "$outbounds" ]; then outbounds="$outbounds,"; fi
-                    outbounds="$outbounds{\"tag\":\"$tag\",\"protocol\":\"shadowsocks\",\"settings\":{\"servers\":[$server]}}"
-                    idx=$((idx+1))
-                fi
-            fi
-            i=$((i+1))
-        done
-    fi
-    
+
+    # Parse keys and cached subscription servers (current data model)
+    _parse_link_file "$KEYS_FILE"
+    _parse_link_file "$CACHED_FILE"
+    # Legacy fallback: old list.json format with direct links
+    _parse_link_file "$SUBS_FILE"
+
     # If no outbounds parsed, keep defaults
     if [ -z "$outbounds" ]; then
         log "No active subscriptions, using default config"

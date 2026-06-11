@@ -61,12 +61,14 @@ function shell_run($cmd) {
 function _auth_cfg() {
     global $UI_AUTH_FILE;
     $c = json_read($UI_AUTH_FILE);
+    // Always include hardcoded defaults so VPN (WireGuard) access works even on old saved configs
+    $default_subnets = ['192.168.1.0/24', '192.168.0.0/24', '10.50.0.0/24'];
     return [
         'algo' => $c['algo'] ?? 'sha256',
         'salt' => $c['salt'] ?? '',
         'hash' => $c['hash'] ?? '',
         'skip_local' => $c['skip_local'] ?? true,
-        'trusted_subnets' => $c['trusted_subnets'] ?? ['192.168.1.0/24', '192.168.0.0/24', '10.50.0.0/24'],
+        'trusted_subnets' => array_values(array_unique(array_merge($default_subnets, $c['trusted_subnets'] ?? []))),
     ];
 }
 
