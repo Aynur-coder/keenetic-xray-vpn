@@ -228,11 +228,16 @@ acquire_lock() {
     mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || :
     if [ -e "$LOCK_FILE" ]; then
         _pid="$(cat "$LOCK_FILE" 2>/dev/null || echo 0)"
+        _stale=1
         if [ "$_pid" != "0" ] && kill -0 "$_pid" 2>/dev/null; then
-            die "Another install is running (PID $_pid). Wait or delete $LOCK_FILE"
+            # PID exists — but also check lock age: >30 min means PID was recycled
+            _age=$(( $(date +%s) - $(date -r "$LOCK_FILE" +%s 2>/dev/null || echo 0) ))
+            if [ "$_age" -lt 1800 ]; then
+                die "Another install is running (PID $_pid). Wait or delete $LOCK_FILE"
+            fi
+            _stale=1
         fi
-        warn "Stale lock found, removing"
-        rm -f "$LOCK_FILE"
+        [ "$_stale" = "1" ] && { warn "Stale lock (PID $_pid, age ${_age:-?}s), removing"; rm -f "$LOCK_FILE"; }
     fi
     printf '%s\n' "$$" > "$LOCK_FILE"
     trap 'rm -f "$LOCK_FILE"' EXIT INT TERM
