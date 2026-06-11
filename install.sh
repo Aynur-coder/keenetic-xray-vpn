@@ -184,9 +184,12 @@ mf_get() {
         "$_PHP_BIN" -r "\$m=json_decode(file_get_contents('$_mf'),true); $_expr"
     else
         [ -f "$_PHP_HELPER" ] || _init_php_helper
-        # Pass values via env vars (not $argv — unreliable in CGI)
-        # Pipe through awk to strip any HTTP headers php-cgi may emit
-        _MF="$_mf" _EXPR="$_expr" "$_PHP_BIN" -q -f "$_PHP_HELPER" 2>/dev/null \
+        # Use env -i to prevent inheriting CGI env vars from lighttpd parent process.
+        # Without this, SCRIPT_FILENAME=api.php + QUERY_STRING=action=apply_update
+        # cause php-cgi to execute api.php instead of the helper, triggering a second
+        # update.sh and producing {"ok":true,"started":true} as the "manifest version".
+        env -i _MF="$_mf" _EXPR="$_expr" \
+            "$_PHP_BIN" -q -f "$_PHP_HELPER" 2>/dev/null \
             | _strip_cgi_headers
     fi
 }
