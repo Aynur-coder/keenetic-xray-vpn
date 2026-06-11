@@ -184,17 +184,14 @@ mf_get() {
         "$_PHP_BIN" -r "\$m=json_decode(file_get_contents('$_mf'),true); $_expr"
     else
         [ -f "$_PHP_HELPER" ] || _init_php_helper
-        # Override SCRIPT_FILENAME to point to the helper (not api.php from lighttpd).
-        # php-cgi compiled with force-cgi-redirect requires REDIRECT_STATUS to be set;
-        # we keep the inherited value (or default to 200) so the security check passes,
-        # but redirect SCRIPT_FILENAME to our helper so the right script runs.
-        # QUERY_STRING must be empty so $_GET['action'] doesn't trigger api.php logic
-        # if SCRIPT_FILENAME override is somehow ignored.
+        # php-cgi with force-cgi-redirect needs REDIRECT_STATUS set.
+        # doc_root in php.ini (/opt/share/www) blocks /tmp helper files — clear it with -d.
+        # SCRIPT_FILENAME must point to our helper (not inherited api.php from lighttpd).
         REDIRECT_STATUS="${REDIRECT_STATUS:-200}" \
             SCRIPT_FILENAME="$_PHP_HELPER" \
             QUERY_STRING="" REQUEST_METHOD="" \
             _MF="$_mf" _EXPR="$_expr" \
-            "$_PHP_BIN" -q -f "$_PHP_HELPER" 2>/dev/null \
+            "$_PHP_BIN" -q -d doc_root='' -d open_basedir='' -f "$_PHP_HELPER" 2>/dev/null \
             | _strip_cgi_headers
     fi
 }
