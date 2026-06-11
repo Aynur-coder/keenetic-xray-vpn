@@ -187,10 +187,11 @@ mf_get() {
         # Unset CGI env vars inherited from lighttpd before calling php-cgi.
         # When REQUEST_METHOD is set, php-cgi enforces force-cgi-redirect and uses
         # SCRIPT_FILENAME (=api.php) instead of the -f argument, causing it to run
-        # api.php (which triggers another update.sh). Unsetting these vars in a
-        # subshell makes php-cgi use the -f flag and run the helper script normally.
+        # api.php (which triggers another update.sh). Unsetting in a subshell (without
+        # exec — BusyBox ash doesn't pass VAR=val assignments through exec builtins)
+        # makes php-cgi use the -f flag and run the helper script normally.
         ( unset REQUEST_METHOD SCRIPT_FILENAME REDIRECT_STATUS QUERY_STRING
-          _MF="$_mf" _EXPR="$_expr" exec "$_PHP_BIN" -q -f "$_PHP_HELPER" ) 2>/dev/null \
+          _MF="$_mf" _EXPR="$_expr" "$_PHP_BIN" -q -f "$_PHP_HELPER" ) 2>/dev/null \
             | _strip_cgi_headers
     fi
 }
