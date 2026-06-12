@@ -1112,14 +1112,20 @@ case 'v2fly_search':
     if (file_exists($CATALOG_FILE)) {
         $catalog = json_decode(file_get_contents($CATALOG_FILE), true) ?: [];
     }
-    if (empty($catalog) && file_exists($SS_DOWNLOADER)) {
-        shell_run(escapeshellcmd($SS_DOWNLOADER) . ' -catalog ' . escapeshellarg($CATALOG_FILE));
-        $catalog = json_decode(file_get_contents($CATALOG_FILE), true) ?: [];
+    if (empty($catalog)) {
+        // Fetch catalog from v2fly domain-list-community index
+        $idx = shell_run('/opt/bin/curl -fsSL --max-time 10 https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/ 2>/dev/null');
+        if ($idx) {
+            preg_match_all('/"([a-z0-9][a-z0-9\-_]*)"/', $idx, $m);
+            $catalog = array_values(array_unique($m[1] ?? []));
+            if ($catalog) { @mkdir(dirname($CATALOG_FILE), 0755, true); file_put_contents($CATALOG_FILE, json_encode($catalog)); }
+        }
     }
     if (empty($catalog)) {
         $catalog = ['openai','anthropic','google','youtube','facebook','instagram',
             'twitter','whatsapp','telegram','discord','github','notion','tiktok',
-            'netflix','spotify','steam','twitch','reddit','linkedin','amazon'];
+            'netflix','spotify','steam','twitch','reddit','linkedin','amazon',
+            'apple','microsoft','cloudflare','zoom','dropbox','pinterest'];
     }
     // Resolve aliases: if query matches an alias, use the target name
     $resolved = $q;
@@ -1137,11 +1143,11 @@ case 'v2fly_search':
 case 'v2fly_add':
     $name = preg_replace('/[^a-zA-Z0-9_\-]/', '', trim($_POST['name'] ?? ''));
     if (!$name) { echo json_encode(['error' => 'No name']); break; }
-    if (!file_exists($SS_DOWNLOADER)) { echo json_encode(['error' => 'ss-downloader not found']); break; }
     @mkdir($V2FLY_LISTS_DIR, 0755, true);
-    $out = shell_run(escapeshellcmd($SS_DOWNLOADER) . ' -list ' . escapeshellarg($name) . ' ' . escapeshellarg($V2FLY_LISTS_DIR));
     $listFile = "$V2FLY_LISTS_DIR/$name.txt";
-    if (!file_exists($listFile)) { echo json_encode(['error' => 'Download failed: ' . $out]); break; }
+    $v2flyUrl = 'https://raw.githubusercontent.com/v2fly/domain-list-community/release/text/' . rawurlencode($name) . '.txt';
+    $out = shell_run('/opt/bin/curl -fsSL --max-time 30 -o ' . escapeshellarg($listFile) . ' ' . escapeshellarg($v2flyUrl) . ' 2>&1');
+    if (!file_exists($listFile) || filesize($listFile) === 0) { @unlink($listFile); echo json_encode(['error' => 'Download failed — list not found: ' . $name]); break; }
     $newDomains = array_filter(array_map('trim', file($listFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($l) => $l !== '' && $l[0] !== '#');
     // v2fly domains stay in their own list file, NOT in domains.txt
     $lists = json_read($GITHUB_LISTS_FILE);
@@ -1156,10 +1162,12 @@ case 'v2fly_add':
 
 case 'v2fly_refresh':
     $name = preg_replace('/[^a-zA-Z0-9_\-]/', '', trim($_POST['name'] ?? ''));
-    if (!$name || !file_exists($SS_DOWNLOADER)) { echo json_encode(['error' => 'Invalid']); break; }
-    shell_run(escapeshellcmd($SS_DOWNLOADER) . ' -list ' . escapeshellarg($name) . ' ' . escapeshellarg($V2FLY_LISTS_DIR));
+    if (!$name) { echo json_encode(['error' => 'Invalid']); break; }
+    @mkdir($V2FLY_LISTS_DIR, 0755, true);
     $listFile = "$V2FLY_LISTS_DIR/$name.txt";
-    if (!file_exists($listFile)) { echo json_encode(['error' => 'Refresh failed']); break; }
+    $v2flyUrl = 'https://raw.githubusercontent.com/v2fly/domain-list-community/release/text/' . rawurlencode($name) . '.txt';
+    shell_run('/opt/bin/curl -fsSL --max-time 30 -o ' . escapeshellarg($listFile) . ' ' . escapeshellarg($v2flyUrl) . ' 2>&1');
+    if (!file_exists($listFile) || filesize($listFile) === 0) { echo json_encode(['error' => 'Refresh failed']); break; }
     $newDomains = array_filter(array_map('trim', file($listFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($l) => $l !== '' && $l[0] !== '#');
     $lists = json_read($GITHUB_LISTS_FILE);
     foreach ($lists as &$l) { if (($l['name'] ?? '') === $name) { $l['count'] = count($newDomains); $l['updated'] = date('Y-m-d H:i:s'); } }

@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.19] - 2026-06-13
+### Fixed
+- v2fly списки больше не требуют `ss-downloader` — загружаются напрямую с GitHub (`v2fly/domain-list-community`) через curl
+
 ## [0.11.18] - 2026-06-12
 ### Fixed
 - UI обновления больше не зависает: завершение определяется по тексту лога («Already at latest», «Nothing to do», «OK») даже если старый update.sh не записал state корректно
