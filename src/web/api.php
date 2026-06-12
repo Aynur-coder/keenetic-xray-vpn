@@ -1113,19 +1113,19 @@ case 'v2fly_search':
         $catalog = json_decode(file_get_contents($CATALOG_FILE), true) ?: [];
     }
     if (empty($catalog)) {
-        // Fetch catalog from v2fly domain-list-community index
-        $idx = shell_run('/opt/bin/curl -fsSL --max-time 10 https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/ 2>/dev/null');
-        if ($idx) {
-            preg_match_all('/"([a-z0-9][a-z0-9\-_]*)"/', $idx, $m);
-            $catalog = array_values(array_unique($m[1] ?? []));
+        // Fetch catalog via GitHub API — lists files in the data/ directory
+        $api = shell_run('/opt/bin/curl -fsSL --max-time 15 "https://api.github.com/repos/v2fly/domain-list-community/contents/data" 2>/dev/null');
+        if ($api) {
+            $items = json_decode($api, true) ?: [];
+            $catalog = array_values(array_filter(array_column($items, 'name'), fn($n) => preg_match('/^[a-z0-9][a-z0-9\-_]*$/', $n)));
             if ($catalog) { @mkdir(dirname($CATALOG_FILE), 0755, true); file_put_contents($CATALOG_FILE, json_encode($catalog)); }
         }
     }
     if (empty($catalog)) {
-        $catalog = ['openai','anthropic','google','youtube','facebook','instagram',
-            'twitter','whatsapp','telegram','discord','github','notion','tiktok',
-            'netflix','spotify','steam','twitch','reddit','linkedin','amazon',
-            'apple','microsoft','cloudflare','zoom','dropbox','pinterest'];
+        $catalog = ['google','youtube','facebook','instagram','twitter','telegram',
+            'whatsapp','discord','github','tiktok','netflix','spotify','steam',
+            'twitch','reddit','linkedin','amazon','apple','microsoft','cloudflare',
+            'zoom','dropbox','pinterest','anthropic','notion','paypal','pornhub'];
     }
     // Resolve aliases: if query matches an alias, use the target name
     $resolved = $q;
@@ -1145,9 +1145,21 @@ case 'v2fly_add':
     if (!$name) { echo json_encode(['error' => 'No name']); break; }
     @mkdir($V2FLY_LISTS_DIR, 0755, true);
     $listFile = "$V2FLY_LISTS_DIR/$name.txt";
-    $v2flyUrl = 'https://raw.githubusercontent.com/v2fly/domain-list-community/release/text/' . rawurlencode($name) . '.txt';
-    $out = shell_run('/opt/bin/curl -fsSL --max-time 30 -o ' . escapeshellarg($listFile) . ' ' . escapeshellarg($v2flyUrl) . ' 2>&1');
-    if (!file_exists($listFile) || filesize($listFile) === 0) { @unlink($listFile); echo json_encode(['error' => 'Download failed — list not found: ' . $name]); break; }
+    // v2fly source: master/data/{name} — lines like "domain:example.com" or bare "example.com"
+    $v2flyUrl = 'https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/' . rawurlencode($name);
+    $raw = shell_run('/opt/bin/curl -fsSL --max-time 30 ' . escapeshellarg($v2flyUrl) . ' 2>/dev/null');
+    if (!$raw) { echo json_encode(['error' => 'List not found: ' . $name]); break; }
+    // Parse: take domain: lines and bare domains, skip include:/regexp:/@
+    $domains = [];
+    foreach (explode("\n", $raw) as $line) {
+        $line = trim(preg_replace('/#.*/', '', $line));
+        if ($line === '' || $line[0] === '@') continue;
+        if (strpos($line, 'include:') === 0 || strpos($line, 'regexp:') === 0) continue;
+        if (strpos($line, 'domain:') === 0) $line = substr($line, 7);
+        if (preg_match('/^[a-z0-9][\w\-.]{1,253}$/i', $line)) $domains[] = strtolower($line);
+    }
+    if (empty($domains)) { echo json_encode(['error' => 'List is empty or unsupported format: ' . $name]); break; }
+    file_put_contents($listFile, implode("\n", array_unique($domains)) . "\n");
     $newDomains = array_filter(array_map('trim', file($listFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($l) => $l !== '' && $l[0] !== '#');
     // v2fly domains stay in their own list file, NOT in domains.txt
     $lists = json_read($GITHUB_LISTS_FILE);
@@ -1165,9 +1177,19 @@ case 'v2fly_refresh':
     if (!$name) { echo json_encode(['error' => 'Invalid']); break; }
     @mkdir($V2FLY_LISTS_DIR, 0755, true);
     $listFile = "$V2FLY_LISTS_DIR/$name.txt";
-    $v2flyUrl = 'https://raw.githubusercontent.com/v2fly/domain-list-community/release/text/' . rawurlencode($name) . '.txt';
-    shell_run('/opt/bin/curl -fsSL --max-time 30 -o ' . escapeshellarg($listFile) . ' ' . escapeshellarg($v2flyUrl) . ' 2>&1');
-    if (!file_exists($listFile) || filesize($listFile) === 0) { echo json_encode(['error' => 'Refresh failed']); break; }
+    $v2flyUrl = 'https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/' . rawurlencode($name);
+    $raw = shell_run('/opt/bin/curl -fsSL --max-time 30 ' . escapeshellarg($v2flyUrl) . ' 2>/dev/null');
+    if (!$raw) { echo json_encode(['error' => 'Refresh failed']); break; }
+    $domains = [];
+    foreach (explode("\n", $raw) as $line) {
+        $line = trim(preg_replace('/#.*/', '', $line));
+        if ($line === '' || $line[0] === '@') continue;
+        if (strpos($line, 'include:') === 0 || strpos($line, 'regexp:') === 0) continue;
+        if (strpos($line, 'domain:') === 0) $line = substr($line, 7);
+        if (preg_match('/^[a-z0-9][\w\-.]{1,253}$/i', $line)) $domains[] = strtolower($line);
+    }
+    if (empty($domains)) { echo json_encode(['error' => 'Refresh failed — empty']); break; }
+    file_put_contents($listFile, implode("\n", array_unique($domains)) . "\n");
     $newDomains = array_filter(array_map('trim', file($listFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($l) => $l !== '' && $l[0] !== '#');
     $lists = json_read($GITHUB_LISTS_FILE);
     foreach ($lists as &$l) { if (($l['name'] ?? '') === $name) { $l['count'] = count($newDomains); $l['updated'] = date('Y-m-d H:i:s'); } }
