@@ -1439,6 +1439,7 @@ function openUpdate(){
   $('#updateBody').hidden=false;
   $('#updateProgress').hidden=true;
   $('#updateButtons').style.display='flex';
+  $('#updateApplyBtn').hidden=true;
   checkUpdate(false);
 }
 

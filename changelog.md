@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.17] - 2026-06-12
+### Fixed
+- Кнопка «Обновить» скрыта когда установлена последняя версия
+
 ## [0.11.16] - 2026-06-12
 ### Fixed
 - CI: объединены auto-tag и release в один workflow — PAT не нужен, релиз создаётся автоматически при изменении VERSION
