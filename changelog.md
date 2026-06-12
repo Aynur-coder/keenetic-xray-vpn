@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.24] - 2026-06-13
+### Fixed
+- v2fly каталог обрезался на ~1000 записях из-за лимита GitHub contents API — теперь используется Git Trees API который отдаёт все записи без ограничений
+- Если каталог содержит меньше 800 записей — считается повреждённым и пересоздаётся автоматически
+- Telegram, WhatsApp, Twitter, YouTube и всё на буквы t-z теперь находится в поиске
+
 ## [0.11.23] - 2026-06-13
 ### Added
 - Поиск v2fly на русском: «ватсап» → whatsapp, «телеграм» → telegram, «гугл» → google и т.д.

@@ -1127,19 +1127,41 @@ case 'v2fly_search':
     if (file_exists($CATALOG_FILE)) {
         $catalog = json_decode(file_get_contents($CATALOG_FILE), true) ?: [];
     }
+    // Validate catalog: if fewer than 800 entries it's truncated — regenerate
+    if (count($catalog) < 800) {
+        $catalog = [];
+        @unlink($CATALOG_FILE);
+    }
     if (empty($catalog)) {
         // Primary: ss-downloader (if available)
         if (file_exists($SS_DOWNLOADER)) {
             shell_run(escapeshellcmd($SS_DOWNLOADER) . ' -catalog ' . escapeshellarg($CATALOG_FILE));
             $catalog = json_decode(@file_get_contents($CATALOG_FILE) ?: '[]', true) ?: [];
         }
-        // Fallback: GitHub API
+        // Fallback: GitHub Git Trees API — returns ALL files without 1000-item limit
         if (empty($catalog)) {
-            $api = shell_run('/opt/bin/curl -fsSL --max-time 15 "https://api.github.com/repos/v2fly/domain-list-community/contents/data" 2>/dev/null');
-            if ($api) {
-                $items = json_decode($api, true) ?: [];
-                $catalog = array_values(array_filter(array_column($items, 'name'), fn($n) => preg_match('/^[a-z0-9][a-z0-9\-_]*$/', $n)));
-                if ($catalog) { @mkdir(dirname($CATALOG_FILE), 0755, true); file_put_contents($CATALOG_FILE, json_encode($catalog)); }
+            $tree = shell_run('/opt/bin/curl -fsSL --max-time 20 "https://api.github.com/repos/v2fly/domain-list-community/git/trees/master?recursive=0" 2>/dev/null');
+            if ($tree) {
+                $tdata = json_decode($tree, true) ?: [];
+                // Find SHA of the 'data' directory
+                $data_sha = '';
+                foreach ($tdata['tree'] ?? [] as $item) {
+                    if (($item['path'] ?? '') === 'data' && ($item['type'] ?? '') === 'tree') {
+                        $data_sha = $item['sha'];
+                        break;
+                    }
+                }
+                if ($data_sha) {
+                    $dtree = shell_run('/opt/bin/curl -fsSL --max-time 20 ' . escapeshellarg("https://api.github.com/repos/v2fly/domain-list-community/git/trees/$data_sha") . ' 2>/dev/null');
+                    if ($dtree) {
+                        $ditems = json_decode($dtree, true) ?: [];
+                        $catalog = array_values(array_filter(array_column($ditems['tree'] ?? [], 'path'), fn($n) => preg_match('/^[a-z0-9][a-z0-9\-_!]*$/', $n)));
+                        if (count($catalog) > 100) {
+                            @mkdir(dirname($CATALOG_FILE), 0755, true);
+                            file_put_contents($CATALOG_FILE, json_encode($catalog));
+                        }
+                    }
+                }
             }
         }
     }
