@@ -1097,8 +1097,9 @@ case 'update_github_lists':
 case 'v2fly_search':
     $q = strtolower(trim($_GET['q'] ?? ''));
     if (strlen($q) < 1) { echo json_encode(['results' => []]); break; }
-    // Aliases: single-letter or short queries map to full service names
+    // Aliases: short codes and Russian transliterations → English names
     $aliases = [
+        // Short codes
         'x' => 'twitter', 'tw' => 'twitter', 'twt' => 'twitter',
         'g' => 'google', 'yt' => 'youtube', 'fb' => 'facebook',
         'ig' => 'instagram', 'tt' => 'tiktok', 'tg' => 'telegram',
@@ -1107,6 +1108,20 @@ case 'v2fly_search':
         'st' => 'steam', 'tv' => 'twitch', 'rd' => 'reddit',
         'li' => 'linkedin', 'am' => 'amazon', 'op' => 'openai',
         'an' => 'anthropic', 'cl' => 'claude', 'th' => 'threads',
+        // Russian transliterations
+        'ватсап' => 'whatsapp', 'вотсап' => 'whatsapp', 'вацап' => 'whatsapp',
+        'телеграм' => 'telegram', 'телега' => 'telegram',
+        'гугл' => 'google', 'ютуб' => 'youtube', 'ютьюб' => 'youtube',
+        'фейсбук' => 'facebook', 'фб' => 'facebook',
+        'инстаграм' => 'instagram', 'инста' => 'instagram',
+        'твиттер' => 'twitter', 'твитер' => 'twitter',
+        'дискорд' => 'discord', 'нетфликс' => 'netflix',
+        'гитхаб' => 'github', 'тикток' => 'tiktok',
+        'спотифай' => 'spotify', 'стим' => 'steam',
+        'реддит' => 'reddit', 'амазон' => 'amazon',
+        'майкрософт' => 'microsoft', 'эпл' => 'apple',
+        'линкедин' => 'linkedin', 'пинтерест' => 'pinterest',
+        'нотион' => 'notion', 'дропбокс' => 'dropbox',
     ];
     $catalog = [];
     if (file_exists($CATALOG_FILE)) {

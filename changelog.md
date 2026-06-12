@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.23] - 2026-06-13
+### Added
+- Поиск v2fly на русском: «ватсап» → whatsapp, «телеграм» → telegram, «гугл» → google и т.д.
+
 ## [0.11.22] - 2026-06-13
 ### Fixed
 - v2fly: используется `ss-downloader` если есть (обрабатывает `include:` рекурсивно), иначе curl с GitHub — поиск и загрузка работают одинаково на любом роутере
