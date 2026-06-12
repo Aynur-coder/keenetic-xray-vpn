@@ -541,8 +541,13 @@ function update_adguard_ipset() {
     $yaml = file_get_contents($AGH_CONF);
     $entries = [];
     foreach ($domains as $d) $entries[] = "    - $d/vpn1";
-    $ipset_block = "  ipset:\n" . implode("\n", $entries) . "\n  ipset_file:";
-    $yaml = preg_replace('/  ipset:\n(    - .+\n)*  ipset_file:/', $ipset_block, $yaml);
+    if (empty($entries)) {
+        $ipset_block = "  ipset: []\n  ipset_file:";
+    } else {
+        $ipset_block = "  ipset:\n" . implode("\n", $entries) . "\n  ipset_file:";
+    }
+    // Match both "ipset: []" (inline empty) and multiline "ipset:\n  - ...\n" formats
+    $yaml = preg_replace('/  ipset:[^\n]*\n(    - .+\n)*  ipset_file:/', $ipset_block, $yaml);
     file_put_contents($AGH_CONF, $yaml);
 }
 
