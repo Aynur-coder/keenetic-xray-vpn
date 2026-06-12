@@ -126,13 +126,14 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .radio-list{display:flex;flex-direction:column;gap:4px;margin-bottom:12px;max-height:380px;overflow-y:auto}
 .radio-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--card2);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .15s}
 .radio-item:hover{border-color:var(--accent)}
-.radio-item.selected{border-color:var(--green);background:rgba(16,185,129,.06)}
-.radio-item.applying{border-color:var(--accent);background:rgba(99,102,241,.07);pointer-events:none}
-.radio-item.applying .radio-dot{border-color:var(--accent)}
+.radio-item.active-server{border-color:var(--green);background:rgba(16,185,129,.06)}
+.radio-item.applying{border-color:var(--accent);background:rgba(99,102,241,.07);pointer-events:none;cursor:default}
 .radio-dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;position:relative;transition:border-color .2s}
-.radio-item.selected .radio-dot{border-color:var(--green)}
-.radio-item.selected .radio-dot::after{content:'';position:absolute;top:3px;left:3px;width:6px;height:6px;border-radius:50%;background:var(--green)}
-.radio-item.applying .radio-dot::after{content:'';position:absolute;top:2px;left:2px;width:8px;height:8px;border-radius:50%;border:2px solid var(--accent);border-top-color:transparent;animation:spin .7s linear infinite}
+.radio-item.active-server .radio-dot{border-color:var(--green)}
+.radio-item.active-server .radio-dot::after{content:'';position:absolute;top:3px;left:3px;width:6px;height:6px;border-radius:50%;background:var(--green)}
+.radio-spinner{display:none;width:16px;height:16px;border-radius:50%;border:2px solid var(--accent);border-top-color:transparent;animation:spin .7s linear infinite;flex-shrink:0}
+.radio-item.applying .radio-dot{display:none}
+.radio-item.applying .radio-spinner{display:block}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* Toggle */
@@ -934,9 +935,10 @@ async function loadServers(){
     if(sni)metaParts.push('SNI: '+sni);
     if(fp)metaParts.push('FP: '+fp);
     if(security)metaParts.push(security);
-    el.innerHTML=`<div class="radio-dot"></div><div class="info"><div class="name">${isActive?'<svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="3" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>':''}${esc(item.name)}<span class="badge badge-${item.type}">${item.type}</span>${item.enabled?'':'<span class="badge badge-off">OFF</span>'}${isActive?'<span class="badge badge-active">active</span>':''}</div><div class="meta">${esc(metaParts.join(' • '))}</div></div>`;
+    el.innerHTML=`<div class="radio-dot"></div><div class="radio-spinner"></div><div class="info"><div class="name">${isActive?'<svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="3" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>':''}${esc(item.name)}<span class="badge badge-${item.type}">${item.type}</span>${item.enabled?'':'<span class="badge badge-off">OFF</span>'}${isActive?'<span class="badge badge-active">active</span>':''}</div><div class="meta">${esc(metaParts.join(' • '))}</div></div>`;
+    if(isActive) el.classList.add('active-server');
     el.onclick=()=>{
-      if(el.classList.contains('applying')||el.classList.contains('selected')) return;
+      if(el.classList.contains('applying')) return;
       selectServer(item.id, el);
     };
     list.appendChild(el);
@@ -945,22 +947,22 @@ async function loadServers(){
 
 async function selectServer(id, el){
   selectedServer=id;
-  $$('#serverList .radio-item').forEach(e=>e.classList.remove('selected'));
+  $$('#serverList .radio-item').forEach(e=>e.classList.remove('applying','active-server'));
   el.classList.add('applying');
   const status=$('#serverApplyStatus');
   if(status) status.textContent='Переключаю...';
   await api('select_server',{id});
   await api('restart');
   el.classList.remove('applying');
-  el.classList.add('selected');
+  el.classList.add('active-server');
   if(status) status.textContent='';
   toast('Сервер изменён');
-  setTimeout(()=>{ loadServers(); loadStatus(); },2000);
+  setTimeout(()=>{ loadServers(); loadStatus(); },2500);
 }
 
 async function applyServer(){
   if(!selectedServer){toast('Выберите сервер',true);return}
-  const el=document.querySelector('#serverList .radio-item.selected');
+  const el=document.querySelector(`#serverList .radio-item.active-server`)||$$('#serverList .radio-item')[0];
   if(el) await selectServer(selectedServer, el);
 }
 
