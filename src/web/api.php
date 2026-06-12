@@ -1390,15 +1390,18 @@ case 'check_update':
 
 case 'apply_update':
     // Mutating — auth already enforced. Run install.sh --upgrade in background.
-    // Guard against double-trigger (e.g. double-click): if already in progress, return early.
+    // Guard against double-trigger: if already in progress AND state file is fresh (<5 min), return early.
     $sf = '/opt/tmp/xray-vpn-update.state';
     if (file_exists($sf)) {
         $parts = explode("\n", trim(@file_get_contents($sf) ?: ''));
         $cur_status = $parts[0] ?? '';
-        if (in_array($cur_status, ['starting', 'downloading', 'applying'], true)) {
+        $cur_ts = (int)($parts[1] ?? 0);
+        $age = time() - ($cur_ts ?: filemtime($sf));
+        if (in_array($cur_status, ['starting', 'downloading', 'applying'], true) && $age < 300) {
             echo json_encode(['ok' => false, 'error' => 'already_running', 'status' => $cur_status]);
             break;
         }
+        // Stale state (>5 min) — allow new run
     }
     @unlink('/opt/tmp/xray-vpn-update-check.json');
     @file_put_contents($sf, "starting\n" . time() . "\nЗапускаю обновление...\n");

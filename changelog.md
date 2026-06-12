@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.20] - 2026-06-13
+### Fixed
+- «Ошибка: already_running» при повторном нажатии «Обновить» после зависшего обновления — стейт-файл старше 5 минут теперь считается устаревшим и не блокирует новый запуск
+
 ## [0.11.19] - 2026-06-13
 ### Fixed
 - v2fly списки больше не требуют `ss-downloader` — загружаются напрямую с GitHub (`v2fly/domain-list-community`) через curl
