@@ -1463,15 +1463,27 @@ async function applyUpdate(){
 async function pollUpdateStatus(){
   const r=await api('status_update','');
   if(r.error) return;
-  $('#updateProgressMsg').textContent=r.message||r.status||'…';
   if(r.log_tail) $('#updateProgressLog').textContent=r.log_tail;
-  if(r.status==='done' || r.status==='failed'){
+
+  // Detect completion from log text for old update.sh versions that may not write state correctly
+  const log=r.log_tail||'';
+  const logDone = /Already at latest|Nothing to do|\bOK\b/.test(log);
+  const logFailed = /ERROR:/.test(log) && !/ERROR.*lock/i.test(log);
+  const status = (r.status==='done'||logDone) ? 'done'
+               : (r.status==='failed'||logFailed) ? 'failed'
+               : r.status;
+
+  if(r.message) $('#updateProgressMsg').textContent=r.message;
+  else if(status==='done') $('#updateProgressMsg').textContent='Готово';
+  else $('#updateProgressMsg').textContent=r.status||'…';
+
+  if(status==='done' || status==='failed'){
     if(_updatePollHandle){ clearInterval(_updatePollHandle); _updatePollHandle=null; }
-    const ok=r.status==='done';
+    const ok=status==='done';
     const bar=$('#updateProgress .update-progress-bar');
-    if(bar){ bar.classList.remove('indeterminate'); }
+    if(bar) bar.classList.remove('indeterminate');
     const fill=$('#updateProgress .update-progress-bar .fill');
-    if(fill){ fill.style.width='100%'; }
+    if(fill) fill.style.width='100%';
     $('#updateButtons').innerHTML = ok
       ? '<button class="btn btn-success" onclick="location.reload()">Обновить страницу</button>'
       : '<button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button><button class="btn btn-warn" onclick="api(\'rollback_update\',{}).then(()=>{toast(\'Откат запущен\'); _updatePollHandle=setInterval(pollUpdateStatus,2000)})">Откатить</button>';

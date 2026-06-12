@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.18] - 2026-06-12
+### Fixed
+- UI обновления больше не зависает: завершение определяется по тексту лога («Already at latest», «Nothing to do», «OK») даже если старый update.sh не записал state корректно
+
 ## [0.11.17] - 2026-06-12
 ### Fixed
 - Кнопка «Обновить» скрыта когда установлена последняя версия
