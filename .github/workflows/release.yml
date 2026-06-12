@@ -2,8 +2,8 @@ name: release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    paths: [VERSION]
 
 permissions:
   contents: write
@@ -16,18 +16,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify tag matches VERSION
+      - name: Read VERSION and check if release already exists
+        id: ver
         run: |
-          set -e
-          TAG="${GITHUB_REF_NAME#v}"
-          FILE_VER=$(tr -d ' \r\n' < VERSION)
-          if [ "$TAG" != "$FILE_VER" ]; then
-            echo "::error::Tag v$TAG does not match VERSION file ($FILE_VER)"
-            exit 1
+          VERSION=$(tr -d ' \r\n' < VERSION)
+          TAG="v$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          # Skip if release already exists
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG already exists, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "VERSION=$FILE_VER" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate manifest.json with SHA256
+        if: steps.ver.outputs.skip == 'false'
         run: |
           set -e
           python3 - <<'PY'
@@ -36,26 +43,22 @@ jobs:
               tpl = json.load(f)
           ver = open('VERSION').read().strip()
           tpl['version'] = ver
-          # Hash files[] entries
           for item in tpl.get('files', []):
               src = item['src']
               if not os.path.isfile(src):
                   sys.exit(f"Missing file declared in manifest: {src}")
               h = hashlib.sha256(open(src, 'rb').read()).hexdigest()
               item['sha256'] = h
-          # defaults[] don't get checksums (they're templates the user may edit)
           with open('manifest.json', 'w') as f:
               json.dump(tpl, f, indent=2, sort_keys=False)
           print(f"manifest.json generated for v{ver} with {len(tpl['files'])} hashed files")
           PY
-          cat manifest.json | head -50
 
       - name: Extract changelog for this version
-        id: changelog
+        if: steps.ver.outputs.skip == 'false'
         run: |
           set -e
           ver="${{ env.VERSION }}"
-          # Pull section [X.Y.Z] from changelog.md up to next [
           awk -v v="$ver" '
             $0 ~ "^## \\[" v "\\]" {flag=1; next}
             flag && /^## \[/ {flag=0}
@@ -64,14 +67,14 @@ jobs:
           if [ ! -s release_notes.md ]; then
             echo "Release v$ver" > release_notes.md
           fi
-          echo "==> release_notes.md:"
           cat release_notes.md
 
-      - name: Create GitHub Release with manifest.json attached
+      - name: Create GitHub Release with assets
+        if: steps.ver.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
           body_path: release_notes.md
           files: |
             manifest.json
