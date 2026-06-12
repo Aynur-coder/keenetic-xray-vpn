@@ -116,11 +116,16 @@ need_cmd() {
 }
 
 curl_fetch() {
-    # curl_fetch <url> <dst>
+    # curl_fetch <url> <dst> — retries 3 times on transient DNS/network errors
     _url="$1"; _dst="$2"
     verb "fetch $_url -> $_dst"
-    curl -fsSL --max-time 60 -o "$_dst" "$_url" \
-        || die "Failed to download $_url"
+    _cf_try=0
+    while [ "$_cf_try" -lt 3 ]; do
+        curl -fsSL --max-time 60 -o "$_dst" "$_url" && return 0
+        _cf_try=$((_cf_try + 1))
+        [ "$_cf_try" -lt 3 ] && { warn "fetch failed (attempt $_cf_try/3), retrying in 3s..."; sleep 3; }
+    done
+    die "Failed to download $_url after 3 attempts"
 }
 
 sha256_of() {
