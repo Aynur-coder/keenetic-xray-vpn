@@ -127,9 +127,13 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .radio-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--card2);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .15s}
 .radio-item:hover{border-color:var(--accent)}
 .radio-item.selected{border-color:var(--green);background:rgba(16,185,129,.06)}
-.radio-dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;position:relative}
+.radio-item.applying{border-color:var(--accent);background:rgba(99,102,241,.07);pointer-events:none}
+.radio-item.applying .radio-dot{border-color:var(--accent)}
+.radio-dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;position:relative;transition:border-color .2s}
 .radio-item.selected .radio-dot{border-color:var(--green)}
 .radio-item.selected .radio-dot::after{content:'';position:absolute;top:3px;left:3px;width:6px;height:6px;border-radius:50%;background:var(--green)}
+.radio-item.applying .radio-dot::after{content:'';position:absolute;top:2px;left:2px;width:8px;height:8px;border-radius:50%;border:2px solid var(--accent);border-top-color:transparent;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 /* Toggle */
 .toggle{width:40px;height:22px;background:var(--border);border-radius:11px;position:relative;cursor:pointer;transition:background .2s;flex-shrink:0}
@@ -588,11 +592,11 @@ textarea{resize:vertical;min-height:80px;width:100%}
 <!-- SERVERS -->
 <div class="panel active" id="panel-servers">
   <div class="panel-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg> Выбор сервера</div>
-  <p class="panel-desc">Выберите активный сервер для VPN-подключения</p>
+  <p class="panel-desc">Нажмите на сервер чтобы переключиться</p>
   <div id="serverList" class="radio-list"></div>
-  <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn btn-primary" onclick="applyServer()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg> Применить</button>
+  <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <button class="btn btn-warn" onclick="testConnection()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Тест</button>
+    <span id="serverApplyStatus" style="font-size:12px;color:var(--text2)"></span>
   </div>
   <div id="testResult" style="margin-top:10px;font-size:13px;color:var(--text2)"></div>
 </div>
@@ -931,16 +935,33 @@ async function loadServers(){
     if(fp)metaParts.push('FP: '+fp);
     if(security)metaParts.push(security);
     el.innerHTML=`<div class="radio-dot"></div><div class="info"><div class="name">${isActive?'<svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="3" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>':''}${esc(item.name)}<span class="badge badge-${item.type}">${item.type}</span>${item.enabled?'':'<span class="badge badge-off">OFF</span>'}${isActive?'<span class="badge badge-active">active</span>':''}</div><div class="meta">${esc(metaParts.join(' • '))}</div></div>`;
-    el.onclick=()=>{selectedServer=item.id;$$('#serverList .radio-item').forEach(e=>e.classList.remove('selected'));el.classList.add('selected')};
+    el.onclick=()=>{
+      if(el.classList.contains('applying')||el.classList.contains('selected')) return;
+      selectServer(item.id, el);
+    };
     list.appendChild(el);
   });
 }
 
+async function selectServer(id, el){
+  selectedServer=id;
+  $$('#serverList .radio-item').forEach(e=>e.classList.remove('selected'));
+  el.classList.add('applying');
+  const status=$('#serverApplyStatus');
+  if(status) status.textContent='Переключаю...';
+  await api('select_server',{id});
+  await api('restart');
+  el.classList.remove('applying');
+  el.classList.add('selected');
+  if(status) status.textContent='';
+  toast('Сервер изменён');
+  setTimeout(()=>{ loadServers(); loadStatus(); },2000);
+}
+
 async function applyServer(){
   if(!selectedServer){toast('Выберите сервер',true);return}
-  await api('select_server',{id:selectedServer});
-  toast('Применяется...');await api('restart');
-  toast('Сервер изменён');setTimeout(loadStatus,3000);
+  const el=document.querySelector('#serverList .radio-item.selected');
+  if(el) await selectServer(selectedServer, el);
 }
 
 async function testConnection(){
