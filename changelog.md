@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.22] - 2026-06-13
+### Fixed
+- v2fly: используется `ss-downloader` если есть (обрабатывает `include:` рекурсивно), иначе curl с GitHub — поиск и загрузка работают одинаково на любом роутере
+- install.sh: автоматически устанавливает `ss-downloader` под нужную архитектуру (mipsle/arm64/arm/amd64)
+
 ## [0.11.21] - 2026-06-13
 ### Fixed
 - v2fly: загрузка из правильного источника (`master/data/{name}`) с парсингом формата `domain:example.com`

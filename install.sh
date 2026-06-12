@@ -401,6 +401,33 @@ install_packages() {
 }
 
 # -----------------------------------------------------------------------------
+# Step 3b: ss-downloader (v2fly domain list tool) — optional, best-effort
+# -----------------------------------------------------------------------------
+install_ss_downloader() {
+    _ssd="/opt/usr/bin/ss-downloader"
+    [ -x "$_ssd" ] && { info "ss-downloader already installed"; return 0; }
+    step "Installing ss-downloader (v2fly lists)"
+    # Detect architecture
+    _arch=$(uname -m 2>/dev/null)
+    case "$_arch" in
+        mips|mipsel)   _ssd_arch="mipsle" ;;
+        aarch64|arm64) _ssd_arch="arm64" ;;
+        armv7*|armv6*) _ssd_arch="arm" ;;
+        x86_64)        _ssd_arch="amd64" ;;
+        *)             warn "Unknown arch $_arch, skipping ss-downloader"; return 0 ;;
+    esac
+    _ssd_url="https://github.com/Aynur-coder/keenetic-xray-vpn/releases/latest/download/ss-downloader-${_ssd_arch}"
+    mkdir -p /opt/usr/bin
+    if curl -fsSL --max-time 30 -o "$_ssd" "$_ssd_url" 2>/dev/null && [ -s "$_ssd" ]; then
+        chmod 755 "$_ssd"
+        info "ss-downloader installed ($_ssd_arch)"
+    else
+        rm -f "$_ssd"
+        warn "ss-downloader download failed — v2fly lists will use curl fallback"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Step 4: AdGuard Home bootstrap
 # -----------------------------------------------------------------------------
 bootstrap_adguard() {
@@ -825,6 +852,7 @@ main() {
     fi
 
     install_packages
+    install_ss_downloader
 
     if [ "$SKIP_ADGUARD" != "1" ]; then
         bootstrap_adguard
