@@ -406,7 +406,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <div class="btn-row" id="updateButtons">
       <button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button>
       <button class="btn btn-ghost" onclick="checkUpdate(true)">Проверить</button>
-      <button class="btn btn-primary" id="updateApplyBtn" onclick="applyUpdate()" hidden>Применить</button>
+      <button class="btn btn-primary" id="updateApplyBtn" onclick="applyUpdate()" hidden>Обновить</button>
     </div>
   </div>
 </div>
@@ -1425,7 +1425,7 @@ function closeUpdate(){
 }
 
 async function applyUpdate(){
-  if(!confirm('Применить обновление? Сервисы будут перезапущены.')) return;
+  if(!confirm('Обновить? Сервисы будут перезапущены.')) return;
   $('#updateBody').hidden=true;
   $('#updateProgress').hidden=false;
   $('#updateProgressMsg').textContent='Запускаю...';

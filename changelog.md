@@ -4,6 +4,46 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.11.12] - 2026-06-12
+### Fixed
+- `install.sh`: retry `curl_fetch` up to 3 times with 3s delay on transient DNS/network errors instead of failing immediately.
+
+## [0.11.11] - 2026-06-12
+### Fixed
+- `update_adguard_ipset()`: regex now handles `ipset: []` inline YAML format written by AdGuard Home on fresh setup. Previously the regex only matched multiline format so the ipset section was never updated — domain routing silently didn't work even with AdGuard configured.
+
+## [0.11.10] - 2026-06-12
+### Fixed
+- `install.sh` `mf_get`: added `-d doc_root='' -d open_basedir=''` to php-cgi call. `php.ini` sets `doc_root=/opt/share/www` which blocked execution of helper scripts in `/tmp`, causing php-cgi to fall back to `api.php` and return `{"error":"Unknown action"}` as the manifest version.
+
+## [0.11.9] - 2026-06-12
+### Fixed
+- `install.sh` `mf_get`: keep `REDIRECT_STATUS` (required by force-cgi-redirect) but override `SCRIPT_FILENAME` to the helper script and clear `QUERY_STRING`/`REQUEST_METHOD` to prevent api.php from being executed.
+
+## [0.11.8] - 2026-06-12
+### Fixed
+- `install.sh` `mf_get`: removed `exec` from subshell — BusyBox ash does not pass `VAR=val` assignments through exec builtins, so `_MF`/`_EXPR` were not reaching php-cgi.
+
+## [0.11.7] - 2026-06-12
+### Fixed
+- `install.sh` `mf_get`: unset CGI env vars (`REQUEST_METHOD`, `SCRIPT_FILENAME`, `REDIRECT_STATUS`, `QUERY_STRING`) in a subshell before calling php-cgi to prevent lighttpd-inherited vars from redirecting execution to api.php.
+
+## [0.11.6] - 2026-06-12
+### Fixed
+- `install.sh` `mf_get`: use `env -i` to prevent inheriting CGI env vars from lighttpd. When `SCRIPT_FILENAME=api.php` and `QUERY_STRING=action=apply_update` were inherited, php-cgi executed api.php instead of the helper, triggering a second `update.sh` process.
+
+## [0.11.5] - 2026-06-11
+### Fixed
+- `install.sh`: stale lock detection now also checks file age (>30 min = stale). Prevents false "Another install running" errors when the lock PID was recycled by an unrelated process after a crash.
+
+## [0.11.4] - 2026-06-11
+### Added
+- VLESS support in `xray-manager.sh` shell config generator: `build_vless_outbound()` with Reality/TLS support and URL-decode for base64 public keys. Config generator now reads from `keys.json` and `cached_servers.json` (current data model) instead of legacy `list.json`.
+### Fixed
+- `api.php`: always merge hardcoded default subnets (including `10.50.0.0/24`) into `trusted_subnets` so WireGuard VPN admin access works even on old saved configs.
+- `api.php`: prevent concurrent update runs — if state file shows `starting`/`downloading`/`applying`, return `already_running` instead of spawning a second `update.sh`.
+- `ci`: shellcheck `--severity=warning` on `install.sh` to suppress SC2016 false positives for PHP strings in single quotes.
+
 ## [0.11.3] - 2026-06-11
 ### Fixed
 - `install.sh` on older Entware (2024): `php8-cgi` was outputting HTTP response headers (`X-Powered-By`, `Content-Type`) even with `-q`, causing `mf_get` to return garbage instead of the manifest field. Added `_strip_cgi_headers()` awk filter and switched from `$argv` to `getenv()` for passing values to the PHP helper (more reliable across CGI versions).
