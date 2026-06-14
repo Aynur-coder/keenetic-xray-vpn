@@ -1822,7 +1822,15 @@ case 'status_update':
     $message = $parts[2] ?? '';
     $tail = '';
     if (file_exists($lf)) {
-        $tail = shell_run('tail -n 30 ' . escapeshellarg($lf));
+        // Read enough lines to cover the current run, then trim to lines from the
+        // last "update.sh --" marker so we never show output from a previous run.
+        $all = shell_run('tail -n 120 ' . escapeshellarg($lf));
+        $lines = explode("\n", $all);
+        $start = 0;
+        for ($j = count($lines) - 1; $j >= 0; $j--) {
+            if (strpos($lines[$j], 'update.sh --') !== false) { $start = $j; break; }
+        }
+        $tail = implode("\n", array_slice($lines, $start));
     }
     echo json_encode([
         'status' => $status,

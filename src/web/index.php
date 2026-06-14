@@ -1790,8 +1790,8 @@ async function pollUpdateStatus(){
   const r=await api('status_update','');
   if(r.error) return;
   const log=r.log_tail||'';
-  const logDone = /Already at latest|Nothing to do|\bOK\b/.test(log);
-  const logFailed = /ERROR:/.test(log) && !/ERROR.*lock/i.test(log);
+  const logDone = /Already at latest|Nothing to do|Установка завершена/.test(log);
+  const logFailed = /\bERROR:\b/.test(log) && !/ERROR.*lock/i.test(log);
   const status = (r.status==='done'||logDone) ? 'done'
                : (r.status==='failed'||logFailed) ? 'failed'
                : r.status;
