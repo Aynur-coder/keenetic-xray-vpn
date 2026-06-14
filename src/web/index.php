@@ -1730,6 +1730,7 @@ async function pollUpdateStatus(){
       : '<button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button><button class="btn btn-warn" onclick="api(\'rollback_update\',{}).then(()=>{toast(\'Откат запущен\'); _updatePollHandle=setInterval(pollUpdateStatus,2000)})">Откатить</button>';
     $('#updateButtons').style.display='flex';
     toast(ok?'Обновление установлено':'Обновление не удалось', !ok);
+    if(ok) try{ localStorage.removeItem('xrayvpn:update:check'); }catch(e){}
   }
 }
 
