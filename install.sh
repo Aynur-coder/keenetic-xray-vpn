@@ -578,13 +578,25 @@ download_release() {
     _files_count="$(mf_get "$STAGING/manifest.json" 'echo count($m["files"]);')"
     [ "$_files_count" -gt 0 ] || die "Manifest has no files[]"
 
-    _i=0
+    _i=0; _fetched=0; _cached=0
     while [ "$_i" -lt "$_files_count" ]; do
         _src="$(mf_get "$STAGING/manifest.json" "echo \$m[\"files\"][$_i][\"src\"];")"
+        _dst="$(mf_get "$STAGING/manifest.json" "echo \$m[\"files\"][$_i][\"dst\"];")"
         _expected="$(mf_get "$STAGING/manifest.json" "echo isset(\$m[\"files\"][$_i][\"sha256\"]) ? \$m[\"files\"][$_i][\"sha256\"] : '';")"
         _bn="$(printf '%s' "$_src" | tr '/' '_')"
         _dst_staging="$STAGING/files/$_bn"
+        # Skip download when installed file already matches the expected hash
+        if [ -n "$_expected" ] && [ -f "$_dst" ]; then
+            _local="$(sha256_of "$_dst")"
+            if [ "$_local" = "$_expected" ]; then
+                verb "unchanged $_src (skip download)"
+                cp "$_dst" "$_dst_staging"
+                _cached=$((_cached + 1))
+                _i=$((_i + 1)); continue
+            fi
+        fi
         curl_fetch "$RAW_BASE/$TARGET_REF/$_src" "$_dst_staging"
+        _fetched=$((_fetched + 1))
         if [ -n "$_expected" ]; then
             _actual="$(sha256_of "$_dst_staging")"
             if [ "$_actual" != "$_expected" ]; then
@@ -599,18 +611,25 @@ download_release() {
         _i=$((_i + 1))
     done
 
-    # defaults[] — optional, no checksum (templates)
+    # defaults[] — optional, no checksum (templates); skip if destination already present
     _def_count="$(mf_get "$STAGING/manifest.json" 'echo count($m["defaults"] ?? []);')"
-    _i=0
+    _i=0; _def_fetched=0
     while [ "$_i" -lt "$_def_count" ]; do
         _src="$(mf_get "$STAGING/manifest.json" "echo \$m[\"defaults\"][$_i][\"src\"];")"
+        _dst="$(mf_get "$STAGING/manifest.json" "echo \$m[\"defaults\"][$_i][\"dst\"];")"
+        _only_missing="$(mf_get "$STAGING/manifest.json" "echo (\$m[\"defaults\"][$_i][\"only_if_missing\"] ?? true) ? 1 : 0;")"
+        if [ "$_only_missing" = "1" ] && [ -e "$_dst" ]; then
+            verb "default already present, skip download: $_src"
+            _i=$((_i + 1)); continue
+        fi
         _bn="$(printf '%s' "$_src" | tr '/' '_')"
         _dst_staging="$STAGING/defaults/$_bn"
         curl_fetch "$RAW_BASE/$TARGET_REF/$_src" "$_dst_staging"
+        _def_fetched=$((_def_fetched + 1))
         _i=$((_i + 1))
     done
 
-    info "Downloaded $_files_count file(s) and $_def_count default(s)"
+    info "Downloaded $_fetched file(s) ($_cached unchanged, skipped), $_def_fetched default(s)"
 }
 
 # -----------------------------------------------------------------------------
