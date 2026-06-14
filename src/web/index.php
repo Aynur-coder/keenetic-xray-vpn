@@ -686,7 +686,12 @@ textarea{resize:vertical;min-height:80px;width:100%}
     <button class="btn btn-danger btn-sm" onclick="deleteSelected()">Удалить выбранные</button>
   </div>
 
-  <div style="margin-bottom:8px;font-size:12px;color:var(--text2)">Всего правил: <strong id="ruleCount">0</strong></div>
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+    <span style="font-size:12px;color:var(--text2)">Всего правил: <strong id="ruleCount">0</strong></span>
+    <button class="btn btn-ghost btn-sm" onclick="dedupRules()" title="Убрать домены, уже покрытые v2fly-списками (кроме явных исключений), и повторяющиеся IP">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M3 6h18"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg> Убрать дубли
+    </button>
+  </div>
   <div id="ruleList" class="list"></div>
 </div>
 
@@ -1126,9 +1131,11 @@ function domainRow(d){
   const dom=(d.domain||'').toLowerCase();
   const key='domain:'+dom;
   const t=ruleData.targets[key]||'proxy';
+  const inList=!!ruleData.v2fly[dom];
+  const overrideBadge=inList?`<span class="badge" style="background:rgba(245,158,11,.18);color:var(--orange)" title="Этот домен есть в v2fly-листе, но здесь задано отдельное подключение">исключение v2fly</span>`:'';
   const el=document.createElement('div');el.className='list-item';
   el.innerHTML=`<input type="checkbox" class="rule-cb" data-key="${esc(key)}" ${ruleSel.has(key)?'checked':''} onclick="onRuleCheck(this)">`+
-    `<div class="info"><div class="name">${esc(d.domain)}<span class="badge" style="background:rgba(99,102,241,.15);color:var(--accent2)">домен</span></div></div>`+
+    `<div class="info"><div class="name">${esc(d.domain)}<span class="badge" style="background:rgba(99,102,241,.15);color:var(--accent2)">домен</span>${overrideBadge}</div></div>`+
     `<select class="rule-target" title="Тип совпадения: Поддомены = домен и поддомены; Точный = только этот домен" onchange="setDomainMatch('${esc(dom)}',this.value)"><option value="suffix"${d.mode!=='full'?' selected':''}>Поддомены</option><option value="full"${d.mode==='full'?' selected':''}>Точный</option></select>`+
     `<select class="rule-target" onchange="setRuleTarget('${esc(key)}',this.value)">${targetOptionsHtml(t)}</select>`+
     `<button class="btn btn-danger btn-icon btn-sm" onclick="deleteRule('domain','${esc(dom)}')" title="Удалить">&#10005;</button>`;
@@ -1167,10 +1174,17 @@ async function addRule(val){
   const tokens=val.split(/[\s,;\n]+/).map(s=>s.trim()).filter(Boolean);
   const ips=tokens.filter(ipLike),doms=tokens.filter(t=>!ipLike(t));
   const target=$('#ruleAddTarget').value,mode=$('#ruleAddMode').value;
-  let ok=false;
-  if(doms.length){const r=await api('add_domains',{domains:doms.join('\n'),target,mode});if(r.error)return toast(r.error,true);ok=true}
+  let ok=false,skipped=0;
+  if(doms.length){const r=await api('add_domains',{domains:doms.join('\n'),target,mode});if(r.error)return toast(r.error,true);skipped+=(r.skipped||0);ok=true}
   if(ips.length){const r=await api('add_ips',{ips:ips.join('\n'),target});if(r.error)return toast(r.error,true);ok=true}
-  if(ok){toast('Добавлено');$('#ruleInput').value='';loadRules()}
+  if(ok){toast(skipped?`Добавлено (пропущено как дубли v2fly: ${skipped})`:'Добавлено');$('#ruleInput').value='';loadRules()}
+}
+async function dedupRules(){
+  if(!confirm('Убрать дубли? Будут удалены домены, уже покрытые v2fly-списками (кроме заданных исключений с отдельным подключением), и повторяющиеся IP.'))return;
+  const r=await api('dedup_rules',{});
+  if(r.error)return toast(r.error,true);
+  toast(`Убрано: доменов ${r.removed_domains||0}, IP ${r.removed_ips||0}`);
+  loadRules();
 }
 async function setRuleTarget(key,target){const r=await api('set_rule_target',{key,target});if(r.error)return toast(r.error,true);if(r.warning==='server_disabled')toast('Сервер выключен — пока используется активный',true);else toast('Сохранено');loadRules()}
 async function setDomainMatch(domain,mode){const r=await api('set_domain_match',{domain,mode});if(r.error)return toast(r.error,true);toast('Сохранено');loadRules()}

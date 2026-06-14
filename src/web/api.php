@@ -542,6 +542,24 @@ function all_domains() {
     return array_keys($out);
 }
 
+// Set of bare domains covered by enabled v2fly lists -> true.
+function v2fly_domain_set() {
+    global $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
+    $set = [];
+    foreach (json_read($GITHUB_LISTS_FILE) as $l) {
+        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
+        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
+        if (!file_exists($f)) continue;
+        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
+            $d = trim($d);
+            if ($d === '' || $d[0] === '#') continue;
+            $b = strtolower(bare_domain($d));
+            if ($b !== '') $set[$b] = true;
+        }
+    }
+    return $set;
+}
+
 // Map of enabled server ids (key + cached subscription servers) -> true.
 function enabled_server_ids() {
     global $KEYS_FILE, $CACHED_FILE;
@@ -569,18 +587,14 @@ function resolve_target($key, $targets, $id_to_tag, $active_tag) {
 }
 
 // Bucket all domains (manual tokens kept WITH match-prefix; v2fly as domain:<bare>)
-// by their effective outbound tag. Manual entry wins over a v2fly list for the same host.
+// by their effective outbound tag.
+// Precedence: v2fly lists are authoritative. A manual domain only overrides a v2fly list
+// when it carries an explicit override (specific server or "direct"); a plain "proxy" manual
+// domain that duplicates a v2fly list is treated as redundant and the v2fly list wins.
 function all_domains_with_target($targets, $id_to_tag, $active_tag) {
     global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
-    $buckets = [];
-    $seen = [];
-    foreach (lines_read($DOMAINS_FILE) as $token) {
-        $bare = strtolower(bare_domain($token));
-        if ($bare === '' || isset($seen[$bare])) continue;
-        $seen[$bare] = true;
-        $tag = resolve_target('domain:' . $bare, $targets, $id_to_tag, $active_tag);
-        $buckets[$tag][$token] = true;
-    }
+    // 1) v2fly domains -> their list's target tag (bare host => tag)
+    $v2flyMap = [];
     foreach (json_read($GITHUB_LISTS_FILE) as $l) {
         if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
         $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
@@ -590,10 +604,28 @@ function all_domains_with_target($targets, $id_to_tag, $active_tag) {
             $d = trim($d);
             if ($d === '' || $d[0] === '#') continue;
             $bare = strtolower(bare_domain($d));
-            if ($bare === '' || isset($seen[$bare])) continue;
-            $seen[$bare] = true;
-            $buckets[$tag]['domain:' . $bare] = true;
+            if ($bare === '' || isset($v2flyMap[$bare])) continue;
+            $v2flyMap[$bare] = $tag;
         }
+    }
+    $buckets = [];
+    $seen = [];
+    // 2) Manual domains: kept only if NOT redundant with v2fly, or if they carry an override
+    foreach (lines_read($DOMAINS_FILE) as $token) {
+        $bare = strtolower(bare_domain($token));
+        if ($bare === '' || isset($seen[$bare])) continue;
+        $ov = $targets['domain:' . $bare] ?? 'proxy';
+        $isOverride = ($ov !== 'proxy' && $ov !== '');
+        if (!$isOverride && isset($v2flyMap[$bare])) continue; // v2fly wins; skip (do not mark seen)
+        $seen[$bare] = true;
+        $tag = resolve_target('domain:' . $bare, $targets, $id_to_tag, $active_tag);
+        $buckets[$tag][$token] = true;
+    }
+    // 3) v2fly domains not overridden by a manual entry
+    foreach ($v2flyMap as $bare => $tag) {
+        if (isset($seen[$bare])) continue;
+        $seen[$bare] = true;
+        $buckets[$tag]['domain:' . $bare] = true;
     }
     $out = [];
     foreach ($buckets as $tag => $set) $out[$tag] = array_keys($set);
@@ -637,32 +669,19 @@ function warmup_ipset() {
 }
 
 function update_adguard_ipset() {
-    global $AGH_CONF, $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
+    global $AGH_CONF;
     if (!file_exists($AGH_CONF)) return;
-    // Domains routed "direct" must NOT enter the vpn1 ipset (they bypass Xray entirely).
-    // Domains pinned to a specific server stay in the ipset — server choice happens inside Xray.
-    $targets = rule_targets();
+    // Reuse the routing bucketization (same v2fly-authoritative + override precedence).
+    // Domains routed "direct" must NOT enter the vpn1 ipset (they bypass Xray entirely);
+    // everything else (proxy + pinned servers) must, so it reaches Xray. id_to_tag is empty
+    // here so server pins collapse to the non-"direct" bucket — exactly what we need.
+    $buckets = all_domains_with_target(rule_targets(), [], 'proxy');
     $entries = [];
-    $seen = [];
-    foreach (lines_read($DOMAINS_FILE) as $token) {
-        $bare = strtolower(bare_domain($token));
-        if ($bare === '' || isset($seen[$bare])) continue;
-        $seen[$bare] = true;
-        if (($targets['domain:' . $bare] ?? '') === 'direct') continue;
-        $entries[] = "    - $bare/vpn1";
-    }
-    foreach (json_read($GITHUB_LISTS_FILE) as $l) {
-        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
-        if (($targets['list:' . $l['name']] ?? '') === 'direct') continue;
-        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
-        if (!file_exists($f)) continue;
-        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
-            $d = trim($d);
-            if ($d === '' || $d[0] === '#') continue;
-            $bare = strtolower(bare_domain($d));
-            if ($bare === '' || isset($seen[$bare])) continue;
-            $seen[$bare] = true;
-            $entries[] = "    - $bare/vpn1";
+    foreach ($buckets as $tag => $tokens) {
+        if ($tag === 'direct') continue;
+        foreach ($tokens as $tok) {
+            $bare = strtolower(bare_domain($tok));
+            if ($bare !== '') $entries[] = "    - $bare/vpn1";
         }
     }
     $yaml = file_get_contents($AGH_CONF);
@@ -1132,6 +1151,32 @@ case 'set_domain_match':
     echo json_encode(['ok' => true]);
     break;
 
+case 'dedup_rules':
+    // One-time cleanup: collapse exact duplicate domains; drop manual domains already covered
+    // by an enabled v2fly list UNLESS they carry an override; collapse duplicate IPs.
+    $v2set = v2fly_domain_set();
+    $targets = rule_targets();
+    $kept = []; $seen = []; $removedDom = 0;
+    foreach (lines_read($DOMAINS_FILE) as $token) {
+        $bare = strtolower(bare_domain($token));
+        if ($bare === '') continue;
+        if (isset($seen[$bare])) { $removedDom++; continue; }            // exact duplicate
+        $ov = $targets['domain:' . $bare] ?? 'proxy';
+        $isOverride = ($ov !== 'proxy' && $ov !== '');
+        if (!$isOverride && isset($v2set[$bare])) { $removedDom++; continue; } // redundant vs v2fly
+        $seen[$bare] = true;
+        $kept[] = $token;
+    }
+    lines_write($DOMAINS_FILE, $kept);
+    $ipsRaw = lines_read($IPS_FILE);
+    $ipsUniq = array_values(array_unique($ipsRaw));
+    $removedIp = count($ipsRaw) - count($ipsUniq);
+    lines_write($IPS_FILE, $ipsUniq);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true, 'removed_domains' => $removedDom, 'removed_ips' => $removedIp]);
+    break;
+
 case 'domains':
     // manual: bare domain + match mode (suffix=domain:, full=full:, plain=legacy substring)
     $manual = [];
@@ -1160,23 +1205,30 @@ case 'add_domains':
     if (!$new) { echo json_encode(['error' => 'No domains']); break; }
     $prefix = ($_POST['mode'] ?? 'suffix') === 'full' ? 'full:' : 'domain:';
     $target = trim($_POST['target'] ?? '');
+    $hasTarget = ($target !== '' && $target !== 'proxy');
+    // Without an explicit override, skip domains already covered by an enabled v2fly list
+    // (v2fly is authoritative). With an override the manual entry is a deliberate exception.
+    $v2set = $hasTarget ? [] : v2fly_domain_set();
     $byBare = [];
     foreach ($existing as $t) $byBare[strtolower(bare_domain($t))] = $t;  // keep existing tokens as-is
     $added = [];
+    $skipped = 0;
     foreach (preg_split('/[\s,;\n]+/', $new) as $d) {
         $bare = strtolower(bare_domain(trim($d)));
         if ($bare === '') continue;
-        if (!isset($byBare[$bare])) { $byBare[$bare] = $prefix . $bare; $added[] = $bare; }
+        if (isset($byBare[$bare])) continue;                  // already a manual entry
+        if (!$hasTarget && isset($v2set[$bare])) { $skipped++; continue; } // covered by v2fly
+        $byBare[$bare] = $prefix . $bare; $added[] = $bare;
     }
     lines_write($DOMAINS_FILE, array_values($byBare));
-    if ($target !== '' && $target !== 'proxy' && $added) {
+    if ($hasTarget && $added) {
         $targets = rule_targets();
         foreach ($added as $bare) $targets['domain:' . $bare] = $target;
         json_write($RULE_TARGETS_FILE, $targets);
     }
     update_adguard_ipset();
     quick_apply();
-    echo json_encode(['ok' => true, 'count' => count($byBare), 'added' => count($added)]);
+    echo json_encode(['ok' => true, 'count' => count($byBare), 'added' => count($added), 'skipped' => $skipped]);
     break;
 
 case 'delete_domain':
