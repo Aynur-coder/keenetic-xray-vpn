@@ -97,6 +97,8 @@ textarea{resize:vertical;min-height:80px;width:100%}
 /* Buttons */
 .btn{padding:10px 16px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .btn:active{transform:scale(.96)}
+/* The [hidden] attribute must win over display rules like .btn{display:inline-flex} */
+[hidden]{display:none!important}
 .btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:var(--accent2)}
 .btn-success{background:var(--green);color:#fff}.btn-success:hover{opacity:.85}
 .btn-danger{background:var(--red);color:#fff}.btn-danger:hover{opacity:.85}

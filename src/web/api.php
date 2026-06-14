@@ -656,6 +656,19 @@ function quick_apply() {
     warmup_ipset();
 }
 
+// Routing-only apply: regenerate config and restart Xray, WITHOUT flushing the ipset,
+// restarting AdGuard, or re-warming DNS. Use this when only the outbound (server) of an
+// already-redirected rule changes — the domain's IP is already in the vpn1 ipset, so the
+// route switches the instant Xray reloads. ~1s vs ~12s, and other domains aren't disrupted.
+function gen_and_restart_xray() {
+    $r = generate_xray_config();
+    if (isset($r['error'])) return $r;
+    write_derived_files();
+    shell_run('killall xray 2>/dev/null; sleep 1');
+    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    return $r;
+}
+
 function reload_adguard() {
     shell_run('/opt/etc/init.d/S99adguardhome restart 2>/dev/null');
 }
@@ -663,9 +676,14 @@ function reload_adguard() {
 function warmup_ipset() {
     shell_exec('pkill -f vpn_warmup 2>/dev/null');
     $domains = all_domains();
+    if (empty($domains)) return;
     $tmpfile = '/tmp/vpn_warmup.txt';
     file_put_contents($tmpfile, implode("\n", $domains) . "\n");
-    shell_exec("nohup sh -c 'sleep 12; while read d; do dig @127.0.0.1 \"\$d\" +short A +timeout=2 +tries=1 >/dev/null 2>&1; done < $tmpfile; rm -f $tmpfile' >/dev/null 2>&1 &");
+    // Wait only until AdGuard actually answers (up to ~12s), then resolve — instead of a
+    // fixed 12s sleep. AGH usually comes back in 3-5s, so the route is live much sooner.
+    $script = 'i=0; while [ $i -lt 12 ]; do dig @127.0.0.1 cloudflare.com +short +timeout=1 +tries=1 >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; '
+        . "while read d; do dig @127.0.0.1 \"\$d\" +short A +timeout=2 +tries=1 >/dev/null 2>&1; done < $tmpfile; rm -f $tmpfile";
+    shell_exec("nohup sh -c '$script' >/dev/null 2>&1 &");
 }
 
 function update_adguard_ipset() {
@@ -1100,19 +1118,29 @@ case 'set_rule_target':
     $target = trim($_POST['target'] ?? '');
     if (!preg_match('/^(domain|ip|list):.+/', $key)) { echo json_encode(['error' => 'Bad key']); break; }
     $targets = rule_targets();
+    $old = $targets[$key] ?? 'proxy';
     $warning = '';
     if ($target === '' || $target === 'proxy') {
         unset($targets[$key]);
+        $new = 'proxy';
     } else {
         $targets[$key] = $target;
+        $new = $target;
         if ($target !== 'direct') {
             $eids = enabled_server_ids();
             if (!isset($eids[$target])) $warning = 'server_disabled';
         }
     }
     json_write($RULE_TARGETS_FILE, $targets);
-    update_adguard_ipset();
-    quick_apply();
+    // Only "direct" changes ipset membership (in/out of vpn1) — that needs the slow path
+    // (AdGuard + firewall). Switching between proxy/servers only changes Xray routing, so a
+    // fast Xray-only restart applies it instantly without flushing the ipset.
+    if ($old === 'direct' || $new === 'direct') {
+        update_adguard_ipset();
+        quick_apply();
+    } else {
+        gen_and_restart_xray();
+    }
     echo json_encode(['ok' => true, 'warning' => $warning]);
     break;
 
@@ -1121,21 +1149,25 @@ case 'set_rule_targets_bulk':
     $keys = json_decode($raw, true);
     if (!is_array($keys)) $keys = array_values(array_filter(array_map('trim', explode(',', $raw))));
     $target = trim($_POST['target'] ?? '');
+    $newIsDirect = ($target === 'direct');
     $targets = rule_targets();
-    $n = 0;
+    $n = 0; $touchedDirect = $newIsDirect;
     foreach ($keys as $key) {
         if (!is_string($key) || !preg_match('/^(domain|ip|list):.+/', $key)) continue;
+        if (($targets[$key] ?? 'proxy') === 'direct') $touchedDirect = true;
         if ($target === '' || $target === 'proxy') unset($targets[$key]);
         else $targets[$key] = $target;
         $n++;
     }
     json_write($RULE_TARGETS_FILE, $targets);
-    update_adguard_ipset();
-    quick_apply();
+    if ($touchedDirect) { update_adguard_ipset(); quick_apply(); }
+    else { gen_and_restart_xray(); }
     echo json_encode(['ok' => true, 'count' => $n]);
     break;
 
 case 'set_domain_match':
+    // Match-type (suffix/exact) is purely a Xray routing concern — the domain stays in the
+    // ipset either way, so a fast Xray-only restart is enough.
     $domain = bare_domain(strtolower(trim($_POST['domain'] ?? '')));
     $mode = ($_POST['mode'] ?? 'suffix') === 'full' ? 'full:' : 'domain:';
     if ($domain === '') { echo json_encode(['error' => 'No domain']); break; }
@@ -1147,7 +1179,7 @@ case 'set_domain_match':
     unset($ln);
     if (!$found) { echo json_encode(['error' => 'Not found']); break; }
     lines_write($DOMAINS_FILE, $lines);
-    quick_apply();
+    gen_and_restart_xray();
     echo json_encode(['ok' => true]);
     break;
 
