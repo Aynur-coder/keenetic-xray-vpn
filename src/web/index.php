@@ -271,13 +271,36 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .update-version-row .arrow{color:var(--accent2)}
 .update-version-row .to{color:var(--green);font-weight:700;font-size:16px}
 .update-changelog{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px;max-height:240px;overflow-y:auto;font-size:13px;line-height:1.6;white-space:pre-wrap;color:var(--text);margin-bottom:16px;font-family:monospace}
-.update-progress{margin-top:16px}
-.update-progress-bar{width:100%;height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:10px}
-.update-progress-bar .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0;transition:width .4s ease;border-radius:3px}
-.update-progress-bar.indeterminate .fill{width:30%;animation:updateProgressIndet 1.4s infinite ease-in-out}
-@keyframes updateProgressIndet{0%{margin-left:-30%}100%{margin-left:100%}}
-.update-progress-msg{font-size:13px;color:var(--text)}
-.update-log{margin-top:12px;font-family:monospace;font-size:11px;color:var(--text2);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:140px;overflow-y:auto;white-space:pre-wrap}
+.update-progress{margin-top:4px}
+.upd-ver-badge{text-align:center;font-size:13px;color:var(--text2);margin-bottom:18px;letter-spacing:.3px}
+.upd-ver-badge strong{color:var(--green);font-size:15px}
+.upd-pct-row{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.upd-pct{font-size:28px;font-weight:800;color:var(--text);min-width:60px;text-align:right;font-variant-numeric:tabular-nums;transition:all .3s ease}
+.upd-pct.done-pct{color:var(--green)}
+.upd-bar-wrap{flex:1}
+.upd-bar{width:100%;height:10px;background:var(--border);border-radius:5px;overflow:hidden}
+.upd-bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0;transition:width .5s ease;border-radius:5px}
+.upd-bar-fill.indeterminate{width:35%;animation:updIndet 1.5s infinite ease-in-out}
+@keyframes updIndet{0%{margin-left:-35%}100%{margin-left:100%}}
+.upd-steps{display:flex;flex-direction:column;gap:0;margin-bottom:16px}
+.upd-step{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px;transition:color .3s}
+.upd-step:last-child{border-bottom:none}
+.upd-step-icon{width:22px;height:22px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.upd-step.pending .upd-step-icon{color:var(--border)}
+.upd-step.active .upd-step-icon{color:var(--accent2)}
+.upd-step.done .upd-step-icon{color:var(--green)}
+.upd-step.pending .upd-step-label{color:var(--text2)}
+.upd-step.active .upd-step-label{color:var(--text);font-weight:600}
+.upd-step.done .upd-step-label{color:var(--text2)}
+.upd-spin{animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.upd-log-toggle{display:flex;align-items:center;gap:6px;background:none;border:none;color:var(--text2);font-size:12px;cursor:pointer;padding:4px 0;margin-bottom:4px}
+.upd-log-toggle:hover{color:var(--text)}
+.upd-log-toggle svg{transition:transform .2s}
+.upd-log-toggle.open svg{transform:rotate(180deg)}
+.upd-step.failed .upd-step-icon{color:var(--red)}
+.upd-step.failed .upd-step-label{color:var(--red)}
+.upd-log{font-family:monospace;font-size:11px;color:var(--text2);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:200px;overflow-y:auto;white-space:pre-wrap;line-height:1.6}
 .update-status{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-radius:12px;border:1px solid var(--border);background:var(--card2);font-size:14px;line-height:1.5}
 .update-status.ok{border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.08)}
 .update-status.avail{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.08)}
@@ -438,9 +461,17 @@ textarea{resize:vertical;min-height:80px;width:100%}
       <div class="update-history" id="updateHistory" hidden>Загружаю…</div>
     </div>
     <div id="updateProgress" class="update-progress" hidden>
-      <div class="update-progress-bar indeterminate"><div class="fill"></div></div>
-      <div class="update-progress-msg" id="updateProgressMsg">Запускаю…</div>
-      <div class="update-log" id="updateProgressLog"></div>
+      <div class="upd-ver-badge" id="updVerBadge"></div>
+      <div class="upd-pct-row">
+        <div class="upd-pct" id="updPct">0%</div>
+        <div class="upd-bar-wrap"><div class="upd-bar"><div class="upd-bar-fill indeterminate" id="updBarFill"></div></div></div>
+      </div>
+      <div class="upd-steps" id="updSteps"></div>
+      <button class="upd-log-toggle" id="updLogToggle" onclick="toggleUpdLog()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="6 9 12 15 18 9"/></svg>
+        Показать лог
+      </button>
+      <div class="upd-log" id="updLog" hidden></div>
     </div>
     <div class="btn-row" id="updateButtons">
       <button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button>
@@ -1678,15 +1709,70 @@ function closeUpdate(){
   if(_updatePollHandle){ clearInterval(_updatePollHandle); _updatePollHandle=null; }
 }
 
+// ---- Update progress steps ----
+const UPD_STEPS = [
+  { label: 'Скачивание',        patterns: ['Скачиваю установщик','STEP  Resolving version','STEP  Downloading release','STEP  Bootstrap','STEP  Preflight','STEP  Checking Entware'] },
+  { label: 'Резервная копия',   patterns: ['STEP  Backing up'] },
+  { label: 'Применение файлов', patterns: ['STEP  Applying files'] },
+  { label: 'Миграции',          patterns: ['STEP  Running migrations','STEP  Registering auto-update'] },
+  { label: 'Завершение',        patterns: ['STEP  Restarting services','services left running'] },
+];
+const UPD_STEP_PCT = [10, 38, 58, 78, 92];
+
+function _parseUpdStep(log, status){
+  let last = -1;
+  for(let i=0; i<UPD_STEPS.length; i++){
+    for(const p of UPD_STEPS[i].patterns){ if(log.includes(p)){ last=i; break; } }
+  }
+  if(status==='downloading' && last < 0) last=0;
+  return last;
+}
+
+function _renderUpdSteps(active, isDone, isFailed){
+  const iconDone = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><polyline points="20 6 9 17 4 12"/></svg>';
+  const iconSpin = '<svg class="upd-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>';
+  const iconFail = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+  const iconPend = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="8"/></svg>';
+  return UPD_STEPS.map((s, i) => {
+    let cls, icon;
+    if(isDone || i < active){ cls='done'; icon=iconDone; }
+    else if(isFailed && i===active){ cls='failed'; icon=iconFail; }
+    else if(i===active){ cls='active'; icon=iconSpin; }
+    else{ cls='pending'; icon=iconPend; }
+    return `<div class="upd-step ${cls}"><span class="upd-step-icon">${icon}</span><span class="upd-step-label">${s.label}</span></div>`;
+  }).join('');
+}
+
+function _setUpdPct(pct, done){
+  const el=$('#updPct'); const fill=$('#updBarFill');
+  if(el){ el.textContent=Math.round(pct)+'%'; el.className='upd-pct'+(done?' done-pct':''); }
+  if(fill){
+    fill.classList.remove('indeterminate');
+    fill.style.width=pct+'%';
+  }
+}
+
+function toggleUpdLog(){
+  const log=$('#updLog'); const btn=$('#updLogToggle');
+  if(!log||!btn) return;
+  log.hidden=!log.hidden;
+  btn.classList.toggle('open', !log.hidden);
+  btn.childNodes[1].textContent=log.hidden?' Показать лог':' Скрыть лог';
+}
+
 async function applyUpdate(){
-  const v=(_updateLatest&&_updateLatest.latest)?(' до v'+_updateLatest.latest):'';
+  const cur=(_updateLatest&&_updateLatest.current)?_updateLatest.current:'';
+  const nxt=(_updateLatest&&_updateLatest.latest)?_updateLatest.latest:'';
+  const v=nxt?' до v'+nxt:'';
   if(!confirm('Обновить'+v+'? Это займёт меньше минуты, VPN продолжит работать.')) return;
   $('#updateBody').hidden=true;
   $('#updateProgress').hidden=false;
-  const bar=$('#updateProgress .update-progress-bar'); if(bar) bar.classList.add('indeterminate');
-  const fill=$('#updateProgress .update-progress-bar .fill'); if(fill) fill.style.width='';
-  $('#updateProgressMsg').textContent='Запускаю…';
-  $('#updateProgressLog').textContent='';
+  const badge=$('#updVerBadge');
+  if(badge) badge.innerHTML=cur&&nxt?`v${cur} <span style="color:var(--text2)">→</span> <strong>v${nxt}</strong>`:'Обновление…';
+  _setUpdPct(2, false);
+  $('#updSteps').innerHTML=_renderUpdSteps(-1, false, false);
+  $('#updLog').hidden=true; $('#updLog').textContent='';
+  const btn=$('#updLogToggle'); if(btn){btn.classList.remove('open');btn.childNodes[1].textContent=' Показать лог';}
   $('#updateButtons').style.display='none';
   const r=await api('apply_update',{});
   if(r.error && r.error!=='already_running'){
@@ -1695,7 +1781,6 @@ async function applyUpdate(){
     $('#updateButtons').style.display='flex';
     return;
   }
-  // already_running => just attach to the in-progress run and watch it finish
   if(_updatePollHandle) clearInterval(_updatePollHandle);
   _updatePollHandle=setInterval(pollUpdateStatus, 1500);
   pollUpdateStatus();
@@ -1704,27 +1789,22 @@ async function applyUpdate(){
 async function pollUpdateStatus(){
   const r=await api('status_update','');
   if(r.error) return;
-  if(r.log_tail) $('#updateProgressLog').textContent=r.log_tail;
-
-  // Detect completion from log text for old update.sh versions that may not write state correctly
   const log=r.log_tail||'';
   const logDone = /Already at latest|Nothing to do|\bOK\b/.test(log);
   const logFailed = /ERROR:/.test(log) && !/ERROR.*lock/i.test(log);
   const status = (r.status==='done'||logDone) ? 'done'
                : (r.status==='failed'||logFailed) ? 'failed'
                : r.status;
-
-  if(r.message) $('#updateProgressMsg').textContent=r.message;
-  else if(status==='done') $('#updateProgressMsg').textContent='Готово';
-  else $('#updateProgressMsg').textContent=r.status||'…';
-
-  if(status==='done' || status==='failed'){
+  const stepIdx = _parseUpdStep(log, status);
+  const isDone = status==='done';
+  const isFailed = status==='failed';
+  const pct = isDone ? 100 : (stepIdx >= 0 ? UPD_STEP_PCT[stepIdx] : (status==='applying'?5:2));
+  _setUpdPct(pct, isDone);
+  $('#updSteps').innerHTML=_renderUpdSteps(stepIdx, isDone, isFailed);
+  const logEl=$('#updLog'); if(logEl && log) logEl.textContent=log;
+  if(isDone || isFailed){
     if(_updatePollHandle){ clearInterval(_updatePollHandle); _updatePollHandle=null; }
-    const ok=status==='done';
-    const bar=$('#updateProgress .update-progress-bar');
-    if(bar) bar.classList.remove('indeterminate');
-    const fill=$('#updateProgress .update-progress-bar .fill');
-    if(fill) fill.style.width='100%';
+    const ok=isDone;
     $('#updateButtons').innerHTML = ok
       ? '<button class="btn btn-success" onclick="location.reload()">Обновить страницу</button>'
       : '<button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button><button class="btn btn-warn" onclick="api(\'rollback_update\',{}).then(()=>{toast(\'Откат запущен\'); _updatePollHandle=setInterval(pollUpdateStatus,2000)})">Откатить</button>';
@@ -1860,7 +1940,9 @@ async function rollbackUpdate(){
   openUpdate();
   $('#updateBody').hidden=true;
   $('#updateProgress').hidden=false;
-  $('#updateProgressMsg').textContent='Откатываю...';
+  const badge=$('#updVerBadge'); if(badge) badge.textContent='Откат…';
+  _setUpdPct(2, false);
+  $('#updSteps').innerHTML=_renderUpdSteps(-1, false, false);
   _updatePollHandle=setInterval(pollUpdateStatus, 2000);
 }
 
