@@ -13,6 +13,7 @@ CACHED_FILE="$XRAY_DIR/subscriptions/cached_servers.json"
 LOG_DIR="/opt/var/log/xray"
 DOMAINS_FILE="$RULES_DIR/domains.txt"
 IPS_FILE="$RULES_DIR/ips.txt"
+DIRECT_IPS_FILE="$RULES_DIR/direct_ips.txt"
 FULLVPN_FILE="$RULES_DIR/fullvpn_devices.txt"
 IPSET_NAME="vpn1"
 IPSET6_NAME="vpn6"
@@ -260,11 +261,14 @@ setup_firewall() {
     ipset flush $IPSET_NAME 2>/dev/null
     ipset flush $IPSET6_NAME 2>/dev/null
     
-    # Add IPs from file
+    # Add IPs from file (skip those routed "direct" — they must bypass the ipset/Xray)
     if [ -s "$IPS_FILE" ]; then
         while IFS= read -r ip || [ -n "$ip" ]; do
             [ -z "$ip" ] && continue
             [ "${ip#\#}" != "$ip" ] && continue
+            if [ -f "$DIRECT_IPS_FILE" ] && grep -qxF "$ip" "$DIRECT_IPS_FILE" 2>/dev/null; then
+                continue
+            fi
             if echo "$ip" | grep -q ':'; then
                 ipset add $IPSET6_NAME "$ip" 2>/dev/null
             else

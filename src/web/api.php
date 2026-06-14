@@ -11,6 +11,8 @@ $DOMAINS_FILE = "$RULES_DIR/domains.txt";
 $IPS_FILE = "$RULES_DIR/ips.txt";
 $FULLVPN_FILE = "$RULES_DIR/fullvpn_devices.txt";
 $GITHUB_LISTS_FILE = "$RULES_DIR/github_lists.json";
+$RULE_TARGETS_FILE = "$RULES_DIR/rule_targets.json";
+$DIRECT_IPS_FILE = "$RULES_DIR/direct_ips.txt";
 $XRAY_CONF = "$XRAY_DIR/config.json";
 $STATE_FILE = "$XRAY_DIR/state.json";
 $LOG_ACCESS = '/opt/var/log/xray/access.log';
@@ -370,6 +372,7 @@ function generate_xray_config() {
 
     $outbounds = [];
     $server_ips = [];
+    $id_to_tag = [];
     $active_tag = '';
     $state = json_read($STATE_FILE);
     $active_id = $state['active_outbound'] ?? '';
@@ -381,6 +384,7 @@ function generate_xray_config() {
         $ob = build_outbound_from_link($k['link'], $tag);
         if ($ob) {
             $outbounds[] = $ob;
+            if (!empty($k['id'])) $id_to_tag[$k['id']] = $tag;
             $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
             if ($addr) $server_ips[] = $addr;
             if ($active_id === $k['id'] || (!$active_tag && $active_id === '')) $active_tag = $tag;
@@ -394,6 +398,7 @@ function generate_xray_config() {
         $ob = build_outbound_from_link($srv['link'], $tag);
         if ($ob) {
             $outbounds[] = $ob;
+            if (!empty($srv['id'])) $id_to_tag[$srv['id']] = $tag;
             $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
             if ($addr) $server_ips[] = $addr;
             if ($active_id === $srv['id']) $active_tag = $tag;
@@ -413,8 +418,13 @@ function generate_xray_config() {
         return 0;
     });
 
-    $domains = all_domains();
-    $ips_list = lines_read($IPS_FILE);
+    $targets = rule_targets();
+    $domain_buckets = all_domains_with_target($targets, $id_to_tag, $active_tag);
+    $ip_buckets = [];
+    foreach (lines_read($IPS_FILE) as $ipv) {
+        $btag = resolve_target('ip:' . $ipv, $targets, $id_to_tag, $active_tag);
+        $ip_buckets[$btag][] = $ipv;
+    }
     $fullvpn_macs = lines_read($FULLVPN_FILE);
 
     // Use explicit private ranges instead of geoip:private — geoip.dat may not exist on MIPS Entware
@@ -463,8 +473,16 @@ function generate_xray_config() {
         }
     }
 
-    if (!empty($domains)) $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'domain' => $domains];
-    if (!empty($ips_list)) $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'ip' => $ips_list];
+    // One routing rule per target outbound. Each domain/IP lands in exactly one bucket,
+    // so first-match (domainStrategy IPIfNonMatch) is unambiguous. ksort = deterministic config.
+    ksort($domain_buckets);
+    foreach ($domain_buckets as $tag => $doms) {
+        if (!empty($doms)) $rules[] = ['type' => 'field', 'outboundTag' => $tag, 'domain' => array_values($doms)];
+    }
+    ksort($ip_buckets);
+    foreach ($ip_buckets as $tag => $ips) {
+        if (!empty($ips)) $rules[] = ['type' => 'field', 'outboundTag' => $tag, 'ip' => array_values($ips)];
+    }
     $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'network' => 'tcp,udp'];
 
     $outbounds[] = ['tag' => 'direct', 'protocol' => 'freedom'];
@@ -494,27 +512,111 @@ function generate_xray_config() {
     return ['ok' => true, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
 }
 
+// Strip Xray domain match-type prefixes -> bare hostname.
+function bare_domain($token) {
+    foreach (['domain:', 'full:', 'keyword:', 'regexp:'] as $p) {
+        if (strncmp($token, $p, strlen($p)) === 0) return substr($token, strlen($p));
+    }
+    return $token;
+}
+
+// All routed domains as bare hostnames (manual + enabled v2fly lists), deduped.
 function all_domains() {
     global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
-    $manual = lines_read($DOMAINS_FILE);
-    $lists = json_read($GITHUB_LISTS_FILE);
-    $extra = [];
-    foreach ($lists as $l) {
-        if (empty($l['enabled'])) continue;
-        if (($l['source'] ?? '') === 'v2fly' && !empty($l['name'])) {
-            $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
-            if (file_exists($f)) {
-                $extra = array_merge($extra, array_filter(array_map('trim', file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($x) => $x !== '' && $x[0] !== '#'));
-            }
+    $out = [];
+    foreach (lines_read($DOMAINS_FILE) as $t) {
+        $b = strtolower(bare_domain($t));
+        if ($b !== '') $out[$b] = true;
+    }
+    foreach (json_read($GITHUB_LISTS_FILE) as $l) {
+        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
+        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
+        if (!file_exists($f)) continue;
+        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
+            $d = trim($d);
+            if ($d === '' || $d[0] === '#') continue;
+            $b = strtolower(bare_domain($d));
+            if ($b !== '') $out[$b] = true;
         }
     }
-    return array_values(array_unique(array_merge($manual, $extra)));
+    return array_keys($out);
+}
+
+// Map of enabled server ids (key + cached subscription servers) -> true.
+function enabled_server_ids() {
+    global $KEYS_FILE, $CACHED_FILE;
+    $ids = [];
+    foreach (json_read($KEYS_FILE) as $k) { if (!empty($k['enabled']) && !empty($k['id'])) $ids[$k['id']] = true; }
+    foreach (json_read($CACHED_FILE) as $s) { if (!empty($s['enabled']) && !empty($s['id'])) $ids[$s['id']] = true; }
+    return $ids;
+}
+
+// Sparse per-rule overrides: key ("domain:x"/"ip:x"/"list:x") -> "direct" | server-id.
+function rule_targets() {
+    global $RULE_TARGETS_FILE;
+    $t = json_read($RULE_TARGETS_FILE);
+    return is_array($t) ? $t : [];
+}
+
+// Resolve a rule key to an outbound tag. proxy/missing -> active; direct -> 'direct';
+// pinned server present -> its tag; pinned server missing/disabled -> fall back to active.
+function resolve_target($key, $targets, $id_to_tag, $active_tag) {
+    $t = $targets[$key] ?? 'proxy';
+    if ($t === 'proxy' || $t === '') return $active_tag;
+    if ($t === 'direct') return 'direct';
+    if (isset($id_to_tag[$t])) return $id_to_tag[$t];
+    return $active_tag;
+}
+
+// Bucket all domains (manual tokens kept WITH match-prefix; v2fly as domain:<bare>)
+// by their effective outbound tag. Manual entry wins over a v2fly list for the same host.
+function all_domains_with_target($targets, $id_to_tag, $active_tag) {
+    global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
+    $buckets = [];
+    $seen = [];
+    foreach (lines_read($DOMAINS_FILE) as $token) {
+        $bare = strtolower(bare_domain($token));
+        if ($bare === '' || isset($seen[$bare])) continue;
+        $seen[$bare] = true;
+        $tag = resolve_target('domain:' . $bare, $targets, $id_to_tag, $active_tag);
+        $buckets[$tag][$token] = true;
+    }
+    foreach (json_read($GITHUB_LISTS_FILE) as $l) {
+        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
+        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
+        if (!file_exists($f)) continue;
+        $tag = resolve_target('list:' . $l['name'], $targets, $id_to_tag, $active_tag);
+        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
+            $d = trim($d);
+            if ($d === '' || $d[0] === '#') continue;
+            $bare = strtolower(bare_domain($d));
+            if ($bare === '' || isset($seen[$bare])) continue;
+            $seen[$bare] = true;
+            $buckets[$tag]['domain:' . $bare] = true;
+        }
+    }
+    $out = [];
+    foreach ($buckets as $tag => $set) $out[$tag] = array_keys($set);
+    return $out;
+}
+
+// Write derived plain-text files consumed by the shell firewall (busybox has no JSON parser).
+// direct_ips.txt = static IP tokens whose effective target is "direct" (must bypass the ipset).
+function write_derived_files() {
+    global $IPS_FILE, $DIRECT_IPS_FILE;
+    $targets = rule_targets();
+    $direct = [];
+    foreach (lines_read($IPS_FILE) as $ip) {
+        if (($targets['ip:' . $ip] ?? '') === 'direct') $direct[] = $ip;
+    }
+    lines_write($DIRECT_IPS_FILE, $direct);
 }
 
 function quick_apply() {
     global $MANAGER;
     $r = generate_xray_config();
     if (isset($r['error'])) return;
+    write_derived_files();
     shell_run('killall xray 2>/dev/null; sleep 1');
     shell_run("$MANAGER firewall 2>/dev/null");
     shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
@@ -535,12 +637,35 @@ function warmup_ipset() {
 }
 
 function update_adguard_ipset() {
-    global $AGH_CONF;
+    global $AGH_CONF, $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
     if (!file_exists($AGH_CONF)) return;
-    $domains = all_domains();
-    $yaml = file_get_contents($AGH_CONF);
+    // Domains routed "direct" must NOT enter the vpn1 ipset (they bypass Xray entirely).
+    // Domains pinned to a specific server stay in the ipset — server choice happens inside Xray.
+    $targets = rule_targets();
     $entries = [];
-    foreach ($domains as $d) $entries[] = "    - $d/vpn1";
+    $seen = [];
+    foreach (lines_read($DOMAINS_FILE) as $token) {
+        $bare = strtolower(bare_domain($token));
+        if ($bare === '' || isset($seen[$bare])) continue;
+        $seen[$bare] = true;
+        if (($targets['domain:' . $bare] ?? '') === 'direct') continue;
+        $entries[] = "    - $bare/vpn1";
+    }
+    foreach (json_read($GITHUB_LISTS_FILE) as $l) {
+        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
+        if (($targets['list:' . $l['name']] ?? '') === 'direct') continue;
+        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
+        if (!file_exists($f)) continue;
+        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
+            $d = trim($d);
+            if ($d === '' || $d[0] === '#') continue;
+            $bare = strtolower(bare_domain($d));
+            if ($bare === '' || isset($seen[$bare])) continue;
+            $seen[$bare] = true;
+            $entries[] = "    - $bare/vpn1";
+        }
+    }
+    $yaml = file_get_contents($AGH_CONF);
     if (empty($entries)) {
         $ipset_block = "  ipset: []\n  ipset_file:";
     } else {
@@ -781,7 +906,7 @@ $PUBLIC_READ_ACTIONS = [
     'check_update', 'status_update', 'check_ips',
     'keys', 'subscriptions', 'subscription_servers',
     'domains', 'ips', 'devices', 'lan_devices',
-    'github_lists', 'v2fly_search',
+    'github_lists', 'v2fly_search', 'rule_targets',
     'wg_peers', 'logs', 'raw_config',
 ];
 if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
@@ -820,6 +945,7 @@ case 'start':
     update_adguard_ipset();
     $r = generate_xray_config();
     if (isset($r['error'])) { echo json_encode($r); break; }
+    write_derived_files();
     shell_run('killall xray 2>/dev/null; sleep 1');
     shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log; : > /opt/var/log/xray/error.log');
@@ -841,6 +967,7 @@ case 'restart':
     update_adguard_ipset();
     $r = generate_xray_config();
     if (isset($r['error'])) { echo json_encode($r); break; }
+    write_derived_files();
     shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log');
     shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
@@ -876,6 +1003,9 @@ case 'delete_key':
     $id = $_POST['id'] ?? '';
     $keys = array_values(array_filter($keys, fn($k) => ($k['id'] ?? '') !== $id));
     json_write($KEYS_FILE, $keys);
+    // Drop rule pins to this server (they would otherwise silently fall back to active).
+    $targets = array_filter(rule_targets(), fn($v) => $v !== $id);
+    json_write($RULE_TARGETS_FILE, $targets);
     echo json_encode(['ok' => true]);
     break;
 
@@ -944,8 +1074,74 @@ case 'select_server':
     echo json_encode(['ok' => true]);
     break;
 
+case 'rule_targets': echo json_encode((object)rule_targets()); break;
+
+case 'set_rule_target':
+    $key = trim($_POST['key'] ?? '');
+    $target = trim($_POST['target'] ?? '');
+    if (!preg_match('/^(domain|ip|list):.+/', $key)) { echo json_encode(['error' => 'Bad key']); break; }
+    $targets = rule_targets();
+    $warning = '';
+    if ($target === '' || $target === 'proxy') {
+        unset($targets[$key]);
+    } else {
+        $targets[$key] = $target;
+        if ($target !== 'direct') {
+            $eids = enabled_server_ids();
+            if (!isset($eids[$target])) $warning = 'server_disabled';
+        }
+    }
+    json_write($RULE_TARGETS_FILE, $targets);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true, 'warning' => $warning]);
+    break;
+
+case 'set_rule_targets_bulk':
+    $raw = $_POST['keys'] ?? '';
+    $keys = json_decode($raw, true);
+    if (!is_array($keys)) $keys = array_values(array_filter(array_map('trim', explode(',', $raw))));
+    $target = trim($_POST['target'] ?? '');
+    $targets = rule_targets();
+    $n = 0;
+    foreach ($keys as $key) {
+        if (!is_string($key) || !preg_match('/^(domain|ip|list):.+/', $key)) continue;
+        if ($target === '' || $target === 'proxy') unset($targets[$key]);
+        else $targets[$key] = $target;
+        $n++;
+    }
+    json_write($RULE_TARGETS_FILE, $targets);
+    update_adguard_ipset();
+    quick_apply();
+    echo json_encode(['ok' => true, 'count' => $n]);
+    break;
+
+case 'set_domain_match':
+    $domain = bare_domain(strtolower(trim($_POST['domain'] ?? '')));
+    $mode = ($_POST['mode'] ?? 'suffix') === 'full' ? 'full:' : 'domain:';
+    if ($domain === '') { echo json_encode(['error' => 'No domain']); break; }
+    $lines = lines_read($DOMAINS_FILE);
+    $found = false;
+    foreach ($lines as &$ln) {
+        if (strtolower(bare_domain($ln)) === $domain) { $ln = $mode . $domain; $found = true; }
+    }
+    unset($ln);
+    if (!$found) { echo json_encode(['error' => 'Not found']); break; }
+    lines_write($DOMAINS_FILE, $lines);
+    quick_apply();
+    echo json_encode(['ok' => true]);
+    break;
+
 case 'domains':
-    $manual = lines_read($DOMAINS_FILE);
+    // manual: bare domain + match mode (suffix=domain:, full=full:, plain=legacy substring)
+    $manual = [];
+    foreach (lines_read($DOMAINS_FILE) as $token) {
+        $bare = bare_domain($token);
+        $mode = 'plain';
+        if (strncmp($token, 'domain:', 7) === 0) $mode = 'suffix';
+        elseif (strncmp($token, 'full:', 5) === 0) $mode = 'full';
+        $manual[] = ['domain' => $bare, 'mode' => $mode];
+    }
     $lists = json_read($GITHUB_LISTS_FILE);
     $v2flyDomains = [];
     foreach ($lists as $l) {
@@ -953,28 +1149,43 @@ case 'domains':
         $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
         if (!file_exists($f)) continue;
         $doms = array_filter(array_map('trim', file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)), fn($x) => $x !== '' && $x[0] !== '#');
-        foreach ($doms as $d) $v2flyDomains[$d] = $l['name'];
+        foreach ($doms as $d) $v2flyDomains[bare_domain($d)] = $l['name'];
     }
     echo json_encode(['manual' => $manual, 'v2fly' => $v2flyDomains]);
     break;
 
 case 'add_domains':
-    $domains = lines_read($DOMAINS_FILE);
+    $existing = lines_read($DOMAINS_FILE);
     $new = trim($_POST['domains'] ?? '');
     if (!$new) { echo json_encode(['error' => 'No domains']); break; }
-    $newList = array_filter(array_map(fn($d) => strtolower(trim($d)), preg_split('/[\s,;\n]+/', $new)));
-    $domains = array_values(array_unique(array_merge($domains, $newList)));
-    lines_write($DOMAINS_FILE, $domains);
+    $prefix = ($_POST['mode'] ?? 'suffix') === 'full' ? 'full:' : 'domain:';
+    $target = trim($_POST['target'] ?? '');
+    $byBare = [];
+    foreach ($existing as $t) $byBare[strtolower(bare_domain($t))] = $t;  // keep existing tokens as-is
+    $added = [];
+    foreach (preg_split('/[\s,;\n]+/', $new) as $d) {
+        $bare = strtolower(bare_domain(trim($d)));
+        if ($bare === '') continue;
+        if (!isset($byBare[$bare])) { $byBare[$bare] = $prefix . $bare; $added[] = $bare; }
+    }
+    lines_write($DOMAINS_FILE, array_values($byBare));
+    if ($target !== '' && $target !== 'proxy' && $added) {
+        $targets = rule_targets();
+        foreach ($added as $bare) $targets['domain:' . $bare] = $target;
+        json_write($RULE_TARGETS_FILE, $targets);
+    }
     update_adguard_ipset();
     quick_apply();
-    echo json_encode(['ok' => true, 'count' => count($domains)]);
+    echo json_encode(['ok' => true, 'count' => count($byBare), 'added' => count($added)]);
     break;
 
 case 'delete_domain':
-    $domains = lines_read($DOMAINS_FILE);
-    $d = trim($_POST['domain'] ?? '');
-    $domains = array_values(array_filter($domains, fn($x) => $x !== $d));
+    $bare = strtolower(bare_domain(trim($_POST['domain'] ?? '')));
+    $domains = array_values(array_filter(lines_read($DOMAINS_FILE), fn($x) => strtolower(bare_domain($x)) !== $bare));
     lines_write($DOMAINS_FILE, $domains);
+    $targets = rule_targets();
+    unset($targets['domain:' . $bare]);
+    json_write($RULE_TARGETS_FILE, $targets);
     update_adguard_ipset();
     quick_apply();
     echo json_encode(['ok' => true]);
@@ -986,18 +1197,28 @@ case 'add_ips':
     $ips = lines_read($IPS_FILE);
     $new = trim($_POST['ips'] ?? '');
     if (!$new) { echo json_encode(['error' => 'No IPs']); break; }
-    $newList = array_filter(array_map('trim', preg_split('/[\s,;\n]+/', $new)));
+    $target = trim($_POST['target'] ?? '');
+    $newList = array_values(array_filter(array_map('trim', preg_split('/[\s,;\n]+/', $new))));
+    $existing = array_flip($ips);
+    $added = array_values(array_filter($newList, fn($ip) => !isset($existing[$ip])));
     $ips = array_values(array_unique(array_merge($ips, $newList)));
     lines_write($IPS_FILE, $ips);
+    if ($target !== '' && $target !== 'proxy' && $added) {
+        $targets = rule_targets();
+        foreach ($added as $ip) $targets['ip:' . $ip] = $target;
+        json_write($RULE_TARGETS_FILE, $targets);
+    }
     quick_apply();
-    echo json_encode(['ok' => true, 'count' => count($ips)]);
+    echo json_encode(['ok' => true, 'count' => count($ips), 'added' => count($added)]);
     break;
 
 case 'delete_ip':
-    $ips = lines_read($IPS_FILE);
     $ip = trim($_POST['ip'] ?? '');
-    $ips = array_values(array_filter($ips, fn($x) => $x !== $ip));
+    $ips = array_values(array_filter(lines_read($IPS_FILE), fn($x) => $x !== $ip));
     lines_write($IPS_FILE, $ips);
+    $targets = rule_targets();
+    unset($targets['ip:' . $ip]);
+    json_write($RULE_TARGETS_FILE, $targets);
     quick_apply();
     echo json_encode(['ok' => true]);
     break;
@@ -1053,10 +1274,13 @@ case 'add_github_list':
 case 'delete_github_list':
     $lists = json_read($GITHUB_LISTS_FILE);
     $id = $_POST['id'] ?? '';
-    // Remove v2fly list file if exists
+    // Remove v2fly list file + its rule target if exists
     foreach ($lists as $l) {
         if (($l['id'] ?? '') === $id && ($l['source'] ?? '') === 'v2fly' && !empty($l['name'])) {
             @unlink("$V2FLY_LISTS_DIR/{$l['name']}.txt");
+            $targets = rule_targets();
+            unset($targets['list:' . $l['name']]);
+            json_write($RULE_TARGETS_FILE, $targets);
         }
     }
     $lists = array_values(array_filter($lists, fn($l) => ($l['id'] ?? '') !== $id));

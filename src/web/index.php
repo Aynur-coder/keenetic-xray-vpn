@@ -122,6 +122,13 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .badge-active{background:rgba(16,185,129,.3);color:var(--green)}
 .badge-off{background:rgba(239,68,68,.15);color:var(--red)}
 
+/* Rules: filter chips + per-row target selectors */
+.chip{padding:5px 12px;border-radius:14px;font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--border);background:var(--card2);color:var(--text2);transition:all .15s}
+.chip:hover{color:var(--text)}
+.chip.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.rule-target{padding:4px 6px;border-radius:6px;font-size:12px;background:var(--card2);color:var(--text);border:1px solid var(--border);flex-shrink:0;max-width:170px}
+#ruleList .list-item input.rule-cb{flex-shrink:0;width:15px;height:15px;cursor:pointer}
+
 /* Radio list (servers) */
 .radio-list{display:flex;flex-direction:column;gap:4px;margin-bottom:12px;max-height:380px;overflow-y:auto}
 .radio-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--card2);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .15s}
@@ -582,8 +589,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
   <button class="tab active" data-tab="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg> Серверы</button>
   <button class="tab" data-tab="subscriptions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 019 9"/><path d="M4 4a16 16 0 0116 16"/><circle cx="5" cy="19" r="1"/></svg> Подписки</button>
   <button class="tab" data-tab="keys"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg> Ключи</button>
-  <button class="tab" data-tab="domains"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Домены</button>
-  <button class="tab" data-tab="ips"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg> IP-адреса</button>
+  <button class="tab" data-tab="rules"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/><circle cx="8" cy="6" r="1.6" fill="currentColor"/><circle cx="16" cy="12" r="1.6" fill="currentColor"/><circle cx="8" cy="18" r="1.6" fill="currentColor"/></svg> Правила</button>
   <button class="tab" data-tab="github"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Списки v2fly</button>
   <button class="tab" data-tab="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg> Устройства</button>
   <button class="tab" data-tab="wireguard" data-feature="wireguard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> WireGuard</button>
@@ -628,39 +634,60 @@ textarea{resize:vertical;min-height:80px;width:100%}
   <div id="keyList" class="list"></div>
 </div>
 
-<!-- DOMAINS -->
-<div class="panel" id="panel-domains">
-  <div class="panel-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Домены через VPN</div>
-  <div class="input-group">
-    <input type="text" class="flex1" id="domainInput" placeholder="Один домен (example.com)">
-    <button class="btn btn-primary" onclick="addDomains($('#domainInput').value)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Добавить</button>
-  </div>
-  <div style="margin-bottom:12px">
-    <textarea class="flex1" id="domainBatch" placeholder="Пакетное добавление: по одному на строку или через запятую&#10;example.com&#10;test.ru, site.org"></textarea>
-    <button class="btn btn-success btn-sm" style="margin-top:6px" onclick="addDomains($('#domainBatch').value);$('#domainBatch').value=''">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 2v4H8V2"/></svg> Добавить пачкой
-    </button>
-  </div>
-  <div style="margin-bottom:8px;font-size:12px;color:var(--text2)">Всего доменов: <strong id="domainCount">0</strong></div>
-  <input type="text" id="domainSearch" placeholder="Поиск..." style="width:100%;margin-bottom:8px" oninput="filterDomains()">
-  <div id="domainList" class="list"></div>
-</div>
+<!-- RULES (domains + IP + v2fly lists, with per-rule connection) -->
+<div class="panel" id="panel-rules">
+  <div class="panel-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg> Правила маршрутизации</div>
+  <p class="panel-desc">
+    Каждый домен или IP можно направить <strong>через выбранный сервер</strong> (Прокси), через
+    <strong>конкретный сервер</strong> или <strong>напрямую</strong> (в обход VPN). Существующие записи работают
+    как «Прокси» — через активный сервер. «Напрямую» = трафик вообще не заходит в VPN.
+  </p>
 
-<!-- IPs -->
-<div class="panel" id="panel-ips">
-  <div class="panel-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg> IP-адреса через VPN</div>
+  <!-- Add form -->
   <div class="input-group">
-    <input type="text" class="flex1" id="ipInput" placeholder="IP или CIDR (1.2.3.4 или 10.0.0.0/24)">
-    <button class="btn btn-primary" onclick="addIps($('#ipInput').value)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Добавить</button>
+    <input type="text" class="flex1" id="ruleInput" placeholder="Домен (example.com) или IP/CIDR (1.2.3.4, 10.0.0.0/24)">
+    <button class="btn btn-primary" onclick="addRule($('#ruleInput').value)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Добавить</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+    <label style="font-size:12px;color:var(--text2)">Подключение:
+      <select id="ruleAddTarget" class="rule-target"></select>
+    </label>
+    <label style="font-size:12px;color:var(--text2)" title="Поддомены: домен и все его поддомены (example.com и www.example.com). Точный: только указанный домен.">Совпадение домена:
+      <select id="ruleAddMode" class="rule-target">
+        <option value="suffix">Поддомены</option>
+        <option value="full">Точный</option>
+      </select>
+    </label>
   </div>
   <div style="margin-bottom:12px">
-    <textarea class="flex1" id="ipBatch" placeholder="Пакетное добавление: по одному на строку&#10;1.2.3.4&#10;10.0.0.0/24"></textarea>
-    <button class="btn btn-success btn-sm" style="margin-top:6px" onclick="addIps($('#ipBatch').value);$('#ipBatch').value=''">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 2v4H8V2"/></svg> Добавить пачкой
+    <textarea class="flex1" id="ruleBatch" placeholder="Пакетное добавление: по одному на строку или через запятую&#10;example.com&#10;1.2.3.4, 10.0.0.0/24"></textarea>
+    <button class="btn btn-success btn-sm" style="margin-top:6px" onclick="addRule($('#ruleBatch').value);$('#ruleBatch').value=''">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 2v4H8V2"/></svg> Добавить пачкой (с выбранным подключением)
     </button>
   </div>
-  <div style="margin-bottom:8px;font-size:12px;color:var(--text2)">Всего IP: <strong id="ipCount">0</strong></div>
-  <div id="ipList" class="list"></div>
+
+  <div class="section-divider"></div>
+
+  <!-- Filters -->
+  <div id="ruleFilters" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+    <button class="chip active" data-filter="all" onclick="setRuleFilter('all',this)">Все</button>
+    <button class="chip" data-filter="domain" onclick="setRuleFilter('domain',this)">Домены</button>
+    <button class="chip" data-filter="ip" onclick="setRuleFilter('ip',this)">IP</button>
+    <button class="chip" data-filter="list" onclick="setRuleFilter('list',this)">Списки v2fly</button>
+  </div>
+  <input type="text" id="ruleSearch" placeholder="Поиск..." style="width:100%;margin-bottom:8px" oninput="renderRules()">
+
+  <!-- Bulk action bar -->
+  <div id="ruleBulkBar" style="display:none;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;padding:8px;background:var(--card2);border:1px solid var(--border);border-radius:8px">
+    <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="ruleSelectAll" onclick="toggleSelectAll(this)"> Выбрать всё</label>
+    <span style="font-size:12px;color:var(--text2)">Выбрано: <strong id="ruleSelCount">0</strong></span>
+    <select id="ruleBulkTarget" class="rule-target"></select>
+    <button class="btn btn-primary btn-sm" onclick="applyBulkTarget()">Применить подключение</button>
+    <button class="btn btn-danger btn-sm" onclick="deleteSelected()">Удалить выбранные</button>
+  </div>
+
+  <div style="margin-bottom:8px;font-size:12px;color:var(--text2)">Всего правил: <strong id="ruleCount">0</strong></div>
+  <div id="ruleList" class="list"></div>
 </div>
 
 <!-- GITHUB / V2FLY -->
@@ -895,8 +922,8 @@ $$('.tab').forEach(tab=>{
 function loadPanel(name){
   switch(name){
     case'servers':loadServers();break;case'subscriptions':loadSubs();break;
-    case'keys':loadKeys();break;case'domains':loadDomains();break;
-    case'ips':loadIps();break;case'github':loadGhLists();break;
+    case'keys':loadKeys();break;case'rules':loadRules();break;
+    case'github':loadGhLists();break;
     case'devices':loadDevices();break;case'wireguard':loadWgPeers();break;
     case'logs':loadLogs();break;
   }
@@ -1014,53 +1041,153 @@ async function deleteKey(id){if(!confirm('Удалить?'))return;await api('de
 async function toggleKey(id){await api('toggle_key',{id});loadKeys()}
 
 // Domains
-let manualDomains=[];
-let v2flyDomains={};
-async function loadDomains(){
-  const r=await api('domains','');
-  if(r&&r.manual){manualDomains=r.manual;v2flyDomains=r.v2fly||{}}
-  else if(Array.isArray(r)){manualDomains=r;v2flyDomains={}}
-  else{manualDomains=[];v2flyDomains={}}
-  const v2count=Object.keys(v2flyDomains).length;
-  $('#domainCount').textContent=manualDomains.length+(v2count?' + '+v2count+' v2fly':'');
-  renderDomains();
+// ===== RULES (unified domains + IP + v2fly lists with per-rule connection) =====
+let ruleData={domains:[],v2fly:{},ips:[],lists:[],targets:{},servers:[],activeId:''};
+let ruleFilter='all';
+let ruleSel=new Set();
+
+async function loadRules(){
+  const[dom,ips,lists,targets,keys,subs,status]=await Promise.all([
+    api('domains',''),api('ips',''),api('github_lists',''),api('rule_targets',''),
+    api('keys',''),api('subscription_servers',''),api('status','')
+  ]);
+  const servers=[];
+  if(Array.isArray(keys))keys.forEach(k=>{if(k.id)servers.push({id:k.id,name:k.name||'Ключ',enabled:k.enabled})});
+  if(Array.isArray(subs))subs.forEach(s=>{if(s.id)servers.push({id:s.id,name:s.name||'Сервер',enabled:s.enabled})});
+  ruleData={
+    domains:(dom&&Array.isArray(dom.manual))?dom.manual:[],
+    v2fly:(dom&&dom.v2fly)?dom.v2fly:{},
+    ips:Array.isArray(ips)?ips:[],
+    lists:Array.isArray(lists)?lists.filter(l=>l.enabled):[],
+    targets:(targets&&typeof targets==='object')?targets:{},
+    servers,activeId:status.active_outbound||''
+  };
+  ruleSel.clear();updateBulkBar();
+  populateTargetSelectors();
+  renderRules();
 }
-function filterDomains(){renderDomains()}
-function renderDomains(){
-  const q=($('#domainSearch').value||'').toLowerCase();
-  const list=$('#domainList');list.innerHTML='';
-  // Manual domains
-  const filteredManual=q?manualDomains.filter(d=>d.toLowerCase().includes(q)):manualDomains;
-  const showManual=filteredManual.slice(0,100);
-  if(showManual.length){
-    showManual.forEach(d=>{const el=document.createElement('div');el.className='list-item';el.innerHTML=`<div class="info"><div class="name">${esc(d)}</div></div><button class="btn btn-danger btn-icon btn-sm" onclick="deleteDomain('${esc(d)}')" title="Удалить">&#10005;</button>`;list.appendChild(el)});
-    if(filteredManual.length>100){const m=document.createElement('div');m.style.cssText='text-align:center;color:var(--text2);padding:8px;font-size:12px';m.textContent=`...и ещё ${filteredManual.length-100}`;list.appendChild(m)}
+
+function targetOptionsHtml(current){
+  current=current||'proxy';
+  let h=`<option value="proxy"${current==='proxy'?' selected':''}>Прокси (активный)</option>`;
+  h+=`<option value="direct"${current==='direct'?' selected':''}>Напрямую (без VPN)</option>`;
+  ruleData.servers.forEach(s=>{h+=`<option value="${esc(s.id)}"${current===s.id?' selected':''}>${esc(s.name)}${s.enabled?'':' (выкл)'}</option>`});
+  return h;
+}
+function populateTargetSelectors(){
+  const opts=targetOptionsHtml('proxy');
+  const a=$('#ruleAddTarget');if(a)a.innerHTML=opts;
+  const b=$('#ruleBulkTarget');if(b)b.innerHTML=opts;
+}
+
+function setRuleFilter(f,el){ruleFilter=f;$$('#ruleFilters .chip').forEach(c=>c.classList.remove('active'));if(el)el.classList.add('active');renderRules()}
+
+function renderRules(){
+  const q=($('#ruleSearch').value||'').toLowerCase();
+  const list=$('#ruleList');list.innerHTML='';
+  const frag=document.createDocumentFragment();
+  let total=0;
+  const F=ruleFilter;
+  // Domains
+  if(F==='all'||F==='domain'){
+    const ds=ruleData.domains.filter(d=>!q||(d.domain||'').toLowerCase().includes(q));
+    total+=ds.length;
+    ds.slice(0,200).forEach(d=>frag.appendChild(domainRow(d)));
+    if(ds.length>200)frag.appendChild(moreRow(ds.length-200));
   }
-  // V2fly grouped domains
-  const groups={};
-  Object.entries(v2flyDomains).forEach(([d,src])=>{if(!q||d.toLowerCase().includes(q)){if(!groups[src])groups[src]=[];groups[src].push(d)}});
-  const groupNames=Object.keys(groups).sort();
-  if(groupNames.length){
-    groupNames.forEach(src=>{
-      const hdr=document.createElement('div');hdr.className='list-item';hdr.style.cssText='background:rgba(99,102,241,.08);cursor:pointer;user-select:none';
-      const doms=groups[src];
-      hdr.innerHTML=`<div class="info"><div class="name" style="font-weight:600"><span class="badge" style="background:rgba(99,102,241,.15);color:var(--accent2);margin-right:6px">v2fly</span>${esc(src)}<span style="color:var(--text2);font-weight:400;margin-left:8px">${doms.length} доменов</span></div></div><svg class="v2g-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>`;
-      const wrap=document.createElement('div');wrap.style.display='none';
-      doms.slice(0,50).forEach(d=>{const el=document.createElement('div');el.className='list-item';el.style.paddingLeft='28px';el.style.opacity='.8';el.innerHTML=`<div class="info"><div class="name" style="font-size:12px">${esc(d)}</div></div>`;wrap.appendChild(el)});
-      if(doms.length>50){const m=document.createElement('div');m.style.cssText='text-align:center;color:var(--text2);padding:6px;font-size:11px;padding-left:28px';m.textContent=`...и ещё ${doms.length-50}`;wrap.appendChild(m)}
-      hdr.onclick=()=>{const open=wrap.style.display!=='none';wrap.style.display=open?'none':'block';hdr.querySelector('.v2g-arrow').style.transform=open?'':'rotate(180deg)'};
-      list.appendChild(hdr);list.appendChild(wrap);
+  // IPs
+  if(F==='all'||F==='ip'){
+    const is=ruleData.ips.filter(ip=>!q||ip.toLowerCase().includes(q));
+    total+=is.length;
+    is.slice(0,200).forEach(ip=>frag.appendChild(ipRow(ip)));
+    if(is.length>200)frag.appendChild(moreRow(is.length-200));
+  }
+  // v2fly lists
+  if(F==='all'||F==='list'){
+    const groups={};
+    Object.entries(ruleData.v2fly).forEach(([d,src])=>{(groups[src]=groups[src]||[]).push(d)});
+    ruleData.lists.forEach(l=>{
+      const doms=groups[l.name]||[];
+      const nameHit=!q||l.name.toLowerCase().includes(q);
+      const domHit=q&&doms.some(d=>d.toLowerCase().includes(q));
+      if(!nameHit&&!domHit)return;
+      total++;
+      listRows(l,doms,q).forEach(n=>frag.appendChild(n));
     });
   }
-  if(!showManual.length&&!groupNames.length){list.innerHTML='<div style="text-align:center;color:var(--text2);padding:16px">'+(q?'Ничего не найдено':'Нет доменов')+'</div>'}
+  if(!total){list.innerHTML='<div style="text-align:center;color:var(--text2);padding:16px">'+(q?'Ничего не найдено':'Нет правил')+'</div>'}
+  else list.appendChild(frag);
+  $('#ruleCount').textContent=total;
 }
-async function addDomains(val){if(!val||!val.trim())return toast('Введите домен(ы)',true);const r=await api('add_domains',{domains:val.trim()});if(r.error)return toast(r.error,true);toast(`Добавлено. Всего: ${r.count}`);$('#domainInput').value='';loadDomains()}
-async function deleteDomain(d){await api('delete_domain',{domain:d});toast('Удалено');loadDomains()}
 
-// IPs
-async function loadIps(){const ips=await api('ips','');const list=$('#ipList');list.innerHTML='';$('#ipCount').textContent=Array.isArray(ips)?ips.length:0;if(!Array.isArray(ips)||!ips.length){list.innerHTML='<div style="text-align:center;color:var(--text2);padding:16px">Нет IP</div>';return}ips.forEach(ip=>{const el=document.createElement('div');el.className='list-item';el.innerHTML=`<div class="info"><div class="name">${esc(ip)}</div></div><button class="btn btn-danger btn-icon btn-sm" onclick="deleteIp('${esc(ip)}')" title="Удалить">&#10005;</button>`;list.appendChild(el)})}
-async function addIps(val){if(!val||!val.trim())return toast('Введите IP',true);const r=await api('add_ips',{ips:val.trim()});if(r.error)return toast(r.error,true);toast(`Добавлено. Всего: ${r.count}`);$('#ipInput').value='';loadIps()}
-async function deleteIp(ip){await api('delete_ip',{ip});toast('Удалено');loadIps()}
+function moreRow(n){const m=document.createElement('div');m.style.cssText='text-align:center;color:var(--text2);padding:8px;font-size:12px';m.textContent=`...и ещё ${n} (уточните поиск)`;return m}
+
+function domainRow(d){
+  const dom=(d.domain||'').toLowerCase();
+  const key='domain:'+dom;
+  const t=ruleData.targets[key]||'proxy';
+  const el=document.createElement('div');el.className='list-item';
+  el.innerHTML=`<input type="checkbox" class="rule-cb" data-key="${esc(key)}" ${ruleSel.has(key)?'checked':''} onclick="onRuleCheck(this)">`+
+    `<div class="info"><div class="name">${esc(d.domain)}<span class="badge" style="background:rgba(99,102,241,.15);color:var(--accent2)">домен</span></div></div>`+
+    `<select class="rule-target" title="Тип совпадения: Поддомены = домен и поддомены; Точный = только этот домен" onchange="setDomainMatch('${esc(dom)}',this.value)"><option value="suffix"${d.mode!=='full'?' selected':''}>Поддомены</option><option value="full"${d.mode==='full'?' selected':''}>Точный</option></select>`+
+    `<select class="rule-target" onchange="setRuleTarget('${esc(key)}',this.value)">${targetOptionsHtml(t)}</select>`+
+    `<button class="btn btn-danger btn-icon btn-sm" onclick="deleteRule('domain','${esc(dom)}')" title="Удалить">&#10005;</button>`;
+  return el;
+}
+function ipRow(ip){
+  const key='ip:'+ip;
+  const t=ruleData.targets[key]||'proxy';
+  const el=document.createElement('div');el.className='list-item';
+  el.innerHTML=`<input type="checkbox" class="rule-cb" data-key="${esc(key)}" ${ruleSel.has(key)?'checked':''} onclick="onRuleCheck(this)">`+
+    `<div class="info"><div class="name">${esc(ip)}<span class="badge" style="background:rgba(6,182,212,.2);color:var(--cyan)">IP</span></div></div>`+
+    `<select class="rule-target" onchange="setRuleTarget('${esc(key)}',this.value)">${targetOptionsHtml(t)}</select>`+
+    `<button class="btn btn-danger btn-icon btn-sm" onclick="deleteRule('ip','${esc(ip)}')" title="Удалить">&#10005;</button>`;
+  return el;
+}
+function listRows(l,doms,q){
+  const key='list:'+l.name;
+  const t=ruleData.targets[key]||'proxy';
+  const hdr=document.createElement('div');hdr.className='list-item';hdr.style.background='rgba(99,102,241,.08)';
+  hdr.innerHTML=`<input type="checkbox" class="rule-cb" data-key="${esc(key)}" ${ruleSel.has(key)?'checked':''} onclick="onRuleCheck(this)">`+
+    `<div class="info v2g-toggle" style="cursor:pointer;user-select:none"><div class="name" style="font-weight:600"><span class="badge" style="background:rgba(99,102,241,.15);color:var(--accent2);margin-right:4px">v2fly</span>${esc(l.name)}<span style="color:var(--text2);font-weight:400;margin-left:8px">${doms.length||l.count||0} доменов</span></div></div>`+
+    `<select class="rule-target" onchange="setRuleTarget('${esc(key)}',this.value)">${targetOptionsHtml(t)}</select>`+
+    `<svg class="v2g-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="transition:transform .2s;flex-shrink:0"><polyline points="6 9 12 15 18 9"/></svg>`;
+  const wrap=document.createElement('div');wrap.style.display='none';
+  const shown=(q?doms.filter(d=>d.toLowerCase().includes(q)):doms).slice(0,50);
+  shown.forEach(d=>{const el=document.createElement('div');el.className='list-item';el.style.paddingLeft='34px';el.style.opacity='.8';el.innerHTML=`<div class="info"><div class="name" style="font-size:12px">${esc(d)}</div></div>`;wrap.appendChild(el)});
+  if(doms.length>shown.length){const m=document.createElement('div');m.style.cssText='text-align:center;color:var(--text2);padding:6px;font-size:11px;padding-left:34px';m.textContent=`...и ещё ${doms.length-shown.length}`;wrap.appendChild(m)}
+  const tgl=hdr.querySelector('.v2g-toggle');
+  tgl.onclick=()=>{const open=wrap.style.display!=='none';wrap.style.display=open?'none':'block';hdr.querySelector('.v2g-arrow').style.transform=open?'':'rotate(180deg)'};
+  return [hdr,wrap];
+}
+
+function ipLike(s){return /^[0-9]{1,3}(\.[0-9]{1,3}){3}(\/[0-9]{1,2})?$/.test(s)||(s.includes(':')&&/^[0-9a-fA-F:]+(\/[0-9]{1,3})?$/.test(s))}
+async function addRule(val){
+  if(!val||!val.trim())return toast('Введите домен или IP',true);
+  const tokens=val.split(/[\s,;\n]+/).map(s=>s.trim()).filter(Boolean);
+  const ips=tokens.filter(ipLike),doms=tokens.filter(t=>!ipLike(t));
+  const target=$('#ruleAddTarget').value,mode=$('#ruleAddMode').value;
+  let ok=false;
+  if(doms.length){const r=await api('add_domains',{domains:doms.join('\n'),target,mode});if(r.error)return toast(r.error,true);ok=true}
+  if(ips.length){const r=await api('add_ips',{ips:ips.join('\n'),target});if(r.error)return toast(r.error,true);ok=true}
+  if(ok){toast('Добавлено');$('#ruleInput').value='';loadRules()}
+}
+async function setRuleTarget(key,target){const r=await api('set_rule_target',{key,target});if(r.error)return toast(r.error,true);if(r.warning==='server_disabled')toast('Сервер выключен — пока используется активный',true);else toast('Сохранено');loadRules()}
+async function setDomainMatch(domain,mode){const r=await api('set_domain_match',{domain,mode});if(r.error)return toast(r.error,true);toast('Сохранено');loadRules()}
+async function deleteRule(type,val){if(type==='domain')await api('delete_domain',{domain:val});else if(type==='ip')await api('delete_ip',{ip:val});toast('Удалено');loadRules()}
+
+function onRuleCheck(cb){const k=cb.dataset.key;if(cb.checked)ruleSel.add(k);else ruleSel.delete(k);updateBulkBar()}
+function updateBulkBar(){const bar=$('#ruleBulkBar');if(!bar)return;const c=$('#ruleSelCount');if(c)c.textContent=ruleSel.size;bar.style.display=ruleSel.size?'flex':'none'}
+function toggleSelectAll(cb){$$('#ruleList .rule-cb').forEach(x=>{x.checked=cb.checked;const k=x.dataset.key;if(cb.checked)ruleSel.add(k);else ruleSel.delete(k)});updateBulkBar()}
+async function applyBulkTarget(){if(!ruleSel.size)return;const target=$('#ruleBulkTarget').value;const r=await api('set_rule_targets_bulk',{keys:JSON.stringify([...ruleSel]),target});if(r.error)return toast(r.error,true);toast(`Обновлено правил: ${r.count}`);loadRules()}
+async function deleteSelected(){
+  if(!ruleSel.size)return;
+  const keys=[...ruleSel].filter(k=>k.startsWith('domain:')||k.startsWith('ip:'));
+  if(!keys.length)return toast('Списки v2fly удаляются на вкладке «Списки v2fly»',true);
+  if(!confirm(`Удалить выбранные правила (${keys.length})?`))return;
+  for(const k of keys){if(k.startsWith('domain:'))await api('delete_domain',{domain:k.slice(7)});else await api('delete_ip',{ip:k.slice(3)})}
+  toast('Удалено');loadRules();
+}
 
 // GitHub / V2fly Lists
 let v2flyTimer=null;
@@ -1084,7 +1211,7 @@ async function v2flyAdd(name){
   const r=await api('v2fly_add',{name});
   if(r.error)return toast(r.error,true);
   toast(`${name}: +${r.count} доменов`);
-  v2flyDoSearch();loadGhLists();loadDomains();
+  v2flyDoSearch();loadGhLists();
 }
 async function v2flyRefreshAll(){
   $('#v2flySpinner').style.display='inline-block';
@@ -1103,7 +1230,7 @@ async function v2flyRefreshAll(){
   if(r2.ok)total+=(r2.new_domains||0);
   $('#v2flySpinner').style.display='none';
   toast(`Обновлено: +${total} новых доменов`);
-  loadGhLists();loadDomains();
+  loadGhLists();
 }
 async function loadGhLists(){
   const lists=await api('github_lists','');
@@ -1115,7 +1242,7 @@ async function loadGhLists(){
     list.appendChild(el);
   });
 }
-async function v2flyRefresh(name){toast('Обновление '+name+'...');const r=await api('v2fly_refresh',{name});if(r.error)return toast(r.error,true);toast(`${name}: +${r.new} новых`);loadGhLists();loadDomains()}
+async function v2flyRefresh(name){toast('Обновление '+name+'...');const r=await api('v2fly_refresh',{name});if(r.error)return toast(r.error,true);toast(`${name}: +${r.new} новых`);loadGhLists()}
 async function deleteGhList(id){if(!confirm('Удалить список?'))return;await api('delete_github_list',{id});toast('Удалено');loadGhLists()}
 async function toggleGhList(id){await api('toggle_github_list',{id});loadGhLists()}
 
