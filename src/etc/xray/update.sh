@@ -90,8 +90,24 @@ auto_update_enabled() {
 
 write_state() {
     # write_state <status> <message>
+    # Line 4 carries our PID so the web UI can detect a dead/finished updater reliably
+    # (instead of guessing by elapsed time).
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || :
-    printf '%s\n%s\n%s\n' "$1" "$(date '+%s')" "$2" > "$STATE_FILE"
+    printf '%s\n%s\n%s\n%s\n' "$1" "$(date '+%s')" "$2" "$$" > "$STATE_FILE"
+}
+
+# Re-exec ourselves in a brand-new session, fully detached from the web server's
+# process tree. Without this, install.sh restarting lighttpd mid-update kills this
+# script (and install.sh) before completion, leaving the state stuck at "applying".
+reexec_detached() {
+    [ -n "${XRAY_UPDATE_DETACHED:-}" ] && return 0
+    XRAY_UPDATE_DETACHED=1; export XRAY_UPDATE_DETACHED
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$0" "$MODE" >/dev/null 2>&1 </dev/null &
+    else
+        nohup "$0" "$MODE" >/dev/null 2>&1 </dev/null &
+    fi
+    exit 0
 }
 
 cmd_check() {
@@ -111,6 +127,7 @@ cmd_check() {
 }
 
 cmd_apply() {
+    reexec_detached
     mkdir -p "$(dirname "$UPDATE_LOG")"
     {
         echo "============================================================"
@@ -168,6 +185,7 @@ cmd_cron() {
 }
 
 cmd_rollback() {
+    reexec_detached
     mkdir -p "$(dirname "$UPDATE_LOG")"
     {
         date '+[%F %T] update.sh --rollback starting'

@@ -922,7 +922,7 @@ $action = $_GET['action'] ?? $_POST['action'] ?? '';
 $PUBLIC_READ_ACTIONS = [
     'status', 'login', 'logout', 'auth_status',
     'get_onboarding_status', 'get_features', 'get_version',
-    'check_update', 'status_update', 'check_ips',
+    'check_update', 'status_update', 'check_ips', 'changelog_full',
     'keys', 'subscriptions', 'subscription_servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search', 'rule_targets',
@@ -1740,24 +1740,43 @@ case 'check_update':
     }
     break;
 
+case 'changelog_full':
+    // Full version history for the "История изменений" view (cached 6h).
+    $cache = '/opt/tmp/xray-vpn-changelog.md';
+    $fresh = file_exists($cache) && (time() - filemtime($cache)) < 6 * 3600;
+    if (!$fresh || !empty($_GET['force'])) {
+        $raw = shell_run('curl -fsSL --max-time 10 https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/changelog.md 2>/dev/null');
+        if ($raw !== '' && strpos($raw, '#') !== false) @file_put_contents($cache, $raw);
+    }
+    $md = file_exists($cache) ? (@file_get_contents($cache) ?: '') : '';
+    echo json_encode(['markdown' => $md, 'current' => get_installed_version()]);
+    break;
+
 case 'apply_update':
-    // Mutating — auth already enforced. Run install.sh --upgrade in background.
-    // Guard against double-trigger: if already in progress AND state file is fresh (<5 min), return early.
+    // Mutating — auth already enforced. update.sh self-detaches (setsid) and does the work.
+    // Guard against double-trigger by checking whether the updater process is ACTUALLY alive
+    // (PID on line 4 of the state file), not by elapsed time — so a dead/finished run never
+    // blocks a retry.
     $sf = '/opt/tmp/xray-vpn-update.state';
     if (file_exists($sf)) {
         $parts = explode("\n", trim(@file_get_contents($sf) ?: ''));
         $cur_status = $parts[0] ?? '';
         $cur_ts = (int)($parts[1] ?? 0);
+        $cur_pid = (int)($parts[3] ?? 0);
         $age = time() - ($cur_ts ?: filemtime($sf));
-        if (in_array($cur_status, ['starting', 'downloading', 'applying'], true) && $age < 300) {
-            echo json_encode(['ok' => false, 'error' => 'already_running', 'status' => $cur_status]);
-            break;
+        if (in_array($cur_status, ['starting', 'downloading', 'applying'], true)) {
+            $alive = false;
+            if ($cur_pid > 0) $alive = trim(shell_run("kill -0 $cur_pid 2>/dev/null; echo \$?")) === '0';
+            // pid alive => really running; no pid yet but very fresh => still in the launch gap
+            if ($alive || ($cur_pid === 0 && $age < 30)) {
+                echo json_encode(['ok' => false, 'error' => 'already_running', 'status' => $cur_status]);
+                break;
+            }
         }
-        // Stale state (>5 min) — allow new run
     }
     @unlink('/opt/tmp/xray-vpn-update-check.json');
-    @file_put_contents($sf, "starting\n" . time() . "\nЗапускаю обновление...\n");
-    shell_exec('nohup /opt/etc/xray/update.sh --apply > /dev/null 2>&1 &');
+    @file_put_contents($sf, "starting\n" . time() . "\nЗапускаю обновление...\n0\n");
+    shell_exec('/opt/etc/xray/update.sh --apply > /dev/null 2>&1 &');
     echo json_encode(['ok' => true, 'started' => true]);
     break;
 
@@ -1782,8 +1801,8 @@ case 'status_update':
     break;
 
 case 'rollback_update':
-    @file_put_contents('/opt/tmp/xray-vpn-update.state', "starting\n" . time() . "\nЗапускаю откат...\n");
-    shell_exec('nohup /opt/etc/xray/update.sh --rollback > /dev/null 2>&1 &');
+    @file_put_contents('/opt/tmp/xray-vpn-update.state', "starting\n" . time() . "\nЗапускаю откат...\n0\n");
+    shell_exec('/opt/etc/xray/update.sh --rollback > /dev/null 2>&1 &');
     echo json_encode(['ok' => true, 'started' => true]);
     break;
 

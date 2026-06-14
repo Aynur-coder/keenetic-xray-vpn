@@ -766,6 +766,24 @@ restart_services() {
     step "Restarting services"
     if dryrun "restart lighttpd / adguard / xray / wireguard"; then return; fi
 
+    if [ "$MODE" = "upgrade" ]; then
+        # Fast upgrade path: our releases ship PHP/shell that is read fresh per HTTP request
+        # and invoked on demand, so NO service restart is required. Restarting AdGuard/Xray is
+        # slow and would needlessly drop the VPN. Just make sure things are running.
+        # (The user reloads the browser to pick up new index.php/api.php.)
+        if [ -x /opt/etc/init.d/S80lighttpd ] && ! pgrep -x lighttpd >/dev/null 2>&1; then
+            /opt/etc/init.d/S80lighttpd start >/dev/null 2>&1 || warn "lighttpd start issue"
+        fi
+        if [ "$SKIP_ADGUARD" != "1" ] && [ -x /opt/etc/init.d/S99adguardhome ] && ! pgrep -x AdGuardHome >/dev/null 2>&1; then
+            /opt/etc/init.d/S99adguardhome start >/dev/null 2>&1 || :
+        fi
+        if [ -f /opt/etc/xray/.onboarded ] && [ -x /opt/etc/init.d/S22xray ] && ! pgrep -x xray >/dev/null 2>&1; then
+            /opt/etc/init.d/S22xray start >/dev/null 2>&1 || :
+        fi
+        info "Upgrade: services left running (no restart needed for code-only update)"
+        return
+    fi
+
     [ -x /opt/etc/init.d/S80lighttpd ] && /opt/etc/init.d/S80lighttpd restart >/dev/null 2>&1 || warn "lighttpd restart issue"
 
     if [ "$SKIP_ADGUARD" != "1" ] && [ -x /opt/etc/init.d/S99adguardhome ]; then

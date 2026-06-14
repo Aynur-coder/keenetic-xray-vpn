@@ -276,6 +276,25 @@ textarea{resize:vertical;min-height:80px;width:100%}
 @keyframes updateProgressIndet{0%{margin-left:-30%}100%{margin-left:100%}}
 .update-progress-msg{font-size:13px;color:var(--text)}
 .update-log{margin-top:12px;font-family:monospace;font-size:11px;color:var(--text2);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:140px;overflow-y:auto;white-space:pre-wrap}
+.update-status{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-radius:12px;border:1px solid var(--border);background:var(--card2);font-size:14px;line-height:1.5}
+.update-status.ok{border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.08)}
+.update-status.avail{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.08)}
+.update-status .us-icon{flex-shrink:0;width:24px;height:24px;margin-top:1px}
+.update-status.ok .us-icon{color:var(--green)}
+.update-status.avail .us-icon{color:var(--orange)}
+.update-status .us-title{font-weight:700}
+.update-status .us-sub{font-size:12px;color:var(--text2);margin-top:3px}
+.update-history-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:16px;padding:11px 0;background:none;border:none;border-top:1px solid var(--border);color:var(--text2);font-size:13px;font-weight:600;cursor:pointer}
+.update-history-toggle:hover{color:var(--text)}
+.update-history-toggle svg{transition:transform .2s}
+.update-history{max-height:320px;overflow-y:auto;padding:4px 2px 2px}
+.cl-ver{font-weight:700;margin-top:14px;font-size:13px}
+.cl-ver:first-child{margin-top:0}
+.cl-ver.cur{color:var(--green)}
+.cl-date{color:var(--text2);font-weight:400;font-size:11px;margin-left:4px}
+.cl-sec{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent2);margin-top:7px;font-weight:700}
+.cl-item{font-size:12px;color:var(--text);margin:2px 0 2px 2px;line-height:1.45}
+.cl-text{font-size:12px;color:var(--text2);margin:2px 0}
 
 /* ============ Settings modal ============ */
 .settings-card{max-width:560px;max-height:90vh;overflow-y:auto}
@@ -402,13 +421,19 @@ textarea{resize:vertical;min-height:80px;width:100%}
   <div class="overlay-card update-modal-card">
     <h2 id="updateTitle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Обновление</h2>
     <div id="updateBody">
-      <div class="update-version-row">
-        <span class="from" id="updateFrom">—</span>
-        <span class="arrow">→</span>
-        <span class="to" id="updateTo">—</span>
+      <div class="update-status" id="updateStatus">
+        <svg class="us-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <div><div class="us-title">Проверяю обновления…</div><div class="us-sub"></div></div>
       </div>
-      <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Что нового</div>
-      <div class="update-changelog" id="updateChangelog">Загружаю…</div>
+      <div id="updateNewWrap" hidden>
+        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 6px">Что нового</div>
+        <div class="update-changelog" id="updateChangelog"></div>
+      </div>
+      <button class="update-history-toggle" id="updateHistoryToggle" onclick="toggleUpdateHistory()">
+        <span>История изменений</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="update-history" id="updateHistory" hidden>Загружаю…</div>
     </div>
     <div id="updateProgress" class="update-progress" hidden>
       <div class="update-progress-bar indeterminate"><div class="fill"></div></div>
@@ -1554,33 +1579,95 @@ document.querySelectorAll('[data-skip]').forEach(b=>{
 let _updateLatest=null;
 let _updatePollHandle=null;
 
+let _historyLoaded=false;
+
+// Minimal, safe markdown renderer for changelog.md (our own content, but still escaped).
+function renderChangelogMd(md, currentVer){
+  const lines=(md||'').split('\n'); let html=''; let m;
+  for(const raw of lines){
+    const line=raw.replace(/\r$/,'');
+    if(m=line.match(/^##\s+\[([^\]]+)\]\s*-?\s*(.*)$/)){
+      const ver=m[1].trim(); const date=(m[2]||'').trim();
+      if(/unreleased/i.test(ver)) continue;
+      const isCur=currentVer&&ver===currentVer;
+      html+=`<div class="cl-ver${isCur?' cur':''}">v${esc(ver)}${date?`<span class="cl-date">${esc(date)}</span>`:''}${isCur?' <span class="badge badge-active">текущая</span>':''}</div>`;
+    } else if(m=line.match(/^###\s+(.*)$/)){
+      html+=`<div class="cl-sec">${esc(m[1])}</div>`;
+    } else if(m=line.match(/^[-*]\s+(.*)$/)){
+      html+=`<div class="cl-item">• ${esc(m[1])}</div>`;
+    } else if(line.match(/^#\s+/)||line.trim()===''){
+      /* skip top title / blank */
+    } else {
+      html+=`<div class="cl-text">${esc(line)}</div>`;
+    }
+  }
+  return html||'<div style="color:var(--text2)">Нет описания</div>';
+}
+
+function setUpdateStatusIcon(kind){
+  const icons={
+    ok:'<circle cx="12" cy="12" r="10"/><polyline points="8 12 11 15 16 9"/>',
+    avail:'<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    err:'<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'
+  };
+  const svg=$('#updateStatus .us-icon'); if(svg) svg.innerHTML=icons[kind]||icons.err;
+}
+
 async function checkUpdate(force=false){
+  const st=$('#updateStatus'); const title=st.querySelector('.us-title'); const sub=st.querySelector('.us-sub');
+  st.className='update-status'; title.textContent='Проверяю обновления…'; sub.textContent='';
   const r=await api('check_update', force?'force=1':'');
-  if(r.error){ $('#updateChangelog').textContent='Не удалось проверить обновления'; return null; }
+  if(r.error){
+    st.className='update-status'; setUpdateStatusIcon('err');
+    title.textContent='Не удалось проверить обновления';
+    sub.textContent='Проверьте, что у роутера есть интернет, и нажмите «Проверить»';
+    $('#updateNewWrap').hidden=true; $('#updateApplyBtn').hidden=true;
+    return null;
+  }
   _updateLatest=r;
-  $('#updateFrom').textContent='v'+(r.current||'?');
-  $('#updateTo').textContent='v'+(r.latest||'?');
   if(r.available){
-    $('#updateChangelog').textContent=r.changelog||'(нет описания)';
+    st.className='update-status avail'; setUpdateStatusIcon('avail');
+    title.textContent=`Доступно обновление: v${r.current} → v${r.latest}`;
+    sub.textContent='Обновление занимает меньше минуты, VPN продолжит работать';
+    $('#updateChangelog').innerHTML=renderChangelogMd(r.changelog||'', r.current);
+    $('#updateNewWrap').hidden=false;
     $('#updateApplyBtn').hidden=false;
-    $('#updateBadge').textContent='1';
-    $('#updateBadge').hidden=false;
+    $('#updateBadge').textContent='1'; $('#updateBadge').hidden=false;
   }else{
-    $('#updateChangelog').textContent='Установлена последняя версия v'+(r.current||'?');
-    $('#updateApplyBtn').hidden=true;
+    st.className='update-status ok'; setUpdateStatusIcon('ok');
+    title.textContent=`У вас последняя версия v${r.current}`;
+    sub.textContent='Обновлений нет';
+    $('#updateNewWrap').hidden=true; $('#updateApplyBtn').hidden=true;
     $('#updateBadge').hidden=true;
   }
-  // cache
   try{ localStorage.setItem('xrayvpn:update:check', JSON.stringify({r, ts:Date.now()})); }catch(e){}
   return r;
+}
+
+async function toggleUpdateHistory(){
+  const h=$('#updateHistory'); const tg=$('#updateHistoryToggle');
+  const show=h.hidden; h.hidden=!show;
+  if(tg){const ic=tg.querySelector('svg'); if(ic) ic.style.transform=show?'rotate(180deg)':'';}
+  if(show && !_historyLoaded){
+    h.textContent='Загружаю…';
+    const r=await api('changelog_full','');
+    if(r&&r.markdown){ h.innerHTML=renderChangelogMd(r.markdown, r.current); _historyLoaded=true; }
+    else h.textContent='Не удалось загрузить историю изменений';
+  }
+}
+
+function resetUpdateButtons(){
+  $('#updateButtons').innerHTML='<button class="btn btn-ghost" onclick="closeUpdate()">Закрыть</button><button class="btn btn-ghost" onclick="checkUpdate(true)">Проверить</button><button class="btn btn-primary" id="updateApplyBtn" onclick="applyUpdate()" hidden>Обновить</button>';
 }
 
 function openUpdate(){
   $('#updateOverlay').classList.add('show');
   $('#updateBody').hidden=false;
   $('#updateProgress').hidden=true;
+  $('#updateHistory').hidden=true; _historyLoaded=false;
+  const tg=$('#updateHistoryToggle'); if(tg){const ic=tg.querySelector('svg'); if(ic) ic.style.transform='';}
+  resetUpdateButtons();
   $('#updateButtons').style.display='flex';
-  $('#updateApplyBtn').hidden=true;
   checkUpdate(false);
 }
 
@@ -1590,15 +1677,26 @@ function closeUpdate(){
 }
 
 async function applyUpdate(){
-  if(!confirm('Обновить? Сервисы будут перезапущены.')) return;
+  const v=(_updateLatest&&_updateLatest.latest)?(' до v'+_updateLatest.latest):'';
+  if(!confirm('Обновить'+v+'? Это займёт меньше минуты, VPN продолжит работать.')) return;
   $('#updateBody').hidden=true;
   $('#updateProgress').hidden=false;
-  $('#updateProgressMsg').textContent='Запускаю...';
+  const bar=$('#updateProgress .update-progress-bar'); if(bar) bar.classList.add('indeterminate');
+  const fill=$('#updateProgress .update-progress-bar .fill'); if(fill) fill.style.width='';
+  $('#updateProgressMsg').textContent='Запускаю…';
   $('#updateProgressLog').textContent='';
   $('#updateButtons').style.display='none';
   const r=await api('apply_update',{});
-  if(r.error){ toast('Ошибка: '+r.error,true); $('#updateButtons').style.display='flex'; return; }
-  _updatePollHandle=setInterval(pollUpdateStatus, 2000);
+  if(r.error && r.error!=='already_running'){
+    toast('Ошибка: '+r.error,true);
+    $('#updateBody').hidden=false; $('#updateProgress').hidden=true;
+    $('#updateButtons').style.display='flex';
+    return;
+  }
+  // already_running => just attach to the in-progress run and watch it finish
+  if(_updatePollHandle) clearInterval(_updatePollHandle);
+  _updatePollHandle=setInterval(pollUpdateStatus, 1500);
+  pollUpdateStatus();
 }
 
 async function pollUpdateStatus(){
