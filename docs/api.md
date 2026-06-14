@@ -19,9 +19,12 @@ The middleware list lives in `api.php` as `$PUBLIC_READ_ACTIONS`.
 | `get_features` | GET | `{wireguard, adguard, auto_update, theme}` |
 | `get_version` | GET | `{installed}` |
 | `check_update` | GET (optional `force=1`) | `{current, latest, available, changelog}` — 6h server-side cache |
-| `status_update` | GET | `{status, updated_at, message, log_tail}` for progress polling |
+| `changelog_full` | GET (optional `force=1`) | `{markdown, current}` — full version history for the "История изменений" view, 6h cache |
+| `status_update` | GET | `{status, updated_at, message, log_tail}` for progress polling. `status` reflects the live updater; a dead/finished run no longer reports as running |
 | `keys` / `subscriptions` / `subscription_servers` | GET | Lists |
-| `domains` / `ips` / `devices` / `lan_devices` | GET | Lists |
+| `domains` | GET | `{manual:[{domain, mode}], v2fly:{domain: listName}}` — `mode` is `suffix`/`full`/`plain` |
+| `ips` / `devices` / `lan_devices` | GET | Lists |
+| `rule_targets` | GET | Map of per-rule overrides: `{"domain:x"|"ip:x"|"list:x": "direct"|server-id}` |
 | `github_lists` / `v2fly_search` | GET | Lists / search results |
 | `wg_peers` | GET | Parsed `wg show` output |
 | `logs` | GET (`type`, `lines`) | Tail of access.log or error.log |
@@ -56,8 +59,13 @@ The middleware list lives in `api.php` as `$PUBLIC_READ_ACTIONS`.
 
 ### Routing rules
 
-- `add_domains` / `delete_domain`
-- `add_ips` / `delete_ip`
+- `add_domains` (POST `domains`; optional `mode=suffix|full`, optional `target=proxy|direct|<server-id>`) — new domains stored with the match prefix; domains already covered by an enabled v2fly list are skipped unless a `target` is given (response includes `added` and `skipped` counts)
+- `delete_domain` (POST `domain`) — also clears its `rule_targets` entry
+- `add_ips` (POST `ips`; optional `target`) / `delete_ip`
+- `set_rule_target` (POST `key`, `target`) — `key` = `domain:x`/`ip:x`/`list:x`, `target` = `proxy`/`direct`/`<server-id>`. Proxy↔server changes apply via the fast Xray-only path; `direct` changes use the full path. May return `{warning: "server_disabled"}`
+- `set_rule_targets_bulk` (POST `keys` = JSON array or CSV, `target`) — apply one target to many rules in a single pass
+- `set_domain_match` (POST `domain`, `mode=suffix|full`) — change a domain's match type (fast Xray-only apply)
+- `dedup_rules` — one-time cleanup: drop manual domains already covered by v2fly (keeping overrides) and collapse duplicate IPs; returns `{removed_domains, removed_ips}`
 - `add_device` / `delete_device`
 - `add_github_list` / `delete_github_list` / `toggle_github_list` / `update_github_lists`
 - `v2fly_add` / `v2fly_refresh`
@@ -68,7 +76,7 @@ The middleware list lives in `api.php` as `$PUBLIC_READ_ACTIONS`.
 
 ### Updates
 
-- `apply_update` — fires `update.sh --apply` in background
+- `apply_update` — fires `update.sh --apply` (the script self-detaches via `setsid`). Re-entry is guarded by the live updater PID, not a timer, so it returns `{error: "already_running"}` only while a process is genuinely alive; otherwise it (re)starts. Poll `status_update` for progress
 - `rollback_update` — fires `update.sh --rollback`
 
 ### Logs

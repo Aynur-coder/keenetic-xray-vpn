@@ -101,6 +101,51 @@ ls /opt/etc/xray/backups
 install.sh --reinstall --version v0.9.0
 ```
 
+## Update stuck on "already_running" / "applying"
+
+Fixed in 0.13.0+. The updater now detaches via `setsid` (a lighttpd restart during the update
+no longer kills it) and the API guards re-entry by the live process PID, not a 5-minute timer —
+a dead run no longer blocks a retry. The fast upgrade path also skips restarting AdGuard/Xray.
+
+If you are still on an old version and hit a stuck state, clear it once and retry:
+
+```sh
+cat /opt/tmp/xray-vpn-update.state     # line 1 = status, line 4 = PID
+rm -f /opt/tmp/xray-vpn-update.state
+```
+
+Or update from SSH (bypasses the web UI entirely; the fresh `install.sh` no longer self-kills):
+
+```sh
+curl -fsSL https://github.com/Aynur-coder/keenetic-xray-vpn/releases/latest/download/install.sh | sh -s -- --upgrade
+```
+
+## A domain goes direct (real IP) right after changing its server
+
+Per-rule routing happens inside Xray, but the domain's traffic only reaches Xray if its IP is
+in ipset `vpn1` (AdGuard adds it on resolution). In 0.13.1+ switching a rule between
+Proxy/servers restarts only Xray and leaves the ipset intact, so it applies in ~1s. If a domain
+still shows the real IP:
+
+- It may be a brand-new domain whose IP isn't warmed into the ipset yet — wait a few seconds.
+- Check the rule and ipset membership:
+
+```sh
+cat /opt/etc/xray/rules/rule_targets.json
+for ip in $(nslookup example.com 127.0.0.1 2>/dev/null | awk '/^Address [0-9]/{print $3}'); do ipset test vpn1 "$ip"; done
+```
+
+- "Напрямую" (`direct`) intentionally excludes the domain from `vpn1` so it bypasses the VPN.
+- CDN sites with many rotating IPs may resolve to an address that isn't in the set; re-test or
+  add the IP range under IPs.
+
+## Duplicate domains / "exception v2fly" badge
+
+v2fly lists are authoritative. A manually-added domain already covered by an enabled v2fly list
+is dropped unless it has its own connection override (then it's a deliberate exception, badged
+"исключение v2fly"). Use the **"Убрать дубли"** button in the Rules tab (or the `dedup_rules`
+action) to clean up redundant manual domains and duplicate IPs in one pass.
+
 ## Logs
 
 - Install: `/opt/var/log/xray-vpn-install.log`
