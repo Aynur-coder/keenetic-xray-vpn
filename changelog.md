@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.15.6] - 2026-06-17
+### Fixed
+- `update.sh`: добавлен `curl_gh()` — SOCKS5 fallback через `127.0.0.1:1081` при блокировке GitHub TSPU. Теперь `latest_version()` и все загрузки в update.sh тоже обходят TSPU, кнопка "Проверить" в UI работает
+- `api.php`: `check_update` больше не отдаёт пустую/невалидную строку при чтении из кеша — JS получал исключение "The string did not match the expected pattern" при попытке разобрать не-JSON
+- `api.php`: `changelog_full` переведён на `/opt/bin/curl` + SOCKS5 fallback при блокировке
+
 ## [0.15.5] - 2026-06-17
 ### Fixed
 - `install.sh` не мог скачать VERSION и manifest.json на роутерах где TSPU блокирует прямые соединения с GitHub. Добавлена функция `curl_gh()`: сначала пробует прямое соединение, при ошибках 6/7/28/35 автоматически повторяет через локальный xray SOCKS5 прокси (`--socks5-hostname 127.0.0.1:1081`), который обходит TSPU. Все inline curl-вызовы к GitHub переведены на `curl_gh`/`curl_fetch`

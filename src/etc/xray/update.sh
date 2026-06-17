@@ -30,9 +30,20 @@ current_version() {
     [ -f "$VERSION_FILE" ] && tr -d ' \r\n' < "$VERSION_FILE" || echo "0.0.0"
 }
 
+# curl_gh <url> — tries direct, falls back to local xray SOCKS5 if blocked (TSPU)
+curl_gh() {
+    _u="$1"
+    _out=$(/opt/bin/curl -fsSL --max-time 15 "$_u" 2>/dev/null) && { printf '%s' "$_out"; return 0; }
+    _ec=$?
+    if [ "$_ec" = "6" ] || [ "$_ec" = "7" ] || [ "$_ec" = "28" ] || [ "$_ec" = "35" ]; then
+        /opt/bin/curl -fsSL --max-time 30 --socks5-hostname 127.0.0.1:1081 "$_u" 2>/dev/null
+        return $?
+    fi
+    return "$_ec"
+}
+
 latest_version() {
-    /opt/bin/curl -fsSL --max-time 10 --retry 2 --retry-delay 3 \
-        "$RAW_BASE/main/VERSION" 2>/dev/null | tr -d ' \r\n'
+    curl_gh "$RAW_BASE/main/VERSION" | tr -d ' \r\n'
 }
 
 # semver compare: prints newer/same/older for A vs B

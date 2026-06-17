@@ -1809,7 +1809,13 @@ case 'check_update':
         @file_put_contents($cache, $raw);
         echo $raw;
     } else {
-        echo @file_get_contents($cache);
+        $cached = @file_get_contents($cache);
+        // Guard: cache must be valid JSON (never return empty/false — JS r.json() would throw)
+        if ($cached === false || $cached === '' || $cached[0] !== '{') {
+            echo json_encode(['error' => 'cache_invalid']);
+        } else {
+            echo $cached;
+        }
     }
     break;
 
@@ -1818,7 +1824,12 @@ case 'changelog_full':
     $cache = '/opt/tmp/xray-vpn-changelog.md';
     $fresh = file_exists($cache) && (time() - filemtime($cache)) < 6 * 3600;
     if (!$fresh || !empty($_GET['force'])) {
-        $raw = shell_run('curl -fsSL --max-time 10 https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/changelog.md 2>/dev/null');
+        $cl_url = 'https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/changelog.md';
+        $raw = shell_run("/opt/bin/curl -fsSL --max-time 15 $cl_url 2>/dev/null");
+        if ($raw === '' || strpos($raw, '#') === false) {
+            // Direct blocked by TSPU — retry via local xray SOCKS5
+            $raw = shell_run("/opt/bin/curl -fsSL --max-time 30 --socks5-hostname 127.0.0.1:1081 $cl_url 2>/dev/null");
+        }
         if ($raw !== '' && strpos($raw, '#') !== false) @file_put_contents($cache, $raw);
     }
     $md = file_exists($cache) ? (@file_get_contents($cache) ?: '') : '';
