@@ -30,16 +30,18 @@ current_version() {
     [ -f "$VERSION_FILE" ] && tr -d ' \r\n' < "$VERSION_FILE" || echo "0.0.0"
 }
 
-# curl_gh <url> — tries direct, falls back to local xray SOCKS5 if blocked (TSPU)
+# curl_gh <url> — if xray is up, route through its SOCKS5 immediately (avoids TSPU delay).
+# If xray is not running, fall back to direct connection.
+_xray_running() {
+    [ -f /opt/var/run/xray.pid ] && kill -0 "$(cat /opt/var/run/xray.pid 2>/dev/null)" 2>/dev/null
+}
 curl_gh() {
     _u="$1"
-    _out=$(/opt/bin/curl -fsSL --max-time 15 "$_u" 2>/dev/null) && { printf '%s' "$_out"; return 0; }
-    _ec=$?
-    if [ "$_ec" = "6" ] || [ "$_ec" = "7" ] || [ "$_ec" = "28" ] || [ "$_ec" = "35" ]; then
+    if _xray_running; then
         /opt/bin/curl -fsSL --max-time 30 --socks5-hostname 127.0.0.1:1081 "$_u" 2>/dev/null
         return $?
     fi
-    return "$_ec"
+    /opt/bin/curl -fsSL --max-time 15 "$_u" 2>/dev/null
 }
 
 latest_version() {

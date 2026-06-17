@@ -116,18 +116,19 @@ need_cmd() {
 }
 
 # curl_gh <url> [extra curl args…]
-# Tries direct first; if GitHub is unreachable (TSPU/firewall — exit codes 6/7/28/35),
-# retries through the local xray SOCKS5 proxy at 127.0.0.1:1081 which bypasses the block.
+# If xray is running, route through its SOCKS5 proxy immediately — avoids TSPU blocking
+# the router's own traffic without waiting for a timeout. Falls back to direct when xray
+# is not running (fresh install, or VPN stopped).
+_xray_running() {
+    [ -f /opt/var/run/xray.pid ] && kill -0 "$(cat /opt/var/run/xray.pid 2>/dev/null)" 2>/dev/null
+}
 curl_gh() {
     _gh_url="$1"; shift
-    curl -fsSL --max-time 30 "$@" "$_gh_url" && return 0
-    _ec=$?
-    if [ "$_ec" = "6" ] || [ "$_ec" = "7" ] || [ "$_ec" = "28" ] || [ "$_ec" = "35" ]; then
-        warn "direct connection failed (exit $_ec), retrying via local xray SOCKS5…"
+    if _xray_running; then
         curl -fsSL --max-time 60 --socks5-hostname 127.0.0.1:1081 "$@" "$_gh_url"
         return $?
     fi
-    return "$_ec"
+    curl -fsSL --max-time 30 "$@" "$_gh_url"
 }
 
 curl_fetch() {
