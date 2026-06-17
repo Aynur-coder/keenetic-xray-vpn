@@ -76,6 +76,12 @@ json_escape_stdin() {
     '
 }
 
+# Read features.logs_enabled flag (best-effort). Returns 0 (true) unless explicitly false.
+logs_enabled() {
+    [ -f "$FEATURES_FILE" ] || return 0
+    grep -q '"logs_enabled":[[:space:]]*false' "$FEATURES_FILE" 2>/dev/null && return 1 || return 0
+}
+
 # Read features.auto_update flag (best-effort)
 auto_update_enabled() {
     [ -f "$FEATURES_FILE" ] || { echo "0"; return; }
@@ -178,7 +184,9 @@ cmd_apply() {
 cmd_cron() {
     _en="$(auto_update_enabled)"
     if [ "$_en" != "1" ]; then
-        echo "auto_update disabled, skipping" >> "$UPDATE_LOG" 2>/dev/null || :
+        # Only write to disk if logging is enabled — the cron fires daily and the
+        # write is otherwise pointless noise when auto-update is deliberately off.
+        logs_enabled && echo "auto_update disabled, skipping" >> "$UPDATE_LOG" 2>/dev/null || :
         exit 0
     fi
     cmd_apply

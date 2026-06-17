@@ -23,7 +23,7 @@ WATCHDOG_STATE="/opt/var/run/xray-watchdog.state"
 WATCHDOG_INTERVAL=30
 WATCHDOG_MAX_FAILS=3
 
-log() { logger -t xray-mgr "$1"; echo "$1"; }
+log() { _logs_enabled && { logger -t xray-mgr "$1"; echo "$1"; } || true; }
 
 # URL-decode %XX sequences (handles base64 key chars: +, /, =)
 _urldecode() { printf '%b' "$(printf '%s' "$1" | sed 's/%2[Bb]/+/g; s/%2[Ff]/\//g; s/%3[Dd]/=/g; s/%2[Ee]/./g')"; }
@@ -293,7 +293,7 @@ _pause_firewall() {
     iptables -t nat -D PREROUTING -p tcp -i br0 -j XRAY 2>/dev/null
     ip6tables -t nat -D PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
     echo "paused" > "$WATCHDOG_STATE"
-    _logs_enabled && log "Watchdog: redirect paused — traffic goes direct"
+    log "Watchdog: redirect paused — traffic goes direct"
 }
 
 # Re-attach the PREROUTING hook
@@ -303,7 +303,7 @@ _resume_firewall() {
     ip6tables -t nat -C PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null || \
     ip6tables -t nat -I PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
     echo "ok" > "$WATCHDOG_STATE"
-    _logs_enabled && log "Watchdog: redirect resumed — VPN reachable"
+    log "Watchdog: redirect resumed — VPN reachable"
 }
 
 # Background watchdog loop: when VPN server is unreachable for WATCHDOG_MAX_FAILS consecutive
@@ -336,7 +336,7 @@ start_watchdog() {
     stop_watchdog 2>/dev/null
     _watchdog_loop &
     echo $! > "$WATCHDOG_PID"
-    _logs_enabled && log "Watchdog started (PID: $(cat $WATCHDOG_PID), interval: ${WATCHDOG_INTERVAL}s)"
+    log "Watchdog started (PID: $(cat $WATCHDOG_PID), interval: ${WATCHDOG_INTERVAL}s)"
 }
 
 stop_watchdog() {
