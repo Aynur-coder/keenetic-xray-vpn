@@ -116,17 +116,16 @@ need_cmd() {
 }
 
 # curl_gh <url> [extra curl args…]
-# If xray is running, route through its SOCKS5 proxy immediately — avoids TSPU blocking
-# the router's own traffic without waiting for a timeout. Falls back to direct when xray
-# is not running (fresh install, or VPN stopped).
+# Tries SOCKS5 via local xray first (short timeout so we don't hang if VPN server is
+# unreachable). Falls back to direct if xray is down or the VPN server is unavailable.
 _xray_running() {
     [ -f /opt/var/run/xray.pid ] && kill -0 "$(cat /opt/var/run/xray.pid 2>/dev/null)" 2>/dev/null
 }
 curl_gh() {
     _gh_url="$1"; shift
     if _xray_running; then
-        curl -fsSL --max-time 60 --socks5-hostname 127.0.0.1:1081 "$@" "$_gh_url"
-        return $?
+        curl -fsSL --max-time 15 --socks5-hostname 127.0.0.1:1081 "$@" "$_gh_url" 2>/dev/null \
+            && return 0
     fi
     curl -fsSL --max-time 30 "$@" "$_gh_url"
 }

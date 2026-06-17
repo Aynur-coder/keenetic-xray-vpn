@@ -1825,8 +1825,14 @@ case 'changelog_full':
     $fresh = file_exists($cache) && (time() - filemtime($cache)) < 6 * 3600;
     if (!$fresh || !empty($_GET['force'])) {
         $cl_url = 'https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/changelog.md';
-        $socks = file_exists('/opt/var/run/xray.pid') ? '--socks5-hostname 127.0.0.1:1081' : '';
-        $raw = shell_run("/opt/bin/curl -fsSL --max-time 15 $socks $cl_url 2>/dev/null");
+        $xray_up = file_exists('/opt/var/run/xray.pid')
+            && shell_exec('kill -0 $(cat /opt/var/run/xray.pid 2>/dev/null) 2>/dev/null; echo $?') === "0\n";
+        $raw = $xray_up
+            ? shell_run("/opt/bin/curl -fsSL --max-time 10 --socks5-hostname 127.0.0.1:1081 $cl_url 2>/dev/null")
+            : '';
+        if ($raw === '' || strpos($raw, '#') === false) {
+            $raw = shell_run("/opt/bin/curl -fsSL --max-time 15 $cl_url 2>/dev/null");
+        }
         if ($raw !== '' && strpos($raw, '#') !== false) @file_put_contents($cache, $raw);
     }
     $md = file_exists($cache) ? (@file_get_contents($cache) ?: '') : '';

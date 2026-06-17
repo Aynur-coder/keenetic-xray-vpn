@@ -30,17 +30,19 @@ current_version() {
     [ -f "$VERSION_FILE" ] && tr -d ' \r\n' < "$VERSION_FILE" || echo "0.0.0"
 }
 
-# curl_gh <url> — if xray is up, route through its SOCKS5 immediately (avoids TSPU delay).
-# If xray is not running, fall back to direct connection.
+# curl_gh <url> — tries SOCKS5 via local xray first (bypasses TSPU for the router's own
+# traffic which doesn't go through the transparent proxy). Falls back to direct if xray
+# is not running or the VPN server itself is unreachable (watchdog paused, server down).
 _xray_running() {
     [ -f /opt/var/run/xray.pid ] && kill -0 "$(cat /opt/var/run/xray.pid 2>/dev/null)" 2>/dev/null
 }
 curl_gh() {
     _u="$1"
     if _xray_running; then
-        /opt/bin/curl -fsSL --max-time 30 --socks5-hostname 127.0.0.1:1081 "$_u" 2>/dev/null
-        return $?
+        _out=$(/opt/bin/curl -fsSL --max-time 8 --socks5-hostname 127.0.0.1:1081 "$_u" 2>/dev/null) \
+            && { printf '%s' "$_out"; return 0; }
     fi
+    # Direct fallback: works when xray is down or VPN server is unreachable
     /opt/bin/curl -fsSL --max-time 15 "$_u" 2>/dev/null
 }
 
