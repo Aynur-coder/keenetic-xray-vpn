@@ -31,7 +31,8 @@ current_version() {
 }
 
 latest_version() {
-    curl -fsSL --max-time 10 "$RAW_BASE/main/VERSION" 2>/dev/null | tr -d ' \r\n'
+    /opt/bin/curl -fsSL --max-time 10 --retry 2 --retry-delay 3 \
+        "$RAW_BASE/main/VERSION" 2>/dev/null | tr -d ' \r\n'
 }
 
 # semver compare: prints newer/same/older for A vs B
@@ -155,15 +156,35 @@ cmd_apply() {
 
         write_state "downloading" "Скачиваю установщик v$_new"
         _inst="/opt/tmp/xray-vpn-install-$$.sh"
-        # Download install.sh from the tagged release asset (stable) or fall back to main branch
-        _inst_url="https://github.com/$REPO/releases/download/v$_new/install.sh"
-        if ! curl -fsSL --max-time 60 -o "$_inst" "$_inst_url"; then
-            # Fallback: latest release download (no version in URL)
-            if ! curl -fsSL --max-time 60 -o "$_inst" "https://github.com/$REPO/releases/latest/download/install.sh"; then
-                write_state "failed" "Не удалось скачать install.sh"
-                echo "ERROR: install.sh download failed"
-                exit 1
+        # Primary: raw.githubusercontent.com with the exact version tag.
+        # This is the same domain used for version checks so it is always in the DNS
+        # cache — works even when release-assets.githubusercontent.com or github.com
+        # are temporarily unresolvable (ISP DNS glitch, TSPU filtering, cold cache).
+        _dl_ok=0
+        if /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
+                -o "$_inst" "$RAW_BASE/v$_new/install.sh" 2>/dev/null; then
+            _dl_ok=1
+        fi
+        # Fallback 1: GitHub release asset (versioned)
+        if [ "$_dl_ok" = "0" ]; then
+            echo "raw.githubusercontent.com failed, trying release asset…"
+            if /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
+                    -o "$_inst" "https://github.com/$REPO/releases/download/v$_new/install.sh"; then
+                _dl_ok=1
             fi
+        fi
+        # Fallback 2: GitHub releases/latest (no version pin)
+        if [ "$_dl_ok" = "0" ]; then
+            echo "release asset failed, trying releases/latest…"
+            if /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
+                    -o "$_inst" "https://github.com/$REPO/releases/latest/download/install.sh"; then
+                _dl_ok=1
+            fi
+        fi
+        if [ "$_dl_ok" = "0" ]; then
+            write_state "failed" "Не удалось скачать install.sh"
+            echo "ERROR: install.sh download failed"
+            exit 1
         fi
         chmod 755 "$_inst"
 
@@ -231,7 +252,10 @@ cmd_rollback() {
         echo "Re-installing v$_prev"
         write_state "applying" "Переустанавливаю v$_prev"
         _inst="/opt/tmp/xray-vpn-install-$$.sh"
-        if curl -fsSL --max-time 60 -o "$_inst" "$RAW_BASE/main/install.sh"; then
+        if /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
+                -o "$_inst" "$RAW_BASE/v$_prev/install.sh" 2>/dev/null || \
+           /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
+                -o "$_inst" "$RAW_BASE/main/install.sh"; then
             chmod 755 "$_inst"
             if sh "$_inst" --upgrade --version "v$_prev"; then
                 write_state "done" "Откачено к v$_prev"

@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-06-17
+### Fixed
+- Обновление падало с `curl: (6) Could not resolve host: release-assets.githubusercontent.com` / `github.com` когда эти домены не были в DNS-кеше AdGuard Home (ТСПУ, временный сбой апстрима). Исправлено изменением порядка источников: теперь первым идёт `raw.githubusercontent.com/v{N}/install.sh` — тот же домен, что используется для проверки VERSION и потому всегда закеширован. GitHub release assets остались как fallback
+- Все curl в `update.sh` переведены на `/opt/bin/curl` (явный путь) и получили `--retry 3 --retry-delay 5` чтобы пережить кратковременные сбои сети
+
 ## [0.15.2] - 2026-06-17
 ### Fixed
 - `xray-manager.sh`: функция `log()` теперь проверяет `logs_enabled` перед любым вызовом `logger` — при отключённых логах ни один `logger -t xray-mgr` не выполняется, в том числе при старте, стопе, генерации конфига и настройке firewall. Явные проверки `_logs_enabled` в watchdog-функциях убраны как дублирование
