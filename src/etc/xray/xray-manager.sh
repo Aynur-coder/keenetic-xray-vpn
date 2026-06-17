@@ -280,12 +280,20 @@ _check_vpn_reachable() {
     return 0                        # connected or refused = IP is reachable
 }
 
+# Returns 0 if logs_enabled is true (or unset), 1 if explicitly false.
+# Reads features.json each call — only used on rare state-change events, not in the hot loop.
+_logs_enabled() {
+    local v
+    v=$(jsonfilter -i "$XRAY_DIR/features.json" -e "@.logs_enabled" 2>/dev/null)
+    [ "$v" != "false" ]
+}
+
 # Remove the PREROUTING hook so traffic bypasses xray (XRAY chain stays intact for fast resume)
 _pause_firewall() {
     iptables -t nat -D PREROUTING -p tcp -i br0 -j XRAY 2>/dev/null
     ip6tables -t nat -D PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
     echo "paused" > "$WATCHDOG_STATE"
-    log "Watchdog: redirect paused — traffic goes direct"
+    _logs_enabled && log "Watchdog: redirect paused — traffic goes direct"
 }
 
 # Re-attach the PREROUTING hook
@@ -295,7 +303,7 @@ _resume_firewall() {
     ip6tables -t nat -C PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null || \
     ip6tables -t nat -I PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
     echo "ok" > "$WATCHDOG_STATE"
-    log "Watchdog: redirect resumed — VPN reachable"
+    _logs_enabled && log "Watchdog: redirect resumed — VPN reachable"
 }
 
 # Background watchdog loop: when VPN server is unreachable for WATCHDOG_MAX_FAILS consecutive
@@ -314,7 +322,8 @@ _watchdog_loop() {
             fi
         else
             fail_count=$((fail_count + 1))
-            log "Watchdog: VPN unreachable ($fail_count/$WATCHDOG_MAX_FAILS)"
+            # No log here — runs every 30 s and would spam syslog constantly.
+            # State changes (pause/resume) are logged by _pause_firewall/_resume_firewall.
             if [ "$fail_count" -ge "$WATCHDOG_MAX_FAILS" ] && [ "$is_paused" = "0" ]; then
                 _pause_firewall
                 is_paused=1
@@ -327,7 +336,7 @@ start_watchdog() {
     stop_watchdog 2>/dev/null
     _watchdog_loop &
     echo $! > "$WATCHDOG_PID"
-    log "Watchdog started (PID: $(cat $WATCHDOG_PID), interval: ${WATCHDOG_INTERVAL}s)"
+    _logs_enabled && log "Watchdog started (PID: $(cat $WATCHDOG_PID), interval: ${WATCHDOG_INTERVAL}s)"
 }
 
 stop_watchdog() {
