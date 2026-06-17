@@ -290,10 +290,21 @@ preflight() {
     need_cmd sha256sum
     need_cmd awk
 
-    # Internet
-    info "Checking internet connectivity"
-    curl -fsS --max-time 10 https://raw.githubusercontent.com/ >/dev/null \
-        || die "Cannot reach GitHub. Check internet and DNS."
+    # Internet — in upgrade mode the script was just downloaded so the network clearly
+    # works; we skip the hard check to avoid failing on a momentary HTTPS timeout.
+    # For fresh installs we verify with retries and a generous timeout.
+    if [ "$MODE" != "upgrade" ]; then
+        info "Checking internet connectivity"
+        _conn_ok=0
+        _conn_try=0
+        while [ "$_conn_try" -lt 3 ]; do
+            curl -fsS --max-time 30 https://raw.githubusercontent.com/ >/dev/null 2>&1 \
+                && { _conn_ok=1; break; }
+            _conn_try=$((_conn_try + 1))
+            [ "$_conn_try" -lt 3 ] && { warn "connectivity check failed (attempt $_conn_try/3), retrying…"; sleep 5; }
+        done
+        [ "$_conn_ok" = "1" ] || die "Cannot reach GitHub. Check internet and DNS."
+    fi
 
     # Keenetic model detection (informational only, never blocks install)
     if command -v ndmc >/dev/null 2>&1; then

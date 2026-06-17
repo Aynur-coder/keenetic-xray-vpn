@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-06-17
+### Fixed
+- Обновление падало с `curl: (28) Connection timed out` внутри `install.sh` на шаге "Checking internet connectivity". В режиме `--upgrade` этот чек теперь пропускается — скрипт только что был скачан, значит сеть работает. Для свежей установки чек сохранён, но с retry 3×30 s вместо одного 10 s
+
 ## [0.15.3] - 2026-06-17
 ### Fixed
 - Обновление падало с `curl: (6) Could not resolve host: release-assets.githubusercontent.com` / `github.com` когда эти домены не были в DNS-кеше AdGuard Home (ТСПУ, временный сбой апстрима). Исправлено изменением порядка источников: теперь первым идёт `raw.githubusercontent.com/v{N}/install.sh` — тот же домен, что используется для проверки VERSION и потому всегда закеширован. GitHub release assets остались как fallback
