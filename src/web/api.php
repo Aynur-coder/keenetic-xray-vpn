@@ -30,6 +30,7 @@ $ONBOARDED_FILE = "$XRAY_DIR/.onboarded";
 $KN_PASS_FILE = "$XRAY_DIR/.kn_pass";
 $LOGIN_ATTEMPTS_FILE = '/opt/tmp/xray-login-attempts.json';
 $VERSION_FILE = "$XRAY_DIR/.version";
+$WATCHDOG_STATE = '/opt/var/run/xray-watchdog.state';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -962,6 +963,7 @@ case 'status':
     $mp = explode(' ', $mem);
     $wg_up = shell_run("/opt/bin/wg show wg0 2>/dev/null | head -1") !== '';
     $features = get_features();
+    $watchdog = $running && file_exists($WATCHDOG_STATE) ? trim(@file_get_contents($WATCHDOG_STATE)) : '';
     // IP checks are intentionally excluded — fetched separately via check_ips to keep this fast.
     echo json_encode([
         'running' => $running, 'pid' => $pid,
@@ -975,6 +977,7 @@ case 'status':
         'local' => is_local_request(),
         'features' => $features,
         'version' => get_installed_version(),
+        'watchdog' => $watchdog,
     ]);
     break;
 
@@ -983,10 +986,12 @@ case 'start':
     $r = generate_xray_config();
     if (isset($r['error'])) { echo json_encode($r); break; }
     write_derived_files();
+    shell_run("$MANAGER stop_watchdog 2>/dev/null");
     shell_run('killall xray 2>/dev/null; sleep 1');
     shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log; : > /opt/var/log/xray/error.log');
     shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
     reload_adguard();
     warmup_ipset();
     sleep(2);
@@ -994,12 +999,14 @@ case 'start':
     break;
 
 case 'stop':
+    shell_run("$MANAGER stop_watchdog 2>/dev/null");
     shell_run('killall xray 2>/dev/null; rm -f /opt/var/run/xray.pid');
     shell_run("$MANAGER cleanup_firewall 2>/dev/null");
     echo json_encode(['ok' => true]);
     break;
 
 case 'restart':
+    shell_run("$MANAGER stop_watchdog 2>/dev/null");
     shell_run('killall xray 2>/dev/null; sleep 1');
     update_adguard_ipset();
     $r = generate_xray_config();
@@ -1008,6 +1015,7 @@ case 'restart':
     shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log');
     shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
     reload_adguard();
     warmup_ipset();
     sleep(2);
@@ -1742,15 +1750,48 @@ case 'get_version':
     break;
 
 case 'check_ips':
-    // Slow endpoint — separated from status() so the main status bar loads instantly.
-    $vpn_ip  = shell_run('/opt/bin/curl -s --max-time 7 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null');
-    $real_ip = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');
-    // Basic sanity: must look like an IPv4 address
-    $ip_re = '/^\d{1,3}(\.\d{1,3}){3}$/';
-    echo json_encode([
-        'vpn_ip'  => preg_match($ip_re, trim($vpn_ip))  ? trim($vpn_ip)  : null,
-        'real_ip' => preg_match($ip_re, trim($real_ip)) ? trim($real_ip) : null,
-    ]);
+    // Separated from status() so the main status bar loads instantly.
+    // Both curls run in parallel via shell background jobs so total time = max(5,5) not 5+5.
+    $pid      = getmypid();
+    $tmp_vpn  = "/tmp/xray_chk_v_$pid";
+    $tmp_real = "/tmp/xray_chk_r_$pid";
+    $ip_re    = '/^\d{1,3}(\.\d{1,3}){3}$/';
+    $real_cache = '/opt/tmp/xray-real-ip.cache';
+
+    // Skip VPN check when xray is down or watchdog has paused the redirect
+    $xray_up     = trim(shell_run('pgrep -x xray 2>/dev/null') ?? '') !== '';
+    $wd_state    = $xray_up && file_exists($WATCHDOG_STATE) ? trim(@file_get_contents($WATCHDOG_STATE)) : '';
+    $vpn_chk     = $xray_up && $wd_state !== 'paused';
+
+    // Real IP rarely changes — use a 5-minute file cache to avoid an extra round-trip
+    $real_ip = null;
+    if (file_exists($real_cache) && (time() - filemtime($real_cache)) < 300) {
+        $c = trim(@file_get_contents($real_cache) ?: '');
+        if (preg_match($ip_re, $c)) $real_ip = $c;
+    }
+
+    if ($vpn_chk && $real_ip !== null) {
+        // Cache hit: only need the VPN check
+        $v = shell_run('/opt/bin/curl -s --max-time 5 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null');
+        $vpn_ip = preg_match($ip_re, trim($v)) ? trim($v) : null;
+    } elseif ($vpn_chk) {
+        // Run both in parallel: total wall-clock = max(5,5) ≈ 1-2 s instead of up to 12 s
+        shell_exec("/opt/bin/curl -s --max-time 5 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org >$tmp_vpn 2>/dev/null & /opt/bin/curl -s --max-time 5 http://api.ipify.org >$tmp_real 2>/dev/null & wait");
+        $vr = trim(@file_get_contents($tmp_vpn) ?: '');
+        $rr = trim(@file_get_contents($tmp_real) ?: '');
+        @unlink($tmp_vpn); @unlink($tmp_real);
+        $vpn_ip  = preg_match($ip_re, $vr) ? $vr : null;
+        $real_ip = preg_match($ip_re, $rr) ? $rr : null;
+        if ($real_ip) @file_put_contents($real_cache, $real_ip);
+    } else {
+        // Xray is down or paused — just check the real IP, no VPN check
+        $rr      = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');
+        $real_ip = preg_match($ip_re, trim($rr)) ? trim($rr) : null;
+        $vpn_ip  = null;
+        if ($real_ip) @file_put_contents($real_cache, $real_ip);
+    }
+
+    echo json_encode(['vpn_ip' => $vpn_ip, 'real_ip' => $real_ip]);
     break;
 
 // ============ UPDATES ============

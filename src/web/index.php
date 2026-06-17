@@ -83,6 +83,11 @@ body{font-family:-apple-system,'SF Pro Display','Inter','Segoe UI',sans-serif;ba
 .stat-value.loading::after{content:'';display:block;width:70%;height:16px;border-radius:6px;background:linear-gradient(90deg,var(--card2) 0%,var(--card) 50%,var(--card2) 100%);background-size:200% 100%;animation:shimmer 1.4s infinite}
 .green{color:var(--green)}.red{color:var(--red)}.orange{color:var(--orange)}.cyan{color:var(--cyan)}
 
+/* Watchdog banner */
+.watchdog-banner{display:none;align-items:center;gap:10px;padding:10px 16px;margin-bottom:16px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:var(--radius-sm);font-size:13px;line-height:1.4;color:var(--orange)}
+.watchdog-banner.show{display:flex}
+.watchdog-banner b{color:var(--orange)}
+
 /* Tabs */
 .tabs{display:flex;gap:2px;margin-bottom:20px;background:var(--card);border-radius:var(--radius);padding:4px;overflow-x:auto;border:1px solid var(--border)}
 .tab{padding:9px 14px;cursor:pointer;border-radius:var(--radius-sm);font-size:13px;font-weight:500;color:var(--text2);transition:all .2s;white-space:nowrap;border:none;background:none;display:flex;align-items:center;gap:6px}
@@ -668,6 +673,11 @@ textarea{resize:vertical;min-height:80px;width:100%}
   </div>
 </div>
 
+<div class="watchdog-banner" id="watchdogBanner">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  <div><b>VPN сервер недоступен</b> — трафик идёт напрямую. Перенаправление восстановится автоматически когда сервер станет доступным.</div>
+</div>
+
 <div class="tabs">
   <button class="tab active" data-tab="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg> Серверы</button>
   <button class="tab" data-tab="subscriptions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 019 9"/><path d="M4 4a16 16 0 0116 16"/><circle cx="5" cy="19" r="1"/></svg> Подписки</button>
@@ -957,15 +967,19 @@ async function loadStatus(){
   const s=await api('status','');
   if(s.error)return;
   const stEl=$('#stStatus');
+  const paused=s.watchdog==='paused';
   if(s.running){
-    stEl.textContent='Работает';stEl.className='stat-value green';
+    stEl.textContent=paused?'Пауза (сервер недоступен)':'Работает';
+    stEl.className='stat-value '+(paused?'orange':'green');
     $('#btnToggleText').textContent='Стоп';$('#btnToggle').className='btn btn-danger';
-    $('#liveDot').className='live-dot on';
+    $('#liveDot').className='live-dot '+(paused?'off':'on');
   }else{
     stEl.textContent='Остановлен';stEl.className='stat-value red';
     $('#btnToggleText').textContent='Старт';$('#btnToggle').className='btn btn-success';
     $('#liveDot').className='live-dot off';
   }
+  const banner=$('#watchdogBanner');
+  if(banner)banner.classList.toggle('show',!!(s.running&&paused));
   $('#stMem').textContent=s.mem_used&&s.mem_total?`${s.mem_used}/${s.mem_total} MB`:'—';
   $('#stMem').className='stat-value';
   $('#stWg').textContent=s.wg_up?'Активен':'Выкл';
