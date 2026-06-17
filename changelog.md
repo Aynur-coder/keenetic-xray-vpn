@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-06-17
+### Fixed
+- `install.sh` не мог скачать VERSION и manifest.json на роутерах где TSPU блокирует прямые соединения с GitHub. Добавлена функция `curl_gh()`: сначала пробует прямое соединение, при ошибках 6/7/28/35 автоматически повторяет через локальный xray SOCKS5 прокси (`--socks5-hostname 127.0.0.1:1081`), который обходит TSPU. Все inline curl-вызовы к GitHub переведены на `curl_gh`/`curl_fetch`
+
 ## [0.15.4] - 2026-06-17
 ### Fixed
 - Обновление падало с `curl: (28) Connection timed out` внутри `install.sh` на шаге "Checking internet connectivity". В режиме `--upgrade` этот чек теперь пропускается — скрипт только что был скачан, значит сеть работает. Для свежей установки чек сохранён, но с retry 3×30 s вместо одного 10 s

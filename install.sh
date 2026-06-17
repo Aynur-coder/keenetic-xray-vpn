@@ -115,13 +115,28 @@ need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
+# curl_gh <url> [extra curl args…]
+# Tries direct first; if GitHub is unreachable (TSPU/firewall — exit codes 6/7/28/35),
+# retries through the local xray SOCKS5 proxy at 127.0.0.1:1081 which bypasses the block.
+curl_gh() {
+    _gh_url="$1"; shift
+    curl -fsSL --max-time 30 "$@" "$_gh_url" && return 0
+    _ec=$?
+    if [ "$_ec" = "6" ] || [ "$_ec" = "7" ] || [ "$_ec" = "28" ] || [ "$_ec" = "35" ]; then
+        warn "direct connection failed (exit $_ec), retrying via local xray SOCKS5…"
+        curl -fsSL --max-time 60 --socks5-hostname 127.0.0.1:1081 "$@" "$_gh_url"
+        return $?
+    fi
+    return "$_ec"
+}
+
 curl_fetch() {
-    # curl_fetch <url> <dst> — retries 3 times on transient DNS/network errors
+    # curl_fetch <url> <dst> — retries 3 times, uses curl_gh for TSPU fallback
     _url="$1"; _dst="$2"
     verb "fetch $_url -> $_dst"
     _cf_try=0
     while [ "$_cf_try" -lt 3 ]; do
-        curl -fsSL --max-time 60 -o "$_dst" "$_url" && return 0
+        curl_gh "$_url" -o "$_dst" && return 0
         _cf_try=$((_cf_try + 1))
         [ "$_cf_try" -lt 3 ] && { warn "fetch failed (attempt $_cf_try/3), retrying in 3s..."; sleep 3; }
     done
@@ -342,7 +357,7 @@ download_manifest() {
     mkdir -p "$STAGING/files" "$STAGING/defaults"
 
     if [ -z "$TARGET_VERSION" ]; then
-        TARGET_VERSION="$(curl -fsSL --max-time 10 "$RAW_BASE/main/VERSION" | tr -d ' \r\n')"
+        TARGET_VERSION="$(curl_gh "$RAW_BASE/main/VERSION" | tr -d ' \r\n')"
         [ -n "$TARGET_VERSION" ] || die "Could not resolve latest VERSION"
         TARGET_REF="v$TARGET_VERSION"
     else
@@ -355,10 +370,10 @@ download_manifest() {
 
     # Primary source: GitHub Release asset (manifest.json is uploaded by release.yml)
     _mf_url="$REL_BASE/$TARGET_REF/manifest.json"
-    if ! curl -fsSL --max-time 30 -o "$STAGING/manifest.json" "$_mf_url"; then
+    if ! curl_gh "$_mf_url" -o "$STAGING/manifest.json"; then
         # Fallback 1: raw at tag (if maintainer committed manifest.json into tag tree)
         warn "Release asset not found, trying raw at $TARGET_REF"
-        if ! curl -fsSL --max-time 30 -o "$STAGING/manifest.json" "$RAW_BASE/$TARGET_REF/manifest.json"; then
+        if ! curl_gh "$RAW_BASE/$TARGET_REF/manifest.json" -o "$STAGING/manifest.json"; then
             # Fallback 2: main branch (useful before first tagged release; sha256 will be skipped)
             warn "Tag tree has no manifest.json, falling back to main"
             curl_fetch "$RAW_BASE/main/manifest.json" "$STAGING/manifest.json"
@@ -429,7 +444,7 @@ install_ss_downloader() {
     esac
     _ssd_url="https://github.com/Aynur-coder/keenetic-xray-vpn/releases/latest/download/ss-downloader-${_ssd_arch}"
     mkdir -p /opt/usr/bin
-    if curl -fsSL --max-time 30 -o "$_ssd" "$_ssd_url" 2>/dev/null && [ -s "$_ssd" ]; then
+    if curl_gh "$_ssd_url" -o "$_ssd" 2>/dev/null && [ -s "$_ssd" ]; then
         chmod 755 "$_ssd"
         info "ss-downloader installed ($_ssd_arch)"
     else
