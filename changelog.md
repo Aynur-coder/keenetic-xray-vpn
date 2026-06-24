@@ -4,7 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
-## [0.15.10] - 2026-06-24
+## [0.15.11] - 2026-06-24
+### Fixed
+- Обновление через веб-интерфейс молча не отрабатывало под TSPU: `update.sh` тянул `VERSION` и `install.sh` только через `curl_gh` (SOCKS5 + прямой запрос), без GitHub-зеркал, которые были только в `install.sh`. Если xray не запущен (или VPN-сервер недоступен и watchdog на паузе), прямой запрос к `raw.githubusercontent.com` сбрасывался TSPU — проверка/скачивание падали, а UI показывал старое состояние. Теперь в `update.sh` есть `gh_mirrors()` и `download_gh()`, и `curl_gh()`/загрузка `install.sh` идут через тот же набор зеркал (jsDelivr `cdn`/`testingcf`, прокси `gh-proxy.com`/`ghproxy.net`/`ghfast.top`), что и в `install.sh`
+- Примечание: чтобы получить этот фикс, апдейтер должен сам обновиться — но именно он и не мог пробиться через TSPU. На устройстве со старым `update.sh` обновление нужно один раз запустить вручную через install.sh (с зеркала), после чего веб-обновление заработает
 ### Changed
 - `install.sh`: расширен список GitHub-зеркал в `gh_mirrors()`. Для файлов репозитория добавлен альтернативный edge jsDelivr (`testingcf.jsdelivr.net`), для всех запросов — резервные прокси `ghproxy.net` и `ghfast.top`. Нерабочие зеркала (`mirror.ghproxy.com`, `raw.gitmirror.com`) исключены, чтобы не тратить время на таймауты. Это повышает шанс скачать VERSION/manifest/файлы при блокировке `raw.githubusercontent.com`/`github.com` со стороны TSPU
 

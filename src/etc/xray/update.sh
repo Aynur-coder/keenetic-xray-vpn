@@ -30,9 +30,34 @@ current_version() {
     [ -f "$VERSION_FILE" ] && tr -d ' \r\n' < "$VERSION_FILE" || echo "0.0.0"
 }
 
+# gh_mirrors <url> — echo the URL plus GitHub mirror alternatives (one per line) that
+# usually survive TSPU resets of raw.githubusercontent.com / github.com. Same verified
+# set as install.sh: jsDelivr edges for repo files, gh-proxy/ghproxy.net/ghfast.top
+# passthrough proxies for both repo files and release-download assets.
+gh_mirrors() {
+    _u="$1"
+    printf '%s\n' "$_u"
+    case "$_u" in
+        https://raw.githubusercontent.com/*)
+            _rest="${_u#https://raw.githubusercontent.com/}"   # USER/REPO/REF/PATH
+            _tail="${_rest#"$REPO"/}"                          # REF/PATH
+            printf '%s\n' "https://cdn.jsdelivr.net/gh/$REPO@$_tail"
+            printf '%s\n' "https://testingcf.jsdelivr.net/gh/$REPO@$_tail"
+            printf '%s\n' "https://gh-proxy.com/$_u"
+            printf '%s\n' "https://ghproxy.net/$_u"
+            printf '%s\n' "https://ghfast.top/$_u"
+            ;;
+        https://github.com/*)
+            printf '%s\n' "https://gh-proxy.com/$_u"
+            printf '%s\n' "https://ghproxy.net/$_u"
+            printf '%s\n' "https://ghfast.top/$_u"
+            ;;
+    esac
+}
+
 # curl_gh <url> — tries SOCKS5 via local xray first (bypasses TSPU for the router's own
-# traffic which doesn't go through the transparent proxy). Falls back to direct if xray
-# is not running or the VPN server itself is unreachable (watchdog paused, server down).
+# traffic which doesn't go through the transparent proxy), then a direct request, then
+# GitHub mirrors. Returns the response body on stdout.
 _xray_running() {
     [ -f /opt/var/run/xray.pid ] && kill -0 "$(cat /opt/var/run/xray.pid 2>/dev/null)" 2>/dev/null
 }
@@ -42,8 +67,34 @@ curl_gh() {
         _out=$(/opt/bin/curl -fsSL --max-time 8 --socks5-hostname 127.0.0.1:1081 "$_u" 2>/dev/null) \
             && { printf '%s' "$_out"; return 0; }
     fi
-    # Direct fallback: works when xray is down or VPN server is unreachable
-    /opt/bin/curl -fsSL --max-time 15 "$_u" 2>/dev/null
+    # Direct, then mirrors — survives a TSPU reset of raw.githubusercontent.com
+    _oldifs="$IFS"; IFS='
+'
+    for _m in $(gh_mirrors "$_u"); do
+        IFS="$_oldifs"
+        _out=$(/opt/bin/curl -fsSL --max-time 15 "$_m" 2>/dev/null) \
+            && { printf '%s' "$_out"; return 0; }
+        IFS='
+'
+    done
+    IFS="$_oldifs"
+    return 1
+}
+
+# download_gh <github-url> <out-file> — download a file with the same mirror fallback.
+download_gh() {
+    _du="$1"; _do="$2"
+    _oldifs="$IFS"; IFS='
+'
+    for _m in $(gh_mirrors "$_du"); do
+        IFS="$_oldifs"
+        /opt/bin/curl -fsSL --max-time 60 --retry 2 --retry-delay 3 -o "$_do" "$_m" 2>/dev/null \
+            && return 0
+        IFS='
+'
+    done
+    IFS="$_oldifs"
+    return 1
 }
 
 latest_version() {
@@ -171,28 +222,24 @@ cmd_apply() {
 
         write_state "downloading" "Скачиваю установщик v$_new"
         _inst="/opt/tmp/xray-vpn-install-$$.sh"
-        # Primary: raw.githubusercontent.com with the exact version tag.
-        # This is the same domain used for version checks so it is always in the DNS
-        # cache — works even when release-assets.githubusercontent.com or github.com
-        # are temporarily unresolvable (ISP DNS glitch, TSPU filtering, cold cache).
+        # Primary: raw.githubusercontent.com (versioned) + jsDelivr/gh-proxy mirrors.
+        # Same domain used for the version check, so it is usually in the DNS cache; the
+        # mirrors carry it through when TSPU resets the direct connection.
         _dl_ok=0
-        if /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
-                -o "$_inst" "$RAW_BASE/v$_new/install.sh" 2>/dev/null; then
+        if download_gh "$RAW_BASE/v$_new/install.sh" "$_inst"; then
             _dl_ok=1
         fi
-        # Fallback 1: GitHub release asset (versioned)
+        # Fallback 1: GitHub release asset (versioned) + mirrors
         if [ "$_dl_ok" = "0" ]; then
-            echo "raw.githubusercontent.com failed, trying release asset…"
-            if /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
-                    -o "$_inst" "https://github.com/$REPO/releases/download/v$_new/install.sh"; then
+            echo "raw + mirrors failed, trying release asset…"
+            if download_gh "https://github.com/$REPO/releases/download/v$_new/install.sh" "$_inst"; then
                 _dl_ok=1
             fi
         fi
-        # Fallback 2: GitHub releases/latest (no version pin)
+        # Fallback 2: GitHub releases/latest (no version pin) + mirrors
         if [ "$_dl_ok" = "0" ]; then
             echo "release asset failed, trying releases/latest…"
-            if /opt/bin/curl -fsSL --max-time 60 --retry 3 --retry-delay 5 \
-                    -o "$_inst" "https://github.com/$REPO/releases/latest/download/install.sh"; then
+            if download_gh "https://github.com/$REPO/releases/latest/download/install.sh" "$_inst"; then
                 _dl_ok=1
             fi
         fi
