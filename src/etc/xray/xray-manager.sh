@@ -383,7 +383,19 @@ setup_firewall() {
     # IPv4 rules
     iptables -t nat -N XRAY 2>/dev/null
     iptables -t nat -F XRAY
-    
+
+    # Anti-loopback: never redirect connections destined to Xray's own inbound ports
+    # (dokodemo $REDIR_PORT, socks 1081, http 1082) or to any of the router's own
+    # addresses. Otherwise dokodemo followRedirect reports a local Xray port as the
+    # original destination and Xray ends up dialing itself, flooding the log with
+    # "app/proxyman/inbound: loopback connection detected" until it crashes/restarts.
+    for _xport in $REDIR_PORT 1081 1082; do
+        iptables -t nat -A XRAY -p tcp --dport "$_xport" -j RETURN 2>/dev/null
+    done
+    for _laddr in $(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+        iptables -t nat -A XRAY -d "$_laddr" -j RETURN 2>/dev/null
+    done
+
     # Skip VPN server IPs (extract from config)
     local server_ips=""
     if [ -f "$XRAY_CONF" ]; then
@@ -423,6 +435,13 @@ setup_firewall() {
     # IPv6 rules
     ip6tables -t nat -N XRAY6 2>/dev/null
     ip6tables -t nat -F XRAY6
+    # Anti-loopback (same rationale as IPv4 above)
+    for _xport in $REDIR_PORT 1081 1082; do
+        ip6tables -t nat -A XRAY6 -p tcp --dport "$_xport" -j RETURN 2>/dev/null
+    done
+    for _laddr6 in $(ip -6 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+        ip6tables -t nat -A XRAY6 -d "$_laddr6" -j RETURN 2>/dev/null
+    done
     ip6tables -t nat -A XRAY6 -d ::1/128 -j RETURN
     ip6tables -t nat -A XRAY6 -d fc00::/7 -j RETURN
     ip6tables -t nat -A XRAY6 -d fe80::/10 -j RETURN

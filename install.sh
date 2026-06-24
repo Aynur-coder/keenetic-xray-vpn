@@ -115,9 +115,31 @@ need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
+# gh_mirrors <url> — echo the URL plus mirror alternatives, one per line, in
+# priority order. TSPU frequently RSTs raw.githubusercontent.com / github.com, so
+# we fall back to jsDelivr and a generic gh-proxy that are usually still reachable.
+# jsDelivr caches repo files (may be a few hours stale) but only serves repo trees,
+# not release-download assets — those only get the gh-proxy variant.
+gh_mirrors() {
+    _u="$1"
+    printf '%s\n' "$_u"
+    case "$_u" in
+        https://raw.githubusercontent.com/*)
+            _rest="${_u#https://raw.githubusercontent.com/}"   # USER/REPO/REF/PATH
+            _tail="${_rest#"$REPO"/}"                          # REF/PATH
+            printf '%s\n' "https://cdn.jsdelivr.net/gh/$REPO@$_tail"
+            printf '%s\n' "https://gh-proxy.com/$_u"
+            ;;
+        https://github.com/*)
+            printf '%s\n' "https://gh-proxy.com/$_u"
+            ;;
+    esac
+}
+
 # curl_gh <url> [extra curl args…]
 # Tries SOCKS5 via local xray first (short timeout so we don't hang if VPN server is
-# unreachable). Falls back to direct if xray is down or the VPN server is unavailable.
+# unreachable). Falls back to direct, then to GitHub mirrors (jsDelivr / gh-proxy) so
+# a TSPU connection reset on raw.githubusercontent.com doesn't kill the whole run.
 _xray_running() {
     [ -f /opt/var/run/xray.pid ] && kill -0 "$(cat /opt/var/run/xray.pid 2>/dev/null)" 2>/dev/null
 }
@@ -127,7 +149,16 @@ curl_gh() {
         curl -fsSL --max-time 15 --socks5-hostname 127.0.0.1:1081 "$@" "$_gh_url" 2>/dev/null \
             && return 0
     fi
-    curl -fsSL --max-time 30 "$@" "$_gh_url"
+    _oldifs="$IFS"; IFS='
+'
+    for _m in $(gh_mirrors "$_gh_url"); do
+        IFS="$_oldifs"
+        curl -fsSL --max-time 30 "$@" "$_m" && return 0
+        IFS='
+'
+    done
+    IFS="$_oldifs"
+    return 1
 }
 
 curl_fetch() {
@@ -357,8 +388,14 @@ download_manifest() {
     mkdir -p "$STAGING/files" "$STAGING/defaults"
 
     if [ -z "$TARGET_VERSION" ]; then
-        TARGET_VERSION="$(curl_gh "$RAW_BASE/main/VERSION" | tr -d ' \r\n')"
-        [ -n "$TARGET_VERSION" ] || die "Could not resolve latest VERSION"
+        _vtry=0
+        while [ "$_vtry" -lt 3 ]; do
+            TARGET_VERSION="$(curl_gh "$RAW_BASE/main/VERSION" | tr -d ' \r\n')"
+            [ -n "$TARGET_VERSION" ] && break
+            _vtry=$((_vtry + 1))
+            [ "$_vtry" -lt 3 ] && { warn "version fetch failed (attempt $_vtry/3), retrying in 3s…"; sleep 3; }
+        done
+        [ -n "$TARGET_VERSION" ] || die "Could not resolve latest VERSION (GitHub blocked by ISP? try --version vX.Y.Z)"
         TARGET_REF="v$TARGET_VERSION"
     else
         # strip leading 'v'
