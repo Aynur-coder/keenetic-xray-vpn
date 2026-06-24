@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.15.10] - 2026-06-24
+### Changed
+- `install.sh`: расширен список GitHub-зеркал в `gh_mirrors()`. Для файлов репозитория добавлен альтернативный edge jsDelivr (`testingcf.jsdelivr.net`), для всех запросов — резервные прокси `ghproxy.net` и `ghfast.top`. Нерабочие зеркала (`mirror.ghproxy.com`, `raw.gitmirror.com`) исключены, чтобы не тратить время на таймауты. Это повышает шанс скачать VERSION/manifest/файлы при блокировке `raw.githubusercontent.com`/`github.com` со стороны TSPU
+
 ## [0.15.9] - 2026-06-24
 ### Fixed
 - Xray периодически «сам отключался»: в логах шёл шквал `app/proxyman/inbound: loopback connection detected`, после чего ядро падало и watchdog снимал redirect (трафик уходил мимо VPN). Причина — цепочка `XRAY` в `nat` редиректила на dokodemo (порт 1080) соединения, чьим назначением был сам роутер на портах инбаундов Xray (1080/1081/1082) или собственные адреса роутера (включая публичный WAN-IP). `followRedirect` читал локальный порт как «оригинальное назначение», и Xray набирал сам себя → петля. Особенно ярко проявлялось когда socks/http-инбаунды (1081/1082) доступны с WAN и по ним стучатся боты. Исправлено в `setup_firewall()`: перед правилами REDIRECT добавлены `RETURN` для портов 1080/1081/1082 и для всех собственных адресов роутера (`ip -o addr`), для IPv4 и IPv6

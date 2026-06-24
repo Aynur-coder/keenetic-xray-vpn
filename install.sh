@@ -117,9 +117,13 @@ need_cmd() {
 
 # gh_mirrors <url> — echo the URL plus mirror alternatives, one per line, in
 # priority order. TSPU frequently RSTs raw.githubusercontent.com / github.com, so
-# we fall back to jsDelivr and a generic gh-proxy that are usually still reachable.
-# jsDelivr caches repo files (may be a few hours stale) but only serves repo trees,
-# not release-download assets — those only get the gh-proxy variant.
+# we fall back through several mirrors that are usually still reachable from RU:
+#   - jsDelivr (cdn + testingcf edge) caches repo files (may be a few hours stale)
+#     but serves only repo trees, NOT release-download assets;
+#   - generic GitHub proxies (gh-proxy.com / ghproxy.net / ghfast.top) pass the full
+#     URL through and work for both repo files and release assets.
+# Each mirror here was verified reachable; dead ones (mirror.ghproxy.com,
+# raw.gitmirror.com) are intentionally omitted so we don't waste time on timeouts.
 gh_mirrors() {
     _u="$1"
     printf '%s\n' "$_u"
@@ -128,10 +132,15 @@ gh_mirrors() {
             _rest="${_u#https://raw.githubusercontent.com/}"   # USER/REPO/REF/PATH
             _tail="${_rest#"$REPO"/}"                          # REF/PATH
             printf '%s\n' "https://cdn.jsdelivr.net/gh/$REPO@$_tail"
+            printf '%s\n' "https://testingcf.jsdelivr.net/gh/$REPO@$_tail"
             printf '%s\n' "https://gh-proxy.com/$_u"
+            printf '%s\n' "https://ghproxy.net/$_u"
+            printf '%s\n' "https://ghfast.top/$_u"
             ;;
         https://github.com/*)
             printf '%s\n' "https://gh-proxy.com/$_u"
+            printf '%s\n' "https://ghproxy.net/$_u"
+            printf '%s\n' "https://ghfast.top/$_u"
             ;;
     esac
 }
