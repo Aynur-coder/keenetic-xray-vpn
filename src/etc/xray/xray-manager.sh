@@ -191,7 +191,7 @@ generate_config() {
     {
       "tag": "socks-in",
       "port": 1081,
-      "listen": "0.0.0.0",
+      "listen": "127.0.0.1",
       "protocol": "socks",
       "settings": {"auth": "noauth", "udp": true},
       "sniffing": {"enabled": true, "destOverride": ["http","tls","quic"], "routeOnly": true}
@@ -199,7 +199,7 @@ generate_config() {
     {
       "tag": "http-in",
       "port": 1082,
-      "listen": "0.0.0.0",
+      "listen": "127.0.0.1",
       "protocol": "http"
     }
   ],

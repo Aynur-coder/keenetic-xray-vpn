@@ -500,10 +500,14 @@ function generate_xray_config() {
              'settings' => ['network' => 'tcp,udp', 'followRedirect' => true],
              'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true],
              'streamSettings' => ['sockopt' => ['tproxy' => 'redirect']]],
-            ['tag' => 'socks-in', 'port' => 1081, 'listen' => '0.0.0.0', 'protocol' => 'socks',
+            // socks/http inbounds bind to loopback only: they are used solely by the router
+            // itself (status probes, update.sh) via 127.0.0.1. Listening on 0.0.0.0 exposed an
+            // OPEN proxy to the LAN/WAN — on a public-IP router that drew abuse that looped back
+            // into Xray ("loopback connection detected" floods until the core crashed).
+            ['tag' => 'socks-in', 'port' => 1081, 'listen' => '127.0.0.1', 'protocol' => 'socks',
              'settings' => ['auth' => 'noauth', 'udp' => true],
              'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true]],
-            ['tag' => 'http-in', 'port' => 1082, 'listen' => '0.0.0.0', 'protocol' => 'http']
+            ['tag' => 'http-in', 'port' => 1082, 'listen' => '127.0.0.1', 'protocol' => 'http']
         ],
         'outbounds' => $outbounds,
         'routing' => ['domainStrategy' => 'IPIfNonMatch', 'rules' => $rules]
