@@ -72,7 +72,7 @@ curl_gh() {
 '
     for _m in $(gh_mirrors "$_u"); do
         IFS="$_oldifs"
-        _out=$(/opt/bin/curl -fsSL --max-time 15 "$_m" 2>/dev/null) \
+        _out=$(/opt/bin/curl -fsSL --connect-timeout 6 --max-time 15 "$_m" 2>/dev/null) \
             && { printf '%s' "$_out"; return 0; }
         IFS='
 '
@@ -88,7 +88,7 @@ download_gh() {
 '
     for _m in $(gh_mirrors "$_du"); do
         IFS="$_oldifs"
-        /opt/bin/curl -fsSL --max-time 60 --retry 2 --retry-delay 3 -o "$_do" "$_m" 2>/dev/null \
+        /opt/bin/curl -fsSL --connect-timeout 6 --max-time 60 --retry 2 --retry-delay 3 -o "$_do" "$_m" 2>/dev/null \
             && return 0
         IFS='
 '

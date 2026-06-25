@@ -1894,7 +1894,7 @@ case 'apply_update':
         'https://ghproxy.net/' . $upd_url,
         'https://ghfast.top/' . $upd_url,
     ] as $m) {
-        $fetches[] = '/opt/bin/curl -fsSL --max-time 20 ' . escapeshellarg($m);
+        $fetches[] = '/opt/bin/curl -fsSL --connect-timeout 6 --max-time 20 ' . escapeshellarg($m);
     }
     $fresh_ok = false;
     foreach ($fetches as $c) {

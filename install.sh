@@ -162,7 +162,7 @@ curl_gh() {
 '
     for _m in $(gh_mirrors "$_gh_url"); do
         IFS="$_oldifs"
-        curl -fsSL --max-time 30 "$@" "$_m" && return 0
+        curl -fsSL --connect-timeout 6 --max-time 30 "$@" "$_m" && return 0
         IFS='
 '
     done
