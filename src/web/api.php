@@ -1831,11 +1831,26 @@ case 'changelog_full':
         $cl_url = 'https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/changelog.md';
         $xray_up = file_exists('/opt/var/run/xray.pid')
             && shell_exec('kill -0 $(cat /opt/var/run/xray.pid 2>/dev/null) 2>/dev/null; echo $?') === "0\n";
-        $raw = $xray_up
-            ? shell_run("/opt/bin/curl -fsSL --max-time 10 --socks5-hostname 127.0.0.1:1081 $cl_url 2>/dev/null")
-            : '';
-        if ($raw === '' || strpos($raw, '#') === false) {
-            $raw = shell_run("/opt/bin/curl -fsSL --max-time 15 $cl_url 2>/dev/null");
+        // SOCKS5 first (bypasses TSPU), then direct + GitHub mirrors so the history view
+        // still loads when raw.githubusercontent.com is reset and xray is down.
+        $cl_cmds = [];
+        if ($xray_up) {
+            $cl_cmds[] = "/opt/bin/curl -fsSL --connect-timeout 6 --max-time 10 --socks5-hostname 127.0.0.1:1081 " . escapeshellarg($cl_url);
+        }
+        foreach ([
+            $cl_url,
+            'https://cdn.jsdelivr.net/gh/Aynur-coder/keenetic-xray-vpn@main/changelog.md',
+            'https://testingcf.jsdelivr.net/gh/Aynur-coder/keenetic-xray-vpn@main/changelog.md',
+            'https://gh-proxy.com/' . $cl_url,
+            'https://ghproxy.net/' . $cl_url,
+            'https://ghfast.top/' . $cl_url,
+        ] as $cl_m) {
+            $cl_cmds[] = "/opt/bin/curl -fsSL --connect-timeout 6 --max-time 15 " . escapeshellarg($cl_m);
+        }
+        $raw = '';
+        foreach ($cl_cmds as $cl_c) {
+            $raw = shell_run($cl_c . ' 2>/dev/null');
+            if ($raw !== '' && strpos($raw, '#') !== false) break;
         }
         if ($raw !== '' && strpos($raw, '#') !== false) @file_put_contents($cache, $raw);
     }

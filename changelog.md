@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.15.16] - 2026-06-25
+### Changed
+- «История изменений» (`changelog_full`) теперь грузится через зеркала: после SOCKS5 и прямого запроса пробуются jsDelivr (`cdn`/`testingcf`) и прокси `gh-proxy.com`/`ghproxy.net`/`ghfast.top` с `--connect-timeout 6`. Раньше при блокировке `raw.githubusercontent.com` и выключенном xray список изменений не загружался (показывался только из кеша)
+
 ## [0.15.15] - 2026-06-25
 ### Changed
 - Запросы по GitHub-зеркалам получили `--connect-timeout 6`: недоступное из РФ зеркало (например `ghproxy.net`) теперь отваливается за ~6 секунд, а не висит до полного `--max-time`. Затронуты циклы перебора зеркал в `update.sh`, `install.sh` и bootstrap-загрузка в `api.php`. Ускоряет обход TSPU, когда часть зеркал не отвечает
