@@ -1873,8 +1873,46 @@ case 'apply_update':
     // preserves the "update.sh --" anchor that status_update searches for.
     @file_put_contents('/opt/var/log/xray/update.log',
         '[' . date('Y-m-d H:i:s') . "] update.sh --apply starting\n");
-    shell_exec('/opt/etc/xray/update.sh --apply > /dev/null 2>&1 &');
-    echo json_encode(['ok' => true, 'started' => true]);
+
+    // Bootstrap the freshest updater instead of trusting the locally-installed update.sh,
+    // which may be old (different update methodology) and would re-run stale logic. Fetch
+    // src/etc/xray/update.sh from GitHub via SOCKS5 + the same mirror set, validate it, and
+    // run that. Only if every fetch fails do we fall back to the local copy — so there is no
+    // regression: worst case is exactly the previous behaviour.
+    $upd_url = 'https://raw.githubusercontent.com/Aynur-coder/keenetic-xray-vpn/main/src/etc/xray/update.sh';
+    $upd_tmp = '/opt/tmp/xray-vpn-update-latest.sh';
+    $xray_up = file_exists('/opt/var/run/xray.pid')
+        && trim(shell_run('kill -0 $(cat /opt/var/run/xray.pid 2>/dev/null) 2>/dev/null; echo $?')) === '0';
+    $fetches = [];
+    if ($xray_up) {
+        $fetches[] = '/opt/bin/curl -fsSL --max-time 10 --socks5-hostname 127.0.0.1:1081 ' . escapeshellarg($upd_url);
+    }
+    foreach ([
+        $upd_url,
+        'https://cdn.jsdelivr.net/gh/Aynur-coder/keenetic-xray-vpn@main/src/etc/xray/update.sh',
+        'https://gh-proxy.com/' . $upd_url,
+        'https://ghproxy.net/' . $upd_url,
+        'https://ghfast.top/' . $upd_url,
+    ] as $m) {
+        $fetches[] = '/opt/bin/curl -fsSL --max-time 20 ' . escapeshellarg($m);
+    }
+    $fresh_ok = false;
+    foreach ($fetches as $c) {
+        @unlink($upd_tmp);
+        shell_run($c . ' -o ' . escapeshellarg($upd_tmp) . ' 2>/dev/null');
+        if (is_file($upd_tmp) && filesize($upd_tmp) > 500
+            && strpos((string)@file_get_contents($upd_tmp), 'cmd_apply') !== false) {
+            $fresh_ok = true;
+            break;
+        }
+    }
+    if ($fresh_ok) {
+        shell_run('chmod 755 ' . escapeshellarg($upd_tmp));
+        shell_exec('sh ' . escapeshellarg($upd_tmp) . ' --apply > /dev/null 2>&1 &');
+    } else {
+        shell_exec('/opt/etc/xray/update.sh --apply > /dev/null 2>&1 &');
+    }
+    echo json_encode(['ok' => true, 'started' => true, 'bootstrap' => $fresh_ok]);
     break;
 
 case 'status_update':
