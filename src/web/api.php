@@ -1867,6 +1867,12 @@ case 'apply_update':
     }
     @unlink('/opt/tmp/xray-vpn-update-check.json');
     @file_put_contents($sf, "starting\n" . time() . "\nЗапускаю обновление...\n0\n");
+    // Reset the run log so status_update can't surface a PREVIOUS run's tail. Without this
+    // the UI reads an old "Already at latest / Nothing to do" line (the JS logDone check)
+    // and jumps straight to a fake 100% before the new run has written anything. The marker
+    // preserves the "update.sh --" anchor that status_update searches for.
+    @file_put_contents('/opt/var/log/xray/update.log',
+        '[' . date('Y-m-d H:i:s') . "] update.sh --apply starting\n");
     shell_exec('/opt/etc/xray/update.sh --apply > /dev/null 2>&1 &');
     echo json_encode(['ok' => true, 'started' => true]);
     break;
