@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.15.17] - 2026-07-26
+### Fixed
+- **Router pinned at 100% CPU.** `warmup_ipset()` guarded against concurrent runs with `pkill -f vpn_warmup`, but BusyBox has no `pkill` (`sh: pkill: not found`) — the guard silently did nothing. Every apply (add domain, change a rule) launched another warmup over the *full* domain set, and they piled up: 8+ passes running in parallel, load average 13 on a 4-core MIPS box, SSH unable to even authenticate. Rewrote the guard to track the parent PID in `/tmp/vpn_warmup.pid` and reap its `dig` children by PPID (no `pkill`, no `setsid` — neither exists on BusyBox).
+- **Warmup scope.** It resolved every domain including v2fly lists — 803 entries here, thousands on bigger setups — forking one `dig` per name. AdGuard adds an IP to the ipset on the first real lookup anyway, so the long tail bought nothing. Warmup is now limited to manually-added domains, capped at 60, and runs under `nice -n 19`.
+- **Xray refused to start with xhttp servers.** `xhttpSettings.host` was emitted as an array; Xray expects a string, so the whole config failed to parse (`cannot unmarshal array into Go struct field SplitHTTPConfig...host of type string`). One server with a non-empty `host` invalidated the config for *all* servers — every outbound appeared dead, not just that one.
+
 ## [0.15.16] - 2026-06-25
 ### Changed
 - «История изменений» (`changelog_full`) теперь грузится через зеркала: после SOCKS5 и прямого запроса пробуются jsDelivr (`cdn`/`testingcf`) и прокси `gh-proxy.com`/`ghproxy.net`/`ghfast.top` с `--connect-timeout 6`. Раньше при блокировке `raw.githubusercontent.com` и выключенном xray список изменений не загружался (показывался только из кеша)

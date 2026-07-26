@@ -342,7 +342,8 @@ function build_outbound_from_link($link, $tag) {
         }
         if ($v['type'] === 'xhttp') {
             $out['streamSettings']['xhttpSettings'] = [];
-            if (!empty($v['host'])) $out['streamSettings']['xhttpSettings']['host'] = [$v['host']];
+            // Xray expects xhttpSettings.host as a plain string, not an array
+            if (!empty($v['host'])) $out['streamSettings']['xhttpSettings']['host'] = $v['host'];
             if (!empty($v['path'])) $out['streamSettings']['xhttpSettings']['path'] = $v['path'];
             if (!empty($v['mode'])) $out['streamSettings']['xhttpSettings']['mode'] = $v['mode'];
         }
@@ -678,17 +679,54 @@ function reload_adguard() {
     shell_run('/opt/etc/init.d/S99adguardhome restart 2>/dev/null');
 }
 
+// Max domains a single warmup pass will resolve. v2fly lists hold thousands of entries;
+// forking that many `dig` processes pins a MIPS router at 100% CPU for many minutes.
+// AdGuard adds an IP to the ipset on the first real lookup anyway, so warming the long
+// tail buys nothing — we only pre-resolve the user's own (manual) domains.
+define('WARMUP_MAX_DOMAINS', 60);
+define('WARMUP_PID_FILE', '/tmp/vpn_warmup.pid');
+
+// Kill a previous warmup run. BusyBox has NO pkill and NO setsid, so we track the parent
+// PID ourselves, then reap its `dig` children by PPID.
+function warmup_stop() {
+    $pidfile = WARMUP_PID_FILE;
+    $pid = trim(@file_get_contents($pidfile) ?: '');
+    if ($pid !== '' && ctype_digit($pid)) {
+        // Children first (else the loop forks a fresh dig as we kill the parent), then parent
+        shell_exec("ps -o pid,ppid 2>/dev/null | awk '\$2==$pid {print \$1}' | xargs -r kill -9 2>/dev/null");
+        shell_exec("kill -9 $pid 2>/dev/null");
+    }
+    @unlink($pidfile);
+    // Belt and braces: reap dig orphans left by an older build that had no PID file
+    shell_exec("ps w 2>/dev/null | grep 'dig @127\\.0\\.0\\.1' | grep -v grep | awk '{print \$1}' | xargs -r kill -9 2>/dev/null");
+}
+
 function warmup_ipset() {
-    shell_exec('pkill -f vpn_warmup 2>/dev/null');
-    $domains = all_domains();
+    warmup_stop();
+
+    // Only manual domains — v2fly lists are left to populate on demand.
+    $domains = array_values(array_unique(array_map(
+        fn($t) => strtolower(bare_domain($t)),
+        lines_read($GLOBALS['DOMAINS_FILE'])
+    )));
+    $domains = array_filter($domains, fn($d) => $d !== '');
     if (empty($domains)) return;
+
+    $truncated = count($domains) > WARMUP_MAX_DOMAINS;
+    if ($truncated) $domains = array_slice($domains, 0, WARMUP_MAX_DOMAINS);
+
     $tmpfile = '/tmp/vpn_warmup.txt';
     file_put_contents($tmpfile, implode("\n", $domains) . "\n");
-    // Wait only until AdGuard actually answers (up to ~12s), then resolve — instead of a
-    // fixed 12s sleep. AGH usually comes back in 3-5s, so the route is live much sooner.
-    $script = 'i=0; while [ $i -lt 12 ]; do dig @127.0.0.1 cloudflare.com +short +timeout=1 +tries=1 >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; '
-        . "while read d; do dig @127.0.0.1 \"\$d\" +short A +timeout=2 +tries=1 >/dev/null 2>&1; done < $tmpfile; rm -f $tmpfile";
-    shell_exec("nohup sh -c '$script' >/dev/null 2>&1 &");
+
+    $pidfile = WARMUP_PID_FILE;
+    // BusyBox has no setsid, so the script records its own PID and warmup_stop() reaps
+    // children by PPID. `nice -n 19` keeps it off the CPU whenever anything else wants it.
+    $script = 'echo $$ > ' . $pidfile . '; '
+        // wait for AdGuard to answer again (up to ~12s) instead of a blind sleep
+        . 'i=0; while [ $i -lt 12 ]; do dig @127.0.0.1 cloudflare.com +short +timeout=1 +tries=1 >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; '
+        . "while read d; do nice -n 19 dig @127.0.0.1 \"\$d\" +short A +timeout=2 +tries=1 >/dev/null 2>&1; done < $tmpfile; "
+        . "rm -f $tmpfile $pidfile";
+    shell_exec("nohup nice -n 19 sh -c '$script' >/dev/null 2>&1 &");
 }
 
 function update_adguard_ipset() {
