@@ -595,6 +595,19 @@ AGHCONF
 [ "$type" = "ip6tables" ] && exit 0
 [ "$table" = "nat" ] || exit 0
 
+# AdGuard refuses to start if an ipset named in its config is missing; those sets are
+# created by xray-manager, so a router where Xray never started would leave AdGuard dead
+# and this redirect would black-hole DNS for the whole LAN. Create them defensively.
+ipset create vpn1 hash:net family inet  2>/dev/null || :
+ipset create vpn6 hash:net family inet6 2>/dev/null || :
+
+# Never redirect to a dead resolver — that takes the entire network offline.
+if ! netstat -lnu 2>/dev/null | awk '{print $4}' | grep -qE ':53$'; then
+    while iptables -t nat -D PREROUTING -i br0 -p udp --dport 53 -j REDIRECT --to-port 53 2>/dev/null; do :; done
+    while iptables -t nat -D PREROUTING -i br0 -p tcp --dport 53 -j REDIRECT --to-port 53 2>/dev/null; do :; done
+    exit 0
+fi
+
 iptables -t nat -C PREROUTING -i br0 -p udp --dport 53 -j REDIRECT --to-port 53 2>/dev/null || \
     iptables -t nat -I PREROUTING 1 -i br0 -p udp --dport 53 -j REDIRECT --to-port 53
 iptables -t nat -C PREROUTING -i br0 -p tcp --dport 53 -j REDIRECT --to-port 53 2>/dev/null || \
@@ -604,9 +617,11 @@ DNSHOOK
         chmod 755 "$_dns_hook"
     fi
 
-    # --- 4e. Apply DNS redirect NOW (don't wait for next firewall reload) ---
-    if ! dryrun "apply DNS redirect iptables rules"; then
-        type=iptables table=nat sh "$_dns_hook" 2>/dev/null || warn "DNS redirect rule already set or iptables unavailable"
+    # --- 4e. Create the ipsets AdGuard's config references ---
+    # Must happen before AdGuard starts: a missing set is a fatal startup error for it.
+    if ! dryrun "create vpn1/vpn6 ipsets"; then
+        ipset create vpn1 hash:net family inet  2>/dev/null || :
+        ipset create vpn6 hash:net family inet6 2>/dev/null || :
     fi
 
     # --- 4f. Start AdGuard Home ---
@@ -623,16 +638,22 @@ DNSHOOK
     _listening=0
     _attempt=0
     while [ "$_attempt" -lt 5 ]; do
-        if netstat -lnup 2>/dev/null | grep -q ':53 '; then
+        if netstat -lnup 2>/dev/null | awk '{print $4}' | grep -qE ':53$'; then
             _listening=1; break
         fi
         sleep 1; _attempt=$((_attempt+1))
     done
 
+    # --- 4g. Apply the DNS redirect ONLY once AdGuard actually answers on :53 ---
+    # Installing it while nothing listens would black-hole DNS for every LAN client.
     if [ "$_listening" = "1" ]; then
         info "AdGuard Home is listening on port 53"
+        if ! dryrun "apply DNS redirect iptables rules"; then
+            type=iptables table=nat sh "$_dns_hook" 2>/dev/null || :
+        fi
     else
-        warn "Port 53 not detected. AdGuard Home may still be starting."
+        warn "Port 53 not detected — DNS redirect NOT installed (clients keep stock DNS)."
+        warn "Fix AdGuard first, then re-run the installer or reboot to apply the redirect."
     fi
 
     info "AGH web UI: http://192.168.1.1:3000"
@@ -838,16 +859,32 @@ run_migrations() {
 # -----------------------------------------------------------------------------
 register_cron() {
     step "Registering auto-update cron"
-    _cron_dir="/opt/etc/cron.d"
-    mkdir -p "$_cron_dir"
+    if dryrun "install cron job"; then return; fi
+
+    # Entware's cron reads /opt/etc/crontab, which only run-parts the cron.<period>
+    # directories — it does NOT scan /opt/etc/cron.d. A crontab-style line dropped in
+    # cron.d is silently ignored, so auto-update never fires. Install an executable
+    # script into cron.daily instead (verified working on KN-2112 / KN-3810).
+    _cron_dir="/opt/etc/cron.daily"
     _file="$_cron_dir/xray-vpn-update"
-    _line="30 4 * * * root /opt/etc/xray/update.sh --cron >> /opt/var/log/xray/update.log 2>&1"
-    if dryrun "write $_file"; then return; fi
-    printf '%s\n' "$_line" > "$_file"
-    chmod 644 "$_file"
+    mkdir -p "$_cron_dir"
+
+    cat > "$_file" <<'CRONJOB'
+#!/bin/sh
+# keenetic-xray-vpn: daily auto-update check.
+# update.sh --cron exits immediately unless features.auto_update is true.
+[ -x /opt/etc/xray/update.sh ] || exit 0
+/opt/etc/xray/update.sh --cron >> /opt/var/log/xray/update.log 2>&1
+CRONJOB
+    chmod 755 "$_file"
+
+    # Remove the legacy cron.d entry left by installers <= 0.15.17 (it never ran)
+    rm -f /opt/etc/cron.d/xray-vpn-update 2>/dev/null || :
+
     if [ -x /opt/etc/init.d/S10cron ]; then
         /opt/etc/init.d/S10cron restart >/dev/null 2>&1 || warn "could not restart cron"
     fi
+    verb "cron job installed at $_file"
 }
 
 # -----------------------------------------------------------------------------

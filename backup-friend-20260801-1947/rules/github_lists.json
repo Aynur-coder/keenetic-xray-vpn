@@ -1,0 +1,74 @@
+[
+    {
+        "id": "2c6ee24b09816a6f14f95d1698b24ead",
+        "name": "openai",
+        "url": "",
+        "enabled": true,
+        "count": 12,
+        "updated": "2026-06-12 21:52:38",
+        "source": "v2fly"
+    },
+    {
+        "id": "482bcddc8fe53ed1e68c77a95aab5f83",
+        "name": "discord",
+        "url": "",
+        "enabled": true,
+        "count": 26,
+        "updated": "2026-06-12 21:53:47",
+        "source": "v2fly"
+    },
+    {
+        "id": "26cae7718c32180a7a0f8e19d6d40a59",
+        "name": "facebook",
+        "url": "",
+        "enabled": true,
+        "count": 393,
+        "updated": "2026-06-12 21:53:54",
+        "source": "v2fly"
+    },
+    {
+        "id": "f5fd5ac659af20af87d0a91290e673a0",
+        "name": "google-deepmind",
+        "url": "",
+        "enabled": true,
+        "count": 28,
+        "updated": "2026-06-12 21:54:07",
+        "source": "v2fly"
+    },
+    {
+        "id": "ffe8560492ef96f860b965341d0c9698",
+        "name": "instagram",
+        "url": "",
+        "enabled": true,
+        "count": 72,
+        "updated": "2026-06-12 21:55:16",
+        "source": "v2fly"
+    },
+    {
+        "id": "e9a23cbc455158951716b440c3d165e0",
+        "name": "meta",
+        "url": "",
+        "enabled": true,
+        "count": 3,
+        "updated": "2026-06-12 21:55:25",
+        "source": "v2fly"
+    },
+    {
+        "id": "5ea790e4a248dab6ac4b6ae1854463c7",
+        "name": "notion",
+        "url": "",
+        "enabled": true,
+        "count": 7,
+        "updated": "2026-06-12 21:55:33",
+        "source": "v2fly"
+    },
+    {
+        "id": "556dcd26a54fb7523b462f60cdcd44e1",
+        "name": "anthropic",
+        "url": "",
+        "enabled": true,
+        "count": 7,
+        "updated": "2026-06-12 21:56:11",
+        "source": "v2fly"
+    }
+]

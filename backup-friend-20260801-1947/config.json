@@ -1,0 +1,1073 @@
+{
+    "log": {
+        "loglevel": "warning",
+        "access": "/opt/var/log/xray/access.log",
+        "error": "/opt/var/log/xray/error.log"
+    },
+    "inbounds": [
+        {
+            "tag": "tproxy-in",
+            "port": 1080,
+            "protocol": "dokodemo-door",
+            "settings": {
+                "network": "tcp,udp",
+                "followRedirect": true
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": [
+                    "http",
+                    "tls",
+                    "quic"
+                ],
+                "routeOnly": true
+            },
+            "streamSettings": {
+                "sockopt": {
+                    "tproxy": "redirect"
+                }
+            }
+        },
+        {
+            "tag": "socks-in",
+            "port": 1081,
+            "listen": "127.0.0.1",
+            "protocol": "socks",
+            "settings": {
+                "auth": "noauth",
+                "udp": true
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": [
+                    "http",
+                    "tls",
+                    "quic"
+                ],
+                "routeOnly": true
+            }
+        },
+        {
+            "tag": "http-in",
+            "port": 1082,
+            "listen": "127.0.0.1",
+            "protocol": "http"
+        }
+    ],
+    "outbounds": [
+        {
+            "tag": "sub-de2fbd0be68cf9726c8dbca84032a95b",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "helsinki.orris.wtf",
+                        "port": 8443,
+                        "users": [
+                            {
+                                "id": "e89223a4-28a1-4ae6-816b-8c47547d0e8c",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "helsinki.orris.wtf",
+                    "fingerprint": "firefox",
+                    "publicKey": "pfcO7F0xGIaNjIVLs2lut9doQ-8IjZ33dZCD5xrFY1E",
+                    "shortId": "8035a4abee6c837c",
+                    "spiderX": ""
+                },
+                "xhttpSettings": {
+                    "path": "/xh",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "sub-6ab0d588d5d0388fc0ebc455428b4207",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "0.0.0.0",
+                        "port": 1,
+                        "users": [
+                            {
+                                "id": "00000000-0000-0000-0000-000000000000",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "none"
+            }
+        },
+        {
+            "tag": "sub-b2338699e4359e320205962e6f250df3",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "0.0.0.0",
+                        "port": 1,
+                        "users": [
+                            {
+                                "id": "00000000-0000-0000-0000-000000000000",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "none"
+            }
+        },
+        {
+            "tag": "sub-1d49e19e46c75e5ff404e59700f6cb99",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "amsterdam.orris.wtf",
+                        "port": 8443,
+                        "users": [
+                            {
+                                "id": "e89223a4-28a1-4ae6-816b-8c47547d0e8c",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "amsterdam.orris.wtf",
+                    "fingerprint": "firefox",
+                    "publicKey": "dFMKGhwfdTyc_Hc8g-wEkMiXtTK687pGtIECzZXFlxs",
+                    "shortId": "8035a4abee6c837c",
+                    "spiderX": ""
+                },
+                "xhttpSettings": {
+                    "path": "/xh",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "sub-e0a866f0d212a9c0daedf75f7ba28fd6",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "frankfurt.orris.wtf",
+                        "port": 8443,
+                        "users": [
+                            {
+                                "id": "e89223a4-28a1-4ae6-816b-8c47547d0e8c",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "frankfurt.orris.wtf",
+                    "fingerprint": "firefox",
+                    "publicKey": "xJLOOKjW-XB99yUipDioCIy55tbO4_N5CCYDWVglLEY",
+                    "shortId": "8035a4abee6c837c",
+                    "spiderX": ""
+                },
+                "xhttpSettings": {
+                    "path": "/xh",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "sub-688b64173a9af5a0d3ba9021ac4173c2",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "uk.orris.wtf",
+                        "port": 8443,
+                        "users": [
+                            {
+                                "id": "e89223a4-28a1-4ae6-816b-8c47547d0e8c",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "uk.orris.wtf",
+                    "fingerprint": "firefox",
+                    "publicKey": "qCEbj3r25MXSgJYKZhgPpIDcWIUb9v7RAfFJtku-YCU",
+                    "shortId": "8035a4abee6c837c",
+                    "spiderX": ""
+                },
+                "xhttpSettings": {
+                    "path": "/xh",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "sub-504ac1e8eb4481d94c69c612d787d6c5",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "singapore.orris.wtf",
+                        "port": 8443,
+                        "users": [
+                            {
+                                "id": "e89223a4-28a1-4ae6-816b-8c47547d0e8c",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "singapore.orris.wtf",
+                    "fingerprint": "firefox",
+                    "publicKey": "XZdGk-uDmJI1pHs7wFWtkpNpaRb4O_kV0kEPbVFtyWw",
+                    "shortId": "8035a4abee6c837c",
+                    "spiderX": ""
+                },
+                "xhttpSettings": {
+                    "path": "/xh",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "sub-0c14390ac5fbdf99f25d4dfab8e00afc",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "usa.orris.wtf",
+                        "port": 8443,
+                        "users": [
+                            {
+                                "id": "e89223a4-28a1-4ae6-816b-8c47547d0e8c",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "usa.orris.wtf",
+                    "fingerprint": "firefox",
+                    "publicKey": "TKVN3K2otKJGPDByMKC8vJ5_akxoIpPYq0M-8UbPihg",
+                    "shortId": "8035a4abee6c837c",
+                    "spiderX": ""
+                },
+                "xhttpSettings": {
+                    "path": "/xh",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "sub-38f79e1898093f3665189935010dd86b",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "31.31.197.87",
+                        "port": 80,
+                        "users": [
+                            {
+                                "id": "e89223a4-28a1-4ae6-816b-8c47547d0e8c",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "none",
+                "xhttpSettings": {
+                    "host": "u3594947.mobileapi.ru",
+                    "path": "/api/generate",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "direct",
+            "protocol": "freedom"
+        },
+        {
+            "tag": "block",
+            "protocol": "blackhole"
+        }
+    ],
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16",
+                    "127.0.0.0/8",
+                    "169.254.0.0/16",
+                    "224.0.0.0/4",
+                    "240.0.0.0/4",
+                    "fc00::/7",
+                    "::1/128"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "0.0.0.0"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "0.0.0.0"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "138.124.241.229"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "153.75.89.24"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "146.103.42.195"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "45.197.133.136"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "209.74.81.149"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "195.211.98.207"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "ip": [
+                    "31.31.197.87"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "sub-de2fbd0be68cf9726c8dbca84032a95b",
+                "domain": [
+                    "ngrok.com",
+                    "ngrok-agent.com",
+                    "whoer.net",
+                    "amazon.com",
+                    "api.ipify.org",
+                    "gstatic.com",
+                    "jnn-pa.googleapis.com",
+                    "optimizationguide-pa.googleapis.com",
+                    "grok.com",
+                    "x.ai",
+                    "cdn32.lol",
+                    "music.apple.com",
+                    "t.me",
+                    "tg.dev",
+                    "tg.org",
+                    "tx.me",
+                    "teleg.xyz",
+                    "telegram.ai",
+                    "telegram.asia",
+                    "telegram.biz",
+                    "telegram.cloud",
+                    "telegram.cn",
+                    "telegram.co",
+                    "telegram.com",
+                    "telegram.de",
+                    "telegram.dev",
+                    "telegram.dog",
+                    "telegram.eu",
+                    "telegram.fr",
+                    "telegram.host",
+                    "telegram.in",
+                    "telegram.info",
+                    "telegram.io",
+                    "telegram.jp",
+                    "telegram.me",
+                    "telegram.net",
+                    "telegram.org",
+                    "telegram.qa",
+                    "telegram.ru",
+                    "telegram.services",
+                    "telegram.solutions",
+                    "telegram.space",
+                    "telegram.team",
+                    "telegram.tech",
+                    "telegram.uk",
+                    "telegram.us",
+                    "telegram.website",
+                    "telegram.xyz",
+                    "telegramapp.org",
+                    "telegra.ph",
+                    "telesco.pe",
+                    "nicegram.app",
+                    "telegramdownload.com",
+                    "cdn-telegram.org",
+                    "comments.app",
+                    "contest.com",
+                    "fragment.com",
+                    "graph.org",
+                    "quiz.directory",
+                    "tdesktop.com",
+                    "telega.one",
+                    "telegram-cdn.org",
+                    "usercontent.dev",
+                    "tgram.org",
+                    "torg.org",
+                    "nuo.sh",
+                    "domain:chat.com",
+                    "domain:chatgpt.com",
+                    "domain:crixet.com",
+                    "domain:oaistatic.com",
+                    "domain:oaistatsig.com",
+                    "domain:oaiusercontent.com",
+                    "domain:openai.com",
+                    "domain:sora.com",
+                    "domain:openai.com.cdn.cloudflare.net",
+                    "domain:chatgpt.livekit.cloud",
+                    "domain:host.livekit.cloud",
+                    "domain:turn.livekit.cloud",
+                    "domain:dis.gd",
+                    "domain:discord.co",
+                    "domain:discord.com",
+                    "domain:discord.design",
+                    "domain:discord.dev",
+                    "domain:discord.gg",
+                    "domain:discord.gift",
+                    "domain:discord.gifts",
+                    "domain:discord.media",
+                    "domain:discord.new",
+                    "domain:discord.store",
+                    "domain:discord.tools",
+                    "domain:discord-activities.com",
+                    "domain:discordactivities.com",
+                    "domain:discordapp.com",
+                    "domain:discordapp.net",
+                    "domain:discordmerch.com",
+                    "domain:discordpartygames.com",
+                    "domain:discordsays.com",
+                    "domain:discordstatus.com",
+                    "domain:airhorn.solutions",
+                    "domain:airhornbot.com",
+                    "domain:bigbeans.solutions",
+                    "domain:watchanimeattheoffice.com",
+                    "domain:discordapp.io",
+                    "domain:discordcdn.com",
+                    "domain:aboutfacebook.com",
+                    "domain:accessfacebookfromschool.com",
+                    "domain:acebooik.com",
+                    "domain:acebook.com",
+                    "domain:advancediddetection.com",
+                    "domain:askfacebook.net",
+                    "domain:askfacebook.org",
+                    "domain:atdmt2.com",
+                    "domain:atlasdmt.com",
+                    "domain:atlasonepoint.com",
+                    "domain:buyingfacebooklikes.com",
+                    "domain:careersatfb.com",
+                    "domain:celebgramme.com",
+                    "domain:china-facebook.com",
+                    "domain:click-url.com",
+                    "domain:como-hackearfacebook.com",
+                    "domain:crowdtangle.com",
+                    "domain:dacebook.com",
+                    "domain:dlfacebook.com",
+                    "domain:dotfacebook.com",
+                    "domain:dotfacebook.net",
+                    "domain:expresswifi.com",
+                    "domain:faacebok.com",
+                    "domain:faacebook.com",
+                    "domain:faasbook.com",
+                    "domain:facbebook.com",
+                    "domain:facbeok.com",
+                    "domain:facboo.com",
+                    "domain:facbook.com",
+                    "domain:facbool.com",
+                    "domain:facboox.com",
+                    "domain:faccebook.com",
+                    "domain:faccebookk.com",
+                    "domain:facdbook.com",
+                    "domain:facdebook.com",
+                    "domain:face-book.com",
+                    "domain:faceabook.com",
+                    "domain:facebboc.com",
+                    "domain:facebbook.com",
+                    "domain:facebboook.com",
+                    "domain:facebcook.com",
+                    "domain:facebdok.com",
+                    "domain:facebgook.com",
+                    "domain:facebhook.com",
+                    "domain:facebkkk.com",
+                    "domain:facebo-ok.com",
+                    "domain:faceboak.com",
+                    "domain:facebock.com",
+                    "domain:facebocke.com",
+                    "domain:facebof.com",
+                    "domain:faceboik.com",
+                    "domain:facebok.com",
+                    "domain:facebokbook.com",
+                    "domain:facebokc.com",
+                    "domain:facebokk.com",
+                    "domain:facebokok.com",
+                    "domain:faceboks.com",
+                    "domain:facebol.com",
+                    "domain:facebolk.com",
+                    "domain:facebomok.com",
+                    "domain:faceboo.com",
+                    "domain:facebooa.com",
+                    "domain:faceboob.com",
+                    "domain:faceboobok.com",
+                    "domain:facebooc.com",
+                    "domain:faceboock.com",
+                    "domain:facebood.com",
+                    "domain:facebooe.com",
+                    "domain:faceboof.com",
+                    "domain:facebooi.com",
+                    "domain:facebooik.com",
+                    "domain:facebooik.org",
+                    "domain:facebooj.com",
+                    "domain:facebook-corp.com",
+                    "domain:facebook-covid-19.com",
+                    "domain:facebook-ebook.com",
+                    "domain:facebook-forum.com",
+                    "domain:facebook-hardware.com",
+                    "domain:facebook-inc.com",
+                    "domain:facebook-login.com",
+                    "domain:facebook-newsroom.com",
+                    "domain:facebook-newsroom.org",
+                    "domain:facebook-pmdcenter.com",
+                    "domain:facebook-pmdcenter.net",
+                    "domain:facebook-pmdcenter.org",
+                    "domain:facebook-privacy.com",
+                    "domain:facebook-program.com",
+                    "domain:facebook-studio.com",
+                    "domain:facebook-support.org",
+                    "domain:facebook-texas-holdem.com",
+                    "domain:facebook-texas-holdem.net",
+                    "domain:facebook.br",
+                    "domain:facebook.ca",
+                    "domain:facebook.cc",
+                    "domain:facebook.com",
+                    "domain:facebook.design",
+                    "domain:facebook.net",
+                    "domain:facebook.hu",
+                    "domain:facebook.in",
+                    "domain:fecebook.net",
+                    "domain:facebook.nl",
+                    "domain:facebook.org",
+                    "domain:facebook.se",
+                    "domain:facebook.shop",
+                    "domain:facebook.tv",
+                    "domain:facebook.us",
+                    "domain:facebook.wang",
+                    "domain:facebook123.org",
+                    "domain:facebook30.com",
+                    "domain:facebook30.net",
+                    "domain:facebook30.org",
+                    "domain:facebook4business.com",
+                    "domain:facebookadvertisingsecrets.com",
+                    "domain:facebookatschool.com",
+                    "domain:facebookawards.com",
+                    "domain:facebookblueprint.net",
+                    "domain:facebookbrand.com",
+                    "domain:facebookbrand.net",
+                    "domain:facebookcanadianelectionintegrityinitiative.com",
+                    "domain:facebookcareer.com",
+                    "domain:facebookcheats.com",
+                    "domain:facebookck.com",
+                    "domain:facebookclub.com",
+                    "domain:facebookcom.com",
+                    "domain:facebookconsultant.org",
+                    "domain:facebookcoronavirus.com",
+                    "domain:facebookcovers.org",
+                    "domain:facebookcredits.info",
+                    "domain:facebookdating.net",
+                    "domain:facebookdusexe.org",
+                    "domain:facebookemail.com",
+                    "domain:facebookenespanol.com",
+                    "domain:facebookexchange.com",
+                    "domain:facebookexchange.net",
+                    "domain:facebookfacebook.com",
+                    "domain:facebookflow.com",
+                    "domain:facebookgames.com",
+                    "domain:facebookgraphsearch.com",
+                    "domain:facebookgraphsearch.info",
+                    "domain:facebookgroups.com",
+                    "domain:facebookhome.cc",
+                    "domain:facebookhome.com",
+                    "domain:facebookhome.info",
+                    "domain:facebookhub.com",
+                    "domain:facebooki.com",
+                    "domain:facebookinc.com",
+                    "domain:facebookland.com",
+                    "domain:facebooklikeexchange.com",
+                    "domain:facebooklive.com",
+                    "domain:facebooklivestaging.net",
+                    "domain:facebooklivestaging.org",
+                    "domain:facebooklogin.com",
+                    "domain:facebooklogin.info",
+                    "domain:facebookloginhelp.net",
+                    "domain:facebooklogs.com",
+                    "domain:facebookmail.com",
+                    "domain:facebookmail.tv",
+                    "domain:facebookmanager.info",
+                    "domain:facebookmarketing.info",
+                    "domain:facebookmarketingpartner.com",
+                    "domain:facebookmarketingpartners.com",
+                    "domain:facebookmobile.com",
+                    "domain:facebookmsn.com",
+                    "domain:facebooknews.com",
+                    "domain:facebooknfl.com",
+                    "domain:facebooknude.com",
+                    "domain:facebookofsex.com",
+                    "domain:facebookook.com",
+                    "domain:facebookpaper.com",
+                    "domain:facebookpay.com",
+                    "domain:facebookphonenumber.net",
+                    "domain:facebookphoto.com",
+                    "domain:facebookphotos.com",
+                    "domain:facebookpmdcenter.com",
+                    "domain:facebookpoke.net",
+                    "domain:facebookpoke.org",
+                    "domain:facebookpoker.info",
+                    "domain:facebookpokerchips.info",
+                    "domain:facebookporn.net",
+                    "domain:facebookporn.org",
+                    "domain:facebookporno.net",
+                    "domain:facebookportal.com",
+                    "domain:facebooks.com",
+                    "domain:facebooksafety.com",
+                    "domain:facebooksecurity.net",
+                    "domain:facebookshop.com",
+                    "domain:facebooksignup.net",
+                    "domain:facebooksite.net",
+                    "domain:facebookstories.com",
+                    "domain:facebookstudios.net",
+                    "domain:facebookstudios.org",
+                    "domain:facebooksupplier.com",
+                    "domain:facebooksuppliers.com",
+                    "domain:facebookswagemea.com",
+                    "domain:facebookswagstore.com",
+                    "domain:facebooksz.com",
+                    "domain:facebookthreads.net",
+                    "domain:facebooktv.net",
+                    "domain:facebooktv.org",
+                    "domain:facebookvacation.com",
+                    "domain:facebookw.com",
+                    "domain:facebookworld.com",
+                    "domain:facebool.com",
+                    "domain:facebool.info",
+                    "domain:facebooll.com",
+                    "domain:faceboom.com",
+                    "domain:faceboon.com",
+                    "domain:faceboonk.com",
+                    "domain:faceboooik.com",
+                    "domain:faceboook.com",
+                    "domain:faceboop.com",
+                    "domain:faceboot.com",
+                    "domain:faceboox.com",
+                    "domain:facebopk.com",
+                    "domain:facebpook.com",
+                    "domain:facebuk.com",
+                    "domain:facebuok.com",
+                    "domain:facebvook.com",
+                    "domain:facebyook.com",
+                    "domain:facebzook.com",
+                    "domain:facecbgook.com",
+                    "domain:facecbook.com",
+                    "domain:facecbook.org",
+                    "domain:facecook.com",
+                    "domain:facecook.org",
+                    "domain:facedbook.com",
+                    "domain:faceebok.com",
+                    "domain:faceebook.com",
+                    "domain:faceebot.com",
+                    "domain:facegbok.com",
+                    "domain:facegbook.com",
+                    "domain:faceobk.com",
+                    "domain:faceobok.com",
+                    "domain:faceobook.com",
+                    "domain:faceook.com",
+                    "domain:facerbooik.com",
+                    "domain:facerbook.com",
+                    "domain:facesbooc.com",
+                    "domain:facesounds.com",
+                    "domain:facetook.com",
+                    "domain:facevbook.com",
+                    "domain:facewbook.co",
+                    "domain:facewook.com",
+                    "domain:facfacebook.com",
+                    "domain:facfebook.com",
+                    "domain:fackebook.com",
+                    "domain:facnbook.com",
+                    "domain:facrbook.com",
+                    "domain:facvebook.com",
+                    "domain:facwebook.com",
+                    "domain:facxebook.com",
+                    "domain:fadebook.com",
+                    "domain:faebok.com",
+                    "domain:faebook.com",
+                    "domain:faebookc.com",
+                    "domain:faeboook.com",
+                    "domain:faecebok.com",
+                    "domain:faesebook.com",
+                    "domain:fafacebook.com",
+                    "domain:faicbooc.com",
+                    "domain:fasebokk.com",
+                    "domain:fasebook.com",
+                    "domain:faseboox.com",
+                    "domain:favebook.com",
+                    "domain:faycbok.com",
+                    "domain:fb.careers",
+                    "domain:fb.com",
+                    "domain:fb.gg",
+                    "domain:fb.me",
+                    "domain:fb.watch",
+                    "domain:fbacebook.com",
+                    "domain:fbbmarket.com",
+                    "domain:fbboostyourbusiness.com",
+                    "domain:fbcdn.com",
+                    "domain:fbcdn.net",
+                    "domain:fbfeedback.com",
+                    "domain:fbhome.com",
+                    "domain:fbidb.io",
+                    "domain:fbinc.com",
+                    "domain:fbinnovation.com",
+                    "domain:fbmarketing.com",
+                    "domain:fbreg.com",
+                    "domain:fbrpms.com",
+                    "domain:fbsbx.com",
+                    "domain:fbsbx.net",
+                    "domain:fbsupport-covid.net",
+                    "domain:fbthirdpartypixel.com",
+                    "domain:fbthirdpartypixel.net",
+                    "domain:fbthirdpartypixel.org",
+                    "domain:fburl.com",
+                    "domain:fbwat.ch",
+                    "domain:fbworkmail.com",
+                    "domain:fcacebook.com",
+                    "domain:fcaebook.com",
+                    "domain:fcebook.com",
+                    "domain:fcebookk.com",
+                    "domain:fcfacebook.com",
+                    "domain:fdacebook.info",
+                    "domain:feacboo.com",
+                    "domain:feacbook.com",
+                    "domain:feacbooke.com",
+                    "domain:feacebook.com",
+                    "domain:fecbbok.com",
+                    "domain:fecbooc.com",
+                    "domain:fecbook.com",
+                    "domain:feceboock.com",
+                    "domain:feceboox.com",
+                    "domain:fececbook.com",
+                    "domain:feook.com",
+                    "domain:ferabook.com",
+                    "domain:fescebook.com",
+                    "domain:fesebook.com",
+                    "domain:ffacebook.com",
+                    "domain:fgacebook.com",
+                    "domain:ficeboock.com",
+                    "domain:fmcebook.com",
+                    "domain:fnacebook.com",
+                    "domain:fosebook.com",
+                    "domain:fpacebook.com",
+                    "domain:fqcebook.com",
+                    "domain:fracebook.com",
+                    "domain:freeb.com",
+                    "domain:freebasics.com",
+                    "domain:freebasics.net",
+                    "domain:freebs.com",
+                    "domain:freefacebook.com",
+                    "domain:freefacebook.net",
+                    "domain:freefacebookads.net",
+                    "domain:freefblikes.com",
+                    "domain:freindfeed.com",
+                    "domain:friendbook.info",
+                    "domain:friendfed.com",
+                    "domain:friendfeed-api.com",
+                    "domain:friendfeed-media.com",
+                    "domain:friendfeed.com",
+                    "domain:friendfeedmedia.com",
+                    "domain:fsacebok.com",
+                    "domain:fscebook.com",
+                    "domain:fundraisingwithfacebook.com",
+                    "domain:funnyfacebook.org",
+                    "domain:futureofbusinesssurvey.org",
+                    "domain:gacebook.com",
+                    "domain:gameroom.com",
+                    "domain:gfacecbook.com",
+                    "domain:groups.com",
+                    "domain:hackerfacebook.com",
+                    "domain:hackfacebook.com",
+                    "domain:hackfacebookid.com",
+                    "domain:hifacebook.info",
+                    "domain:howtohackfacebook-account.com",
+                    "domain:hsfacebook.com",
+                    "domain:httpfacebook.com",
+                    "domain:httpsfacebook.com",
+                    "domain:httpwwwfacebook.com",
+                    "domain:i.org",
+                    "domain:internet.org",
+                    "domain:klik.me",
+                    "domain:liverail.com",
+                    "domain:liverail.tv",
+                    "domain:login-account.net",
+                    "domain:markzuckerberg.com",
+                    "domain:midentsolutions.com",
+                    "domain:mobilefacebook.com",
+                    "domain:moneywithfacebook.com",
+                    "domain:myfbfans.com",
+                    "domain:newsfeed.com",
+                    "domain:nextstop.com",
+                    "domain:online-deals.net",
+                    "domain:opencreate.org",
+                    "domain:reachtheworldonfacebook.com",
+                    "domain:rocksdb.org",
+                    "domain:shopfacebook.com",
+                    "domain:sportsfacebook.com",
+                    "domain:sportstream.com",
+                    "domain:supportfacebook.com",
+                    "domain:terragraph.com",
+                    "domain:thefacebook.com",
+                    "domain:thefacebook.net",
+                    "domain:thefind.com",
+                    "domain:toplayerserver.com",
+                    "domain:viewpointsfromfacebook.com",
+                    "domain:whyfacebook.com",
+                    "domain:worldhack.com",
+                    "domain:www-facebook.com",
+                    "domain:wwwfacebok.com",
+                    "domain:wwwfacebook.com",
+                    "domain:wwwmfacebook.com",
+                    "domain:zuckerberg.com",
+                    "domain:zuckerberg.net",
+                    "domain:facebookwork.com",
+                    "domain:redkix.com",
+                    "domain:workplace.com",
+                    "domain:workplaceusecases.com",
+                    "domain:deepmind.com",
+                    "domain:deepmind.google",
+                    "domain:geller-pa.googleapis.com",
+                    "domain:generativelanguage.googleapis.com",
+                    "domain:proactivebackend-pa.googleapis.com",
+                    "domain:robinfrontend-pa.googleapis.com",
+                    "domain:generativeai.google",
+                    "domain:makersuite.google.com",
+                    "domain:ai.studio",
+                    "domain:aistudio.google.com",
+                    "domain:bard.google.com",
+                    "domain:gemini.google",
+                    "domain:gemini.google.com",
+                    "domain:gemini.gstatic.com",
+                    "domain:notebooklm.google",
+                    "domain:notebooklm.google.com",
+                    "domain:jules.google",
+                    "domain:jules.google.com",
+                    "domain:labs.google",
+                    "domain:labs.google.com",
+                    "domain:aisandbox-pa.googleapis.com",
+                    "domain:aicode.googleapis.com",
+                    "domain:aida.googleapis.com",
+                    "domain:opal.google",
+                    "domain:opal.google.com",
+                    "domain:antigravity.google",
+                    "domain:antigravity-unleash.goog",
+                    "domain:stitch.withgoogle.com",
+                    "domain:achat-followers-instagram.com",
+                    "domain:acheter-followers-instagram.com",
+                    "domain:acheterdesfollowersinstagram.com",
+                    "domain:acheterfollowersinstagram.com",
+                    "domain:bookstagram.com",
+                    "domain:carstagram.com",
+                    "domain:cdninstagram.com",
+                    "domain:chickstagram.com",
+                    "domain:ig.me",
+                    "domain:igcdn.com",
+                    "domain:igsonar.com",
+                    "domain:igtv.com",
+                    "domain:imstagram.com",
+                    "domain:imtagram.com",
+                    "domain:instaadder.com",
+                    "domain:instachecker.com",
+                    "domain:instafallow.com",
+                    "domain:instafollower.com",
+                    "domain:instagainer.com",
+                    "domain:instagda.com",
+                    "domain:instagify.com",
+                    "domain:instagmania.com",
+                    "domain:instagor.com",
+                    "domain:instagram-brand.com",
+                    "domain:instagram-engineering.com",
+                    "domain:instagram-help.com",
+                    "domain:instagram-press.com",
+                    "domain:instagram-press.net",
+                    "domain:instagram.com",
+                    "domain:instagramci.com",
+                    "domain:instagramcn.com",
+                    "domain:instagramdi.com",
+                    "domain:instagramhashtags.net",
+                    "domain:instagramhilecim.com",
+                    "domain:instagramhilesi.org",
+                    "domain:instagramium.com",
+                    "domain:instagramizlenme.com",
+                    "domain:instagramkusu.com",
+                    "domain:instagramlogin.com",
+                    "domain:instagramm.com",
+                    "domain:instagramn.com",
+                    "domain:instagrampartners.com",
+                    "domain:instagramphoto.com",
+                    "domain:instagramq.com",
+                    "domain:instagramsepeti.com",
+                    "domain:instagramtakipcisatinal.net",
+                    "domain:instagramtakiphilesi.com",
+                    "domain:instagramtips.com",
+                    "domain:instagramtr.com",
+                    "domain:instagran.com",
+                    "domain:instagranm.com",
+                    "domain:instagrem.com",
+                    "domain:instagrm.com",
+                    "domain:instagtram.com",
+                    "domain:instagy.com",
+                    "domain:instamgram.com",
+                    "domain:instangram.com",
+                    "domain:instanttelegram.com",
+                    "domain:instaplayer.net",
+                    "domain:instastyle.tv",
+                    "domain:instgram.com",
+                    "domain:intagram.com",
+                    "domain:intagrm.com",
+                    "domain:intgram.com",
+                    "domain:kingstagram.com",
+                    "domain:lnstagram-help.com",
+                    "domain:theinstagramhack.com",
+                    "domain:oninstagram.com",
+                    "domain:online-instagram.com",
+                    "domain:onlineinstagram.com",
+                    "domain:web-instagram.net",
+                    "domain:wwwinstagram.com",
+                    "domain:llama.com",
+                    "domain:meta.ai",
+                    "domain:meta.com",
+                    "domain:notion-static.com",
+                    "domain:notion-status.com",
+                    "domain:notion.com",
+                    "domain:notion.new",
+                    "domain:notion.site",
+                    "domain:notion.so",
+                    "domain:notionusercontent.com",
+                    "domain:anthropic.com",
+                    "domain:clau.de",
+                    "domain:claude.ai",
+                    "domain:claude.com",
+                    "domain:claudemcpclient.com",
+                    "domain:claudemcpcontent.com",
+                    "domain:claudeusercontent.com"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "sub-de2fbd0be68cf9726c8dbca84032a95b",
+                "ip": [
+                    "91.108.56.0/22",
+                    "91.108.4.0/22",
+                    "91.108.8.0/22",
+                    "91.108.16.0/22",
+                    "91.108.12.0/22",
+                    "149.154.160.0/20",
+                    "91.105.192.0/23",
+                    "91.108.20.0/22",
+                    "185.76.151.0/24",
+                    "2001:b28:f23d::/48",
+                    "2001:b28:f23f::/48",
+                    "2001:67c:4e8::/48",
+                    "2001:b28:f23c::/48",
+                    "2a0a:f280::/32"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "direct",
+                "network": "tcp,udp"
+            }
+        ]
+    }
+}

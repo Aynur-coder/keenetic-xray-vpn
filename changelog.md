@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-01
+### Fixed
+- **Полный отказ DNS в сети, если Xray не стартовал.** AdGuard падает на старте с `initializing ipset: unknown ipset "vpn1"`, потому что наборы `vpn1`/`vpn6` создаёт `xray-manager`. На роутере, где Xray не поднялся (битый конфиг, истёкшая подписка), AdGuard не запускался никогда — а DNS-редирект продолжал заворачивать все запросы LAN на порт 53, который никто не слушает. Интернет пропадал у всех устройств, хотя канал был жив. Теперь `10-dns-redirect.sh` и `install.sh` создают ipset сами, до старта AdGuard.
+- **Защита от «чёрной дыры» DNS.** Хук больше не ставит редирект, если на UDP/53 никто не слушает, и снимает уже стоящие правила. Лучше оставить клиентов на штатном DNS Keenetic (интернет работает, VPN-маршрутизации нет), чем обрушить сеть целиком. Проверка порта строгая (`awk '{print $4}' | grep -E ':53$'`), чтобы не спутать с `:5353` mDNS и подобными.
+- **Автообновление не работало никогда.** `install.sh` клал задание в `/opt/etc/cron.d/`, но cron в Entware читает `/opt/etc/crontab`, где прописан только `run-parts` по каталогам `cron.1min`/`cron.hourly`/`cron.daily`/…; каталог `cron.d` не сканируется, и файл молча игнорировался. Проверено экспериментально на KN-2112: задание в `cron.d` не срабатывает, в `cron.daily` — срабатывает. Теперь ставится исполняемый скрипт `/opt/etc/cron.daily/xray-vpn-update`, старая запись в `cron.d` удаляется при обновлении.
+
 ## [0.15.17] - 2026-07-26
 ### Fixed
 - **Router pinned at 100% CPU.** `warmup_ipset()` guarded against concurrent runs with `pkill -f vpn_warmup`, but BusyBox has no `pkill` (`sh: pkill: not found`) — the guard silently did nothing. Every apply (add domain, change a rule) launched another warmup over the *full* domain set, and they piled up: 8+ passes running in parallel, load average 13 on a 4-core MIPS box, SSH unable to even authenticate. Rewrote the guard to track the parent PID in `/tmp/vpn_warmup.pid` and reap its `dig` children by PPID (no `pkill`, no `setsid` — neither exists on BusyBox).

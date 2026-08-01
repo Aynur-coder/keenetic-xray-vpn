@@ -1,0 +1,7 @@
+{
+    "wireguard": false,
+    "adguard": true,
+    "auto_update": false,
+    "logs_enabled": true,
+    "theme": "auto"
+}
