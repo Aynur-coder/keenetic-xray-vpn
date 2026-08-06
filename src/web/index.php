@@ -678,6 +678,18 @@ textarea{resize:vertical;min-height:80px;width:100%}
   <div><b>VPN сервер недоступен</b> — трафик идёт напрямую. Перенаправление восстановится автоматически когда сервер станет доступным.</div>
 </div>
 
+<div class="watchdog-banner sub-banner" id="subBanner">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  <div>
+    <b id="subBannerTitle">Подписка истекла</b>
+    <span id="subBannerText"> — провайдер отдаёт заглушки вместо серверов, поэтому VPN не работает.</span>
+    <div id="subBannerHint" style="margin-top:4px;opacity:.85;font-size:12px"></div>
+    <div style="margin-top:8px">
+      <button class="btn btn-warn btn-sm" onclick="updateSubs()">Обновить подписку</button>
+    </div>
+  </div>
+</div>
+
 <div class="tabs">
   <button class="tab active" data-tab="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg> Серверы</button>
   <button class="tab" data-tab="subscriptions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 019 9"/><path d="M4 4a16 16 0 0116 16"/><circle cx="5" cy="19" r="1"/></svg> Подписки</button>
@@ -980,6 +992,24 @@ async function loadStatus(){
   }
   const banner=$('#watchdogBanner');
   if(banner)banner.classList.toggle('show',!!(s.running&&paused));
+
+  // Expired subscription / no servers — say so instead of silently showing "—"
+  const sb=$('#subBanner');
+  if(sb){
+    const sub=s.subscription;
+    if(sub){
+      $('#subBannerTitle').textContent = sub.code==='no_servers' ? 'Нет активных серверов' : 'Подписка истекла';
+      $('#subBannerText').textContent  = sub.code==='no_servers'
+        ? ' — добавьте подписку или ключ во вкладке «Подписки»/«Ключи».'
+        : ' — провайдер отдаёт заглушки вместо серверов, поэтому VPN не работает.';
+      const hintEl=$('#subBannerHint');
+      let hint = sub.hint ? `Сообщение провайдера: ${sub.hint}` : '';
+      if(sub.live_keys>0) hint += (hint?' · ':'')+`Есть рабочих ключей: ${sub.live_keys} — можно переключиться на них`;
+      hintEl.textContent = hint;
+      hintEl.style.display = hint ? '' : 'none';
+    }
+    sb.classList.toggle('show', !!sub);
+  }
   $('#stMem').textContent=s.mem_used&&s.mem_total?`${s.mem_used}/${s.mem_total} MB`:'—';
   $('#stMem').className='stat-value';
   $('#stWg').textContent=s.wg_up?'Активен':'Выкл';
@@ -1000,8 +1030,25 @@ async function _loadIPs(){
   if(realEl.className.includes('loading')){ realEl.textContent='…'; realEl.className='stat-value'; }
   try{
     const r=await api('check_ips','');
-    vpnEl.textContent=r.vpn_ip||'—';
-    vpnEl.className='stat-value '+(r.vpn_ip?'green':'red');
+    if(r.vpn_ip){
+      vpnEl.textContent=r.vpn_ip;
+      vpnEl.className='stat-value green';
+      vpnEl.title='';
+    }else{
+      // Never leave a bare "—": name the reason so the failure is diagnosable at a glance
+      const short={
+        subscription_expired:'подписка истекла',
+        no_servers:'нет серверов',
+        xray_down:'Xray не запущен',
+        watchdog_paused:'сервер недоступен',
+        no_traffic:'сервер не отвечает'
+      };
+      const code=r.reason&&r.reason.code;
+      vpnEl.textContent=short[code]||'—';
+      vpnEl.className='stat-value red';
+      vpnEl.title=(r.reason&&r.reason.message)||'';
+      vpnEl.style.fontSize=code?'13px':'';
+    }
     realEl.textContent=r.real_ip||'—';
     realEl.className='stat-value';
   }catch(e){
@@ -1125,7 +1172,17 @@ async function loadSubs(){
 }
 async function addSub(){const url=$('#subUrl').value.trim(),name=$('#subName').value.trim()||'Sub';if(!url)return toast('Введите URL',true);await api('add_subscription',{url,name});$('#subUrl').value='';$('#subName').value='';toast('Добавлено');loadSubs()}
 async function deleteSub(id){if(!confirm('Удалить подписку?'))return;await api('delete_subscription',{id});toast('Удалено');loadSubs()}
-async function updateSubs(){$('#subSpinner').style.display='inline-block';const r=await api('update_subscriptions');$('#subSpinner').style.display='none';if(r.error)return toast(r.error,true);toast(`Обновлено: ${r.count} серверов`);loadSubs();loadServers()}
+async function updateSubs(){
+  // Callable from the subscriptions tab and from the expired-subscription banner,
+  // so the spinner may not be in the DOM path the user is currently looking at.
+  const sp=$('#subSpinner'); if(sp)sp.style.display='inline-block';
+  const r=await api('update_subscriptions');
+  if(sp)sp.style.display='none';
+  if(r.error)return toast(r.error,true);
+  toast(`Обновлено: ${r.count} серверов`);
+  loadSubs();loadServers();
+  loadStatus();   // refresh the banner: it must disappear once real servers arrive
+}
 
 // Keys
 async function loadKeys(){

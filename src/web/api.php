@@ -319,6 +319,71 @@ function parse_ss_link($link) {
     return null;
 }
 
+// --- Expired-subscription detection -----------------------------------------
+// When a subscription lapses, providers keep serving the feed but replace every
+// server with a placeholder entry — an unroutable address (0.0.0.0, port 1) and a
+// name that reads like "⌛ Подписка истекла" / "Продлите...". Xray then dials into
+// nowhere and the tunnel silently produces no traffic, which looks identical to a
+// broken install. Detect it so the UI can say what is actually wrong.
+function server_is_placeholder($srv) {
+    $link = (string)($srv['link'] ?? '');
+    $name = (string)($srv['name'] ?? '');
+
+    // Unroutable host or port 1 — the decisive signal.
+    $host = parse_url($link, PHP_URL_HOST);
+    $port = parse_url($link, PHP_URL_PORT);
+    if (in_array($host, ['0.0.0.0', '127.0.0.1', '::', 'example.com'], true)) return true;
+    if ($port !== null && (int)$port <= 1) return true;
+
+    // Wording used by RU/EN resellers on expiry.
+    $lname = function_exists('mb_strtolower') ? mb_strtolower($name, 'UTF-8') : strtolower($name);
+    foreach (['истек', 'истёк', 'истекл', 'продли', 'оплат', 'expired', 'renew',
+              'подписка истек', 'subscription expired', '⌛'] as $w) {
+        if (strpos($lname, $w) !== false) return true;
+    }
+    return false;
+}
+
+// Returns null when healthy, otherwise a describable problem for the UI.
+function subscription_health() {
+    global $CACHED_FILE, $KEYS_FILE;
+
+    $enabled = 0; $placeholders = 0; $hint = '';
+    foreach (json_read($CACHED_FILE) as $s) {
+        if (empty($s['enabled'])) continue;
+        $enabled++;
+        if (server_is_placeholder($s)) {
+            $placeholders++;
+            // Keep the provider's own message — it usually names the renewal contact.
+            if ($hint === '') $hint = trim((string)($s['name'] ?? ''));
+        }
+    }
+    // Manual keys are independent of any subscription; if one is enabled the user
+    // still has a real way out, so don't claim everything is dead.
+    $live_keys = 0;
+    foreach (json_read($KEYS_FILE) as $k) {
+        if (!empty($k['enabled']) && !server_is_placeholder($k)) $live_keys++;
+    }
+
+    if ($enabled > 0 && $placeholders === $enabled) {
+        return [
+            'code'      => 'subscription_expired',
+            'message'   => 'Подписка истекла — сервер-заглушка вместо рабочих серверов',
+            'hint'      => $hint,
+            'live_keys' => $live_keys,
+        ];
+    }
+    if ($enabled === 0 && $live_keys === 0) {
+        return [
+            'code'      => 'no_servers',
+            'message'   => 'Нет активных серверов — добавьте подписку или ключ',
+            'hint'      => '',
+            'live_keys' => 0,
+        ];
+    }
+    return null;
+}
+
 function build_outbound_from_link($link, $tag) {
     if (strpos($link, 'vless://') === 0) {
         $v = parse_vless_link($link);
@@ -1020,6 +1085,9 @@ case 'status':
         'features' => $features,
         'version' => get_installed_version(),
         'watchdog' => $watchdog,
+        // null when healthy; otherwise {code, message, hint} explaining why the
+        // tunnel cannot work (expired subscription / no servers at all).
+        'subscription' => subscription_health(),
     ]);
     break;
 
@@ -1833,7 +1901,21 @@ case 'check_ips':
         if ($real_ip) @file_put_contents($real_cache, $real_ip);
     }
 
-    echo json_encode(['vpn_ip' => $vpn_ip, 'real_ip' => $real_ip]);
+    // A silent null vpn_ip is the confusing case: the tunnel produces nothing and the
+    // UI used to just show "—". Attach the reason so it can say what is actually wrong.
+    $reason = null;
+    if ($vpn_ip === null) {
+        if (!$xray_up) {
+            $reason = ['code' => 'xray_down', 'message' => 'Xray не запущен'];
+        } elseif ($wd_state === 'paused') {
+            $reason = ['code' => 'watchdog_paused', 'message' => 'Watchdog приостановил VPN — сервер не отвечает'];
+        } elseif (($sub = subscription_health()) !== null) {
+            $reason = ['code' => $sub['code'], 'message' => $sub['message'], 'hint' => $sub['hint']];
+        } else {
+            $reason = ['code' => 'no_traffic', 'message' => 'Сервер не отвечает — проверьте сервер или подписку'];
+        }
+    }
+    echo json_encode(['vpn_ip' => $vpn_ip, 'real_ip' => $real_ip, 'reason' => $reason]);
     break;
 
 // ============ UPDATES ============
