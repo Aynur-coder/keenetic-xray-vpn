@@ -260,3 +260,33 @@ function test_add_link_vmess_skipped_with_reason(): void {
     eq($result['skipped'], [['line' => $vmess, 'reason' => 'vmess не поддерживается']],
         'vmess line skipped with its own reason');
 }
+
+function test_purge_cached_for_sub_drops_only_that_subscription(): void {
+    $cached = [
+        ['id' => 'a1', 'sub' => 'subA', 'name' => 'A1'],
+        ['id' => 'b1', 'sub' => 'subB', 'name' => 'B1'],
+        ['id' => 'a2', 'sub' => 'subA', 'name' => 'A2'],
+        ['id' => 'x1', 'name' => 'no sub field'],
+    ];
+    $out = purge_cached_for_sub($cached, 'subA');
+    eq(array_column($out, 'id'), ['b1', 'x1'], 'subA entries removed, others kept in order');
+}
+
+function test_purge_cached_for_sub_unknown_id_keeps_all(): void {
+    $cached = [['id' => 'a1', 'sub' => 'subA'], ['id' => 'b1', 'sub' => 'subB']];
+    eq(purge_cached_for_sub($cached, 'nope'), $cached, 'unknown sub id changes nothing');
+    eq(purge_cached_for_sub($cached, ''), $cached, 'empty sub id changes nothing');
+}
+
+function test_purge_then_resolve_reports_fallback_for_deleted_active(): void {
+    // Active server belonged to the deleted subscription: active_outbound is left as is,
+    // so resolve_active reports the fallback instead of silently picking a new one.
+    $cached = [
+        ['id' => 'a1', 'sub' => 'subA', 'enabled' => true],
+        ['id' => 'b1', 'sub' => 'subB', 'enabled' => true],
+    ];
+    $left = purge_cached_for_sub($cached, 'subA');
+    $r = resolve_active(['active_outbound' => 'a1'], [], $left);
+    eq($r['reason'], 'fallback_missing', 'deleted active → fallback_missing');
+    eq($r['id'], 'b1', 'falls back to the first enabled remaining server');
+}

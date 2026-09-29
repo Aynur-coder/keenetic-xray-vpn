@@ -98,6 +98,14 @@ function resolve_active(array $state, array $keys, array $cached): array {
     return ['id' => _first_enabled_id($keys, $cached), 'reason' => 'fallback_missing'];
 }
 
+// cached_servers.json without the servers of subscription $subId (used when that
+// subscription is deleted, so its servers stop being outbounds). Order is kept;
+// entries without a 'sub' field and an empty/unknown $subId change nothing.
+function purge_cached_for_sub(array $cached, string $subId): array {
+    if ($subId === '') return $cached;
+    return array_values(array_filter($cached, fn($s) => ($s['sub'] ?? '') !== $subId));
+}
+
 // Splits pasted text (one or many lines) into subscription URLs, single-server
 // keys, and lines that are neither — the pure half of the one-field "add"
 // (api.php's add_link does the actual writing/fetching/applying). Blank lines

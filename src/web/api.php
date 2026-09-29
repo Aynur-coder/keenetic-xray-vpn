@@ -1385,7 +1385,11 @@ case 'delete_key':
     // Drop rule pins to this server (they would otherwise silently fall back to active).
     $targets = array_filter(rule_targets(), fn($v) => $v !== $id);
     json_write($RULE_TARGETS_FILE, $targets);
-    echo json_encode(['ok' => true]);
+    // The key is gone from the config right away. If it was the active server,
+    // active_outbound is left as is so resolve_active reports the fallback.
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
     break;
 
 case 'toggle_key':
@@ -1481,7 +1485,12 @@ case 'delete_subscription':
     $id = $_POST['id'] ?? '';
     $subs = array_values(array_filter($subs, fn($s) => ($s['id'] ?? '') !== $id));
     json_write($SUBS_FILE, $subs);
-    echo json_encode(['ok' => true]);
+    // Its servers go too, so they stop being outbounds. If the active server was one
+    // of them, active_outbound is left as is so resolve_active reports the fallback.
+    json_write($CACHED_FILE, purge_cached_for_sub(json_read($CACHED_FILE), $id));
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
     break;
 
 case 'toggle_subscription':
@@ -1492,7 +1501,9 @@ case 'toggle_subscription':
     unset($s);
     if (!$found) { echo json_encode(['error' => 'not_found']); break; }
     json_write($SUBS_FILE, $subs);
-    echo json_encode(['ok' => true]);
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
     break;
 
 case 'update_subscriptions':

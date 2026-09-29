@@ -58,6 +58,20 @@ function patchServer(id, patch) {
   patchServers((list) => list.map((s) => (s.id === id ? { ...s, ...patch } : s)));
 }
 
+// Outcome of an apply-backed mutation. The backend writes the change before applying,
+// so after a failed apply the list is reloaded to show what is really stored.
+function applied(res, failText) {
+  if (res.error) {
+    toast(`${failText}: ${errorText(res.error)}`, 'error');
+    refreshServers();
+    refreshOverview();
+    return false;
+  }
+  refreshOverview();
+  if (res.xray_running === false) toast('Xray не запустился — подробности в событиях', 'error');
+  return true;
+}
+
 function sourceTitle(src) {
   return src.kind === 'keys' ? 'Мои ключи' : (src.name || src.id);
 }
@@ -207,7 +221,7 @@ function SourceCard({ source, servers, open, onToggle, busy, rowProps }) {
           <${Icon} name="chevron" size=${18} class=${`src__chev ${open ? 'is-open' : ''}`} />
           <span class="src__text">
             <span class="src__title">${title}</span>
-            <span class="src__meta">${busy ? 'Обновляю…' : meta.join(' · ')}</span>
+            <span class="src__meta">${busy || meta.join(' · ')}</span>
           </span>
           ${source.enabled ? null : html`<${Badge} tone="orange">Выключена</${Badge}>`}
         </button>
@@ -313,7 +327,7 @@ export function ServersScreen() {
   const [renaming, setRenaming] = useState(null);
   const [pinging, setPinging] = useState(false);
   const [busy, setBusy] = useState({}); // server id → 'select' | 'enable' | 'probe'
-  const [sourceBusy, setSourceBusy] = useState(null); // source id being updated
+  const [sourceBusy, setSourceBusy] = useState(null); // {id, text} of a source being changed
   const [selecting, setSelecting] = useState(false);
 
   useEffect(() => {
@@ -352,12 +366,12 @@ export function ServersScreen() {
     async enable(server, value) {
       setRowBusy(server.id, 'enable');
       const res = await api('set_server_flags', { id: server.id, enabled: value },
-        { timeout: APPLY_TIMEOUT_MS });
+        { quiet: true, timeout: APPLY_TIMEOUT_MS });
       setRowBusy(server.id, null);
-      if (res.error) return;
+      if (!applied(res, value ? 'Не удалось включить сервер' : 'Не удалось выключить сервер')) {
+        return;
+      }
       patchServer(server.id, { enabled: value });
-      refreshOverview();
-      if (res.xray_running === false) toast('Xray не запустился — подробности в событиях', 'error');
     },
 
     async probe(server, what) {
@@ -392,8 +406,11 @@ export function ServersScreen() {
         message: `Ключ «${name}» будет удалён без возможности восстановления.`,
       });
       if (!ok) return;
-      const res = await api('delete_key', { id: server.id });
-      if (res.error) return;
+      setRowBusy(server.id, 'probe');
+      const res = await api('delete_key', { id: server.id },
+        { quiet: true, timeout: APPLY_TIMEOUT_MS });
+      setRowBusy(server.id, null);
+      if (!applied(res, 'Не удалось удалить ключ')) return;
       const cur = store.get().servers;
       if (cur) {
         store.set({ servers: {
@@ -402,12 +419,11 @@ export function ServersScreen() {
           servers: cur.servers.filter((s) => s.id !== server.id),
         } });
       }
-      refreshOverview();
       toast(`Ключ «${name}» удалён`, 'success');
     },
 
     async updateSource(source) {
-      setSourceBusy(source.id);
+      setSourceBusy({ id: source.id, text: 'Обновляю…' });
       const res = await api('update_subscriptions', {}, { timeout: APPLY_TIMEOUT_MS });
       setSourceBusy(null);
       if (res.error) return;
@@ -419,8 +435,12 @@ export function ServersScreen() {
     },
 
     async toggleSource(source) {
-      const res = await api('toggle_subscription', { id: source.id });
-      if (res.error) return;
+      setSourceBusy({ id: source.id, text: 'Применяю…' });
+      const res = await api('toggle_subscription', { id: source.id },
+        { quiet: true, timeout: APPLY_TIMEOUT_MS });
+      setSourceBusy(null);
+      const verb = source.enabled ? 'выключить' : 'включить';
+      if (!applied(res, `Не удалось ${verb} подписку`)) return;
       const cur = store.get().servers;
       if (cur) {
         store.set({ servers: { ...cur, sources: cur.sources.map((s) => (s.id === source.id
@@ -438,8 +458,11 @@ export function ServersScreen() {
           + ' исчезнут из списка.',
       });
       if (!ok) return;
-      const res = await api('delete_subscription', { id: source.id });
-      if (res.error) return;
+      setSourceBusy({ id: source.id, text: 'Удаляю…' });
+      const res = await api('delete_subscription', { id: source.id },
+        { quiet: true, timeout: APPLY_TIMEOUT_MS });
+      setSourceBusy(null);
+      if (!applied(res, 'Не удалось удалить подписку')) return;
       const cur = store.get().servers;
       if (cur) {
         store.set({ servers: {
@@ -496,7 +519,8 @@ export function ServersScreen() {
   } else {
     body = groups.map(({ src, list }) => html`
       <${SourceCard} key=${src.id} source=${src} servers=${list}
-        open=${narrowed || !collapsed[src.id]} busy=${sourceBusy === src.id}
+        open=${narrowed || !collapsed[src.id]}
+        busy=${sourceBusy && sourceBusy.id === src.id ? sourceBusy.text : null}
         onToggle=${() => setCollapsed({ ...collapsed, [src.id]: !collapsed[src.id] })}
         rowProps=${rowProps} />
     `);
