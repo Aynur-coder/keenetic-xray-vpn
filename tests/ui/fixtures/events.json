@@ -1,0 +1,1 @@
+{"events":[{"ts":"2026-09-30T09:12:00+03:00","level":"info","type":"server","msg":"Выбран сервер 🇳🇱 Amsterdam","data":{}},{"ts":"2026-09-30T08:40:00+03:00","level":"warn","type":"watchdog","msg":"Сервер не отвечал 30 с, VPN на паузе","data":{}}]}

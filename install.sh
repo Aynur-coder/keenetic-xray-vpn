@@ -945,7 +945,8 @@ do_uninstall() {
     [ -x /opt/etc/init.d/S99wireguard ] && /opt/etc/init.d/S99wireguard stop >/dev/null 2>&1 || :
 
     info "Removing files..."
-    rm -f /opt/share/www/xray/index.php /opt/share/www/xray/api.php
+    rm -f /opt/share/www/xray/index.php /opt/share/www/xray/legacy.php /opt/share/www/xray/api.php
+    rm -rf /opt/share/www/xray/ui
     rm -f /opt/etc/xray/xray-manager.sh /opt/etc/xray/update.sh /opt/etc/xray/migrate.sh
     rm -f /opt/etc/init.d/S22xray
     rm -f /opt/etc/lighttpd/conf.d/91-shadowsocks.conf

@@ -35,6 +35,7 @@ jobs:
         run: |
           set -e
           php -l src/web/index.php
+          php -l src/web/legacy.php
           php -l src/web/api.php
 
   manifest-validate:
