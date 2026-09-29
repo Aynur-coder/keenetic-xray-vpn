@@ -43,11 +43,13 @@ function test_state_running(): void {
     eq($r['version'], '1.2.3', 'version passed through');
     eq($r['update_available'], false, 'update_available passed through');
     eq($r['features'], ['theme' => 'auto'], 'features passed through');
+    eq($r['xray_running'], true, 'xray_running passed through when running');
 }
 
 function test_state_stopped(): void {
     $r = build_overview(_ov_base(['xray_running' => false]));
     eq($r['state'], 'stopped', 'xray not running and no watchdog pause means stopped');
+    eq($r['xray_running'], false, 'xray_running passed through when stopped');
 }
 
 function test_state_paused(): void {
@@ -65,6 +67,17 @@ function test_state_config_error_wins(): void {
     ]));
     eq($r['state'], 'config_error', 'last_apply_error wins over paused/running');
     eq($r['reason'], 'unknown host: bad.example', 'reason is the stored last_apply_error text');
+    eq($r['xray_running'], true, 'config_error still reports Xray running on the old config');
+}
+
+function test_state_config_error_xray_stopped(): void {
+    // The UI picks Старт vs Стоп from xray_running, so it must be exact in config_error too.
+    $r = build_overview(_ov_base([
+        'xray_running' => false,
+        'state' => ['active_outbound' => 's1', 'last_apply_error' => 'unknown host: bad.example'],
+    ]));
+    eq($r['state'], 'config_error', 'config_error even when Xray is down');
+    eq($r['xray_running'], false, 'config_error with Xray down reports xray_running=false');
 }
 
 function test_warning_selected_missing(): void {

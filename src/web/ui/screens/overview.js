@@ -71,11 +71,18 @@ async function runAction(action, setBusy) {
   refreshIps();
 }
 
+// Старт/Стоп follow whether Xray runs, not the label: in config_error Xray may still be
+// serving on the old config (→ Стоп) or be down (→ Старт). Older backends lack the field.
+function isXrayRunning(overview) {
+  if (typeof overview.xray_running === 'boolean') return overview.xray_running;
+  return overview.state !== 'stopped';
+}
+
 function StateCard({ overview }) {
   const [busy, setBusy] = useState(null);
   const [tone, label] = STATE_LABEL[overview.state] || ['neutral', overview.state];
   const reason = overview.reason || STATE_HINT[overview.state] || '';
-  const stopped = overview.state === 'stopped';
+  const stopped = !isXrayRunning(overview);
   return html`
     <${Card} class="state-card">
       <div class="state">
@@ -179,6 +186,7 @@ const VPN_IP_OFF = {
 
 function vpnIpView(overview, ips) {
   if (VPN_IP_OFF[overview.state]) return VPN_IP_OFF[overview.state];
+  if (!isXrayRunning(overview)) return VPN_IP_OFF.stopped;
   if (!ips) return { value: 'Проверяется…', tone: 'muted' };
   if (ips.vpn_ip) return { value: ips.vpn_ip, tone: 'text', mono: true };
   const reason = ips.reason && ips.reason.message;

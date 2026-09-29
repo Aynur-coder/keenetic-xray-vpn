@@ -24,7 +24,7 @@ const OVERVIEW_MSG_GOOGLE_RU =
  * probe cache file is absent), mem ([used, total]), wg_up (bool),
  * version (string), update_available (bool), features (array).
  *
- * @return array{state: string, reason: ?string, active: ?array,
+ * @return array{state: string, reason: ?string, xray_running: bool, active: ?array,
  *   effective: ?array, effective_reason: string, warnings: array,
  *   mem_used: int, mem_total: int, wg_up: bool, version: string,
  *   update_available: bool, features: array}
@@ -101,6 +101,8 @@ function build_overview(array $in): array {
     return [
         'state'             => $overviewState,
         'reason'            => $reason,
+        // Separate from state: in config_error Xray may still run on the old config.
+        'xray_running'      => $xrayRunning,
         'active'            => $active,
         'effective'         => $effective,
         'effective_reason'  => $effectiveReason,
