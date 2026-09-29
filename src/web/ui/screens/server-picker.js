@@ -37,6 +37,29 @@ export function groupServers(data, query) {
   return groups;
 }
 
+// Switches the active server (select_server regenerates the config and restarts Xray),
+// updates the store and toasts the outcome. A failure comes back as {error: text}
+// without a toast, so the caller decides where to show it.
+export async function applyServerChoice(server) {
+  const res = await api('select_server', { id: server.id },
+    { quiet: true, timeout: APPLY_TIMEOUT_MS });
+  refreshOverview();
+  refreshIps();
+  if (res.error) {
+    refreshServers();
+    return { error: errorText(res.error) };
+  }
+  const cur = store.get().servers;
+  if (cur && cur.servers) {
+    store.set({ servers: { ...cur, servers: cur.servers.map((s) => ({
+      ...s, active: s.id === server.id })) } });
+  }
+  refreshServers();
+  if (res.xray_running === false) toast('Сервер выбран, но Xray не запустился', 'error');
+  else toast(`Сервер: ${server.name || server.id}`, 'success');
+  return { ok: true };
+}
+
 function pingText(ms) {
   return typeof ms === 'number' ? `${ms} мс` : '';
 }
@@ -98,24 +121,12 @@ export function ServerPicker({ onClose }) {
     }
     setBusyId(server.id);
     setError(null);
-    const res = await api('select_server', { id: server.id },
-      { quiet: true, timeout: APPLY_TIMEOUT_MS });
+    const res = await applyServerChoice(server);
     setBusyId(null);
-    refreshOverview();
-    refreshIps();
     if (res.error) {
-      setError(errorText(res.error));
-      refreshServers();
+      setError(res.error);
       return;
     }
-    const cur = store.get().servers;
-    if (cur && cur.servers) {
-      store.set({ servers: { ...cur, servers: cur.servers.map((s) => ({
-        ...s, active: s.id === server.id })) } });
-    }
-    refreshServers();
-    if (res.xray_running === false) toast('Сервер выбран, но Xray не запустился', 'error');
-    else toast(`Сервер: ${server.name || server.id}`, 'success');
     onClose();
   }
 

@@ -45,10 +45,10 @@ export function flagOf(cc) {
   return String.fromCodePoint(...[...cc.toUpperCase()].map((c) => 0x1f1a5 + c.charCodeAt(0)));
 }
 
-// Router timestamps are ISO with the router's offset; show the router's wall clock as is:
-// 'HH:MM' for today, 'DD.MM HH:MM' otherwise.
+// Router timestamps are ISO with the router's offset (or 'Y-m-d H:i:s' in subscriptions);
+// show the router's wall clock as is: 'HH:MM' for today, 'DD.MM HH:MM' otherwise.
 export function eventTime(ts) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(ts || ''));
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(ts || ''));
   if (!m) return '';
   const now = new Date();
   const today = m[1] === String(now.getFullYear())
