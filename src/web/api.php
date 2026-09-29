@@ -1153,10 +1153,9 @@ case 'overview':
 
 case 'start':
     update_adguard_ipset();
-    shell_run("$MANAGER stop_watchdog 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log; : > /opt/var/log/xray/error.log');
-    $r = apply_changes('full', ['start_old_if_stopped' => true]);
-    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
+    // apply_changes() restarts the watchdog around the full apply itself.
+    $r = apply_changes('full', ['start' => true, 'start_old_if_stopped' => true]);
     if ($r['ok']) {
         sleep(2);
         log_event('info', 'service', 'Xray запущен');
@@ -1171,11 +1170,9 @@ case 'stop':
     break;
 
 case 'restart':
-    shell_run("$MANAGER stop_watchdog 2>/dev/null");
     update_adguard_ipset();
     shell_run(': > /opt/var/log/xray/access.log');
-    $r = apply_changes('full', ['start_old_if_stopped' => true]);
-    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
+    $r = apply_changes('full', ['start' => true, 'start_old_if_stopped' => true]);
     if ($r['ok']) {
         sleep(2);
         log_event('info', 'service', 'Xray перезапущен');
@@ -1557,11 +1554,10 @@ case 'select_server':
     }
     json_write($STATE_FILE, $state);
     log_event('info', 'server', "Сервер: $name", ['id' => $id]);
-    // Applied right here (like `restart`, watchdog paused around it so it doesn't
-    // count the switch as an outage) — the UI gets the real outcome in one call.
-    shell_run("$MANAGER stop_watchdog 2>/dev/null");
-    $r = apply_changes('full');
-    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
+    // Applied right here (like `restart`; apply_changes() restarts the watchdog around
+    // it so the switch isn't counted as an outage) — the UI gets the real outcome in
+    // one call. Choosing a server is an explicit intent to run it.
+    $r = apply_changes('full', ['start' => true]);
     echo json_encode($r);
     break;
 

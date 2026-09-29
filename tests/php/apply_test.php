@@ -22,6 +22,8 @@ function _apply_env(int $testExit, string $testOutput): array {
             'state_file'  => "$dir/state.json",
             'events_file' => "$dir/events.log",
             'restart_cmd' => "echo restarted >> $dir/restarts",
+            'watchdog_stop_cmd'  => "echo stop >> $dir/watchdog",
+            'watchdog_start_cmd' => "echo start >> $dir/watchdog",
             'pidof_cmd'   => 'echo 4242',
             'generate'    => function (string $out): array {
                 file_put_contents($out, '{"new":true}');
@@ -269,4 +271,62 @@ function test_lock_not_inherited_by_background_children(): void {
 
 function _apply_kill(int $pid): void {
     shell_exec('kill ' . $pid . ' 2>/dev/null');
+}
+
+// After «Стоп» a sub/key/rule change must not bring Xray (and in full mode the
+// redirect) back up unguarded: the config is replaced, nothing is started.
+function test_apply_does_not_start_stopped_xray(): void {
+    foreach (['full', 'routing'] as $mode) {
+        $env = _apply_env(0, 'Configuration OK.');
+        $dir = $env['dir'];
+        $opt = ['pidof_cmd' => 'true'] + $env['opt']; // Xray is stopped
+        $r = apply_changes($mode, $opt);
+        eq($r['ok'], true, "$mode: apply is ok");
+        eq($r['xray_running'], false, "$mode: reports Xray still stopped");
+        eq(file_get_contents("$dir/config.json"), '{"new":true}', "$mode: config replaced");
+        eq(file_exists("$dir/restarts"), false, "$mode: Xray/firewall not started");
+        eq(file_exists("$dir/watchdog"), false, "$mode: watchdog not touched");
+        _apply_cleanup($dir);
+    }
+}
+
+function test_apply_start_intent_starts(): void {
+    foreach (['full', 'routing'] as $mode) {
+        $env = _apply_env(0, 'Configuration OK.');
+        $dir = $env['dir'];
+        $opt = ['pidof_cmd' => 'true', 'start' => true] + $env['opt'];
+        $r = apply_changes($mode, $opt);
+        eq($r['ok'], true, "$mode: apply is ok");
+        eq(trim((string)@file_get_contents("$dir/restarts")), 'restarted',
+            "$mode: explicit start intent starts a stopped Xray");
+        _apply_cleanup($dir);
+    }
+}
+
+// Every full apply re-arms the redirect, so it must also restart the watchdog
+// (stop before, start after) to reset a paused watchdog to 'ok'.
+function test_full_apply_restarts_watchdog(): void {
+    $env = _apply_env(0, 'Configuration OK.');
+    $dir = $env['dir'];
+    $log = "$dir/order";
+    $opt = [
+        'restart_cmd'        => "echo restart >> $log",
+        'watchdog_stop_cmd'  => "echo wd-stop >> $log",
+        'watchdog_start_cmd' => "echo wd-start >> $log",
+    ] + $env['opt'];
+    apply_changes('full', $opt);
+    eq(explode("\n", trim((string)file_get_contents($log))), ['wd-stop', 'restart', 'wd-start'],
+        'full apply: watchdog stopped before and started after the restart');
+
+    unlink($log);
+    apply_changes('routing', $opt);
+    eq(explode("\n", trim((string)file_get_contents($log))), ['restart'],
+        'routing apply leaves the watchdog alone');
+
+    // A rejected config restarts nothing, watchdog included.
+    unlink($log);
+    file_put_contents($opt['xray_bin'], "#!/bin/sh\necho bad; exit 1\n");
+    apply_changes('full', $opt);
+    eq(file_exists($log), false, 'rejected config: watchdog untouched');
+    _apply_cleanup($dir);
 }

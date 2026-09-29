@@ -20,12 +20,21 @@ const APPLY_BUSY_ERROR = 'Другое применение изменений �
  * Regenerate the Xray config and restart Xray, under a lock, only if the new
  * config passes `xray run -test`.
  *
- * $mode 'full':    config + firewall + Xray restart + AdGuard reload + warmup.
+ * $mode 'full':    config + firewall + Xray restart + AdGuard reload + warmup,
+ *                  with the watchdog stopped before and started again after, so
+ *                  every firewall re-arm also resets a paused watchdog to 'ok'.
  * $mode 'routing': config + Xray restart only.
  *
- * $opt keys (all optional): xray_bin, conf, lock, lock_timeout (s),
- * state_file, events_file, pid_file, manager, pidof_cmd, restart_cmd
- * (replaces the default kill/firewall/start shell sequence), generate
+ * Service state is respected: when Xray was not running before the apply and
+ * $opt['start'] is not true, the config is still generated, tested and put in
+ * place, but Xray is not started and the firewall redirect is not re-armed
+ * (a stopped VPN stays stopped; the next start picks the new config up).
+ * Only start/restart/select_server pass 'start' => true.
+ *
+ * $opt keys (all optional): start (bool), xray_bin, conf, lock, lock_timeout (s),
+ * state_file, events_file, pidof_cmd, restart_cmd
+ * (replaces the default kill/firewall/start shell sequence), watchdog_stop_cmd /
+ * watchdog_start_cmd (run around a full-mode restart), generate
  * (callable(string $outFile): array, ['error'=>…] on failure),
  * before_restart / after_restart (callable(string $mode): void or null),
  * start_old_if_stopped (bool: when the new config is rejected and Xray is not
@@ -51,6 +60,8 @@ function apply_changes(string $mode = 'full', array $opt = []): array {
     }
 
     try {
+        // Sampled before anything is killed: decides whether this apply may start Xray.
+        $wasRunning = xray_running($opt['pidof_cmd']);
         @unlink($new);
         try {
             $gen = ($opt['generate'])($new);
@@ -89,7 +100,7 @@ function apply_changes(string $mode = 'full', array $opt = []): array {
         $genState = is_array($gen['state'] ?? null) ? $gen['state'] : [];
         apply_state_patch($opt['state_file'], $genState, ['last_apply_error']);
 
-        apply_restart($mode, $opt);
+        if ($wasRunning || !empty($opt['start'])) apply_restart($mode, $opt);
 
         return ['ok' => true, 'xray_running' => xray_running($opt['pidof_cmd']), 'error' => null];
     } finally {
@@ -126,10 +137,16 @@ function apply_stop(array $opt = []): array {
     }
 }
 
+// Full mode re-arms the firewall redirect, so the watchdog is restarted around
+// it: its loop starts again from 'ok' (is_paused=0) and can pause the redirect
+// again if the new server is dead too. A watchdog left running with is_paused=1
+// would never pause again and keep redirecting to an unreachable server.
 function apply_restart(string $mode, array $opt): void {
+    if ($mode === 'full') shell_run($opt['watchdog_stop_cmd']);
     if ($opt['before_restart']) ($opt['before_restart'])($mode);
     shell_run($opt['restart_cmd']);
     if ($opt['after_restart']) ($opt['after_restart'])($mode);
+    if ($mode === 'full') shell_exec($opt['watchdog_start_cmd']);
 }
 
 // null when Xray accepts $file, otherwise the reason it gave.
@@ -158,6 +175,9 @@ function apply_default_options(string $mode, string $conf): array {
         'events_file'  => null,
         'pidof_cmd'    => 'pidof xray',
         'restart_cmd'  => $restart,
+        'watchdog_stop_cmd'  => "$manager stop_watchdog 2>/dev/null",
+        'watchdog_start_cmd' => "nohup $manager start_watchdog >/dev/null 2>&1 &",
+        'start'        => false,
         'generate'     => 'generate_xray_config',
         'start_old_if_stopped' => false,
         'before_restart' => function_exists('write_derived_files')
