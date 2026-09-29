@@ -34,6 +34,7 @@ $WATCHDOG_STATE = '/opt/var/run/xray-watchdog.state';
 
 require_once __DIR__ . '/lib/links.php';
 require_once __DIR__ . '/lib/system.php';
+require_once __DIR__ . '/lib/events.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -193,7 +194,14 @@ function get_features() {
         'auto_update'  => $d['auto_update']  ?? false,
         'logs_enabled' => $d['logs_enabled'] ?? true,
         'theme'        => $d['theme']        ?? 'auto',
+        'diag_events'  => $d['diag_events']  ?? true,
     ];
+}
+
+// Wraps emit_event() with this install's features reader and default log path,
+// so call sites don't repeat the plumbing.
+function log_event(string $level, string $type, string $msg, array $data = []): void {
+    emit_event($level, $type, $msg, $data, null, 'get_features');
 }
 
 function set_features_patch($patch) {
@@ -955,7 +963,7 @@ $PUBLIC_READ_ACTIONS = [
     'keys', 'subscriptions', 'subscription_servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search', 'rule_targets',
-    'wg_peers', 'logs', 'raw_config',
+    'wg_peers', 'logs', 'raw_config', 'events',
 ];
 if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
     require_auth();
@@ -1006,6 +1014,7 @@ case 'start':
     reload_adguard();
     warmup_ipset();
     sleep(2);
+    log_event('info', 'service', 'Xray запущен');
     echo json_encode(['ok' => true]);
     break;
 
@@ -1013,6 +1022,7 @@ case 'stop':
     shell_run("$MANAGER stop_watchdog 2>/dev/null");
     shell_run('killall xray 2>/dev/null; rm -f /opt/var/run/xray.pid');
     shell_run("$MANAGER cleanup_firewall 2>/dev/null");
+    log_event('info', 'service', 'Xray остановлен');
     echo json_encode(['ok' => true]);
     break;
 
@@ -1030,6 +1040,7 @@ case 'restart':
     reload_adguard();
     warmup_ipset();
     sleep(2);
+    log_event('info', 'service', 'Xray перезапущен');
     echo json_encode(['ok' => true]);
     break;
 
@@ -1096,6 +1107,7 @@ case 'delete_subscription':
 
 case 'update_subscriptions':
     $subs = json_read($SUBS_FILE);
+    $before_ids = array_column(json_read($CACHED_FILE), 'id');
     $all_servers = [];
     foreach ($subs as &$sub) {
         if (empty($sub['enabled']) || empty($sub['url'])) continue;
@@ -1110,6 +1122,14 @@ case 'update_subscriptions':
     }
     json_write($SUBS_FILE, $subs);
     json_write($CACHED_FILE, $all_servers);
+    $after_ids = array_column($all_servers, 'id');
+    $added = count(array_diff($after_ids, $before_ids));
+    $removed = count(array_diff($before_ids, $after_ids));
+    $updated_names = array_filter(array_map(fn($s) => $s['name'] ?? '', $subs), fn($n) => $n !== '');
+    $name = reset($updated_names) ?: 'Подписка';
+    log_event('info', 'subscription',
+        "Подписка $name обновлена: " . count($all_servers) . " сервер(ов) (+$added, \u{2212}$removed)",
+        ['count' => count($all_servers), 'added' => $added, 'removed' => $removed]);
     echo json_encode(['ok' => true, 'count' => count($all_servers)]);
     break;
 
@@ -1128,6 +1148,11 @@ case 'select_server':
     $state = json_read($STATE_FILE);
     $state['active_outbound'] = $id;
     json_write($STATE_FILE, $state);
+    $name = $id;
+    foreach (array_merge(json_read($CACHED_FILE), json_read($KEYS_FILE)) as $s) {
+        if (($s['id'] ?? '') === $id && !empty($s['name'])) { $name = $s['name']; break; }
+    }
+    log_event('info', 'server', "Сервер: $name", ['id' => $id]);
     echo json_encode(['ok' => true]);
     break;
 
@@ -1277,6 +1302,9 @@ case 'add_domains':
         $targets = rule_targets();
         foreach ($added as $bare) $targets['domain:' . $bare] = $target;
         json_write($RULE_TARGETS_FILE, $targets);
+    }
+    if ($added) {
+        log_event('info', 'rules', 'Добавлено доменов: ' . count($added), ['domains' => $added]);
     }
     update_adguard_ipset();
     quick_apply();
@@ -1639,6 +1667,14 @@ case 'clear_logs':
     break;
 
 case 'raw_config': echo file_get_contents($XRAY_CONF) ?: '{}'; break;
+
+case 'events':
+    $limit = min((int)($_GET['limit'] ?? 100), 500);
+    if ($limit <= 0) $limit = 100;
+    $level = $_GET['level'] ?? null;
+    $type = $_GET['type'] ?? null;
+    echo json_encode(['events' => read_events($limit, $level ?: null, $type ?: null)]);
+    break;
 
 case 'test_connection':
     $real_ip = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');

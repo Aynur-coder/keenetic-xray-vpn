@@ -6,6 +6,7 @@
     {"src": "src/web/api.php",                          "dst": "/opt/share/www/xray/api.php",                         "mode": "644"},
     {"src": "src/web/lib/links.php",                    "dst": "/opt/share/www/xray/lib/links.php",                   "mode": "644"},
     {"src": "src/web/lib/system.php",                   "dst": "/opt/share/www/xray/lib/system.php",                  "mode": "644"},
+    {"src": "src/web/lib/events.php",                   "dst": "/opt/share/www/xray/lib/events.php",                  "mode": "644"},
     {"src": "src/etc/xray/xray-manager.sh",             "dst": "/opt/etc/xray/xray-manager.sh",                       "mode": "755"},
     {"src": "src/etc/xray/update.sh",                   "dst": "/opt/etc/xray/update.sh",                             "mode": "755"},
     {"src": "src/etc/xray/migrate.sh",                  "dst": "/opt/etc/xray/migrate.sh",                            "mode": "755"},
@@ -40,6 +41,7 @@
     {"path": "/opt/etc/xray/migrations",   "mode": "755"},
     {"path": "/opt/etc/wireguard",         "mode": "700"},
     {"path": "/opt/var/log/xray",          "mode": "755"},
+    {"path": "/opt/var/log/xray-vpn",      "mode": "755"},
     {"path": "/opt/etc/AdGuardHome",       "mode": "755"},
     {"path": "/opt/etc/ndm/netfilter.d",   "mode": "755"},
     {"path": "/opt/etc/ndm/ifstatechanged.d", "mode": "755"}

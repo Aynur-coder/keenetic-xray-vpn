@@ -25,6 +25,10 @@ WATCHDOG_PID="/opt/var/run/xray-watchdog.pid"
 WATCHDOG_STATE="/opt/var/run/xray-watchdog.state"
 WATCHDOG_INTERVAL=30
 WATCHDOG_MAX_FAILS=3
+# Human-readable event journal — same JSON-lines file/format as lib/events.php's
+# emit_event()/read_events(), so PHP rotation (also at 256 KB) picks up right where this leaves off.
+EVENTS_LOG="/opt/var/log/xray-vpn/events.log"
+EVENTS_MAX_BYTES=262144
 
 log() { _logs_enabled && { logger -t xray-mgr "$1"; echo "$1"; } || true; }
 
@@ -272,6 +276,32 @@ _logs_enabled() {
     [ "$v" != "false" ]
 }
 
+# Returns 0 if diag_events is true (or unset/absent), 1 if explicitly false.
+_diag_events_enabled() {
+    local v
+    v=$(jsonfilter -i "$XRAY_DIR/features.json" -e "@.diag_events" 2>/dev/null)
+    [ "$v" != "false" ]
+}
+
+# Append one JSON-line event: {"ts","level","type","msg","data"} — same shape as the
+# PHP side's emit_event(). Escapes " and \ in msg. No-op when diag_events=false.
+# Rotates at EVENTS_MAX_BYTES so the file never grows unbounded between PHP writes
+# (PHP rotates on its own next write, so this only needs to cover the shell-only path).
+_event() {
+    local level="$1" type="$2" msg="$3" size esc_msg ts
+    _diag_events_enabled || return 0
+    mkdir -p "$(dirname "$EVENTS_LOG")" 2>/dev/null
+    if [ -f "$EVENTS_LOG" ]; then
+        size=$(wc -c < "$EVENTS_LOG" 2>/dev/null | tr -d ' ')
+        [ -n "$size" ] && [ "$size" -gt "$EVENTS_MAX_BYTES" ] 2>/dev/null && \
+            mv "$EVENTS_LOG" "$EVENTS_LOG.1"
+    fi
+    esc_msg=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    ts=$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)
+    printf '{"ts":"%s","level":"%s","type":"%s","msg":"%s","data":{}}\n' \
+        "$ts" "$level" "$type" "$esc_msg" >> "$EVENTS_LOG"
+}
+
 # QUIC guard. Only TCP is redirected into Xray, so HTTP/3 (UDP 443) to a proxied destination
 # would leave through the WAN with the real IP — geo-checked services (Gemini, etc.) then see
 # Russia. Rejecting it makes browsers fall back to TCP, which does go through the tunnel.
@@ -303,7 +333,11 @@ _quic_block_add() {
 # Needs the Entware `conntrack` package; silently a no-op without it.
 _kick_leaked_flows() {
     command -v conntrack >/dev/null 2>&1 || return 0
-    local proto src dst sport dport rsrc
+    local proto src dst sport dport rsrc kicked_file kicked
+    # The while loop below runs in a pipeline subshell, so a plain counter variable
+    # would not survive past it — count deleted flows via a counter file instead.
+    kicked_file="/opt/var/run/xray-kicked.count"
+    : > "$kicked_file"
     conntrack -L 2>/dev/null | grep -E '^(tcp|udp) ' | grep ' src=192\.168\.' | \
         sed -nE 's/^(tcp|udp) .*src=([0-9.]+) dst=([0-9.]+) sport=([0-9]+) dport=([0-9]+) .*src=([0-9.]+) dst=[0-9.]+ sport=[0-9]+.*/\1 \2 \3 \4 \5 \6/p' | \
     while read -r proto src dst sport dport rsrc; do
@@ -311,8 +345,12 @@ _kick_leaked_flows() {
         case "$rsrc" in 192.168.*|10.*|127.*) continue ;; esac
         ipset test $IPSET_NAME "$dst" >/dev/null 2>&1 || continue
         conntrack -D -p "$proto" -s "$src" -d "$dst" --sport "$sport" --dport "$dport" \
-            >/dev/null 2>&1
+            >/dev/null 2>&1 && echo 1 >> "$kicked_file"
     done
+    kicked=$(wc -l < "$kicked_file" 2>/dev/null | tr -d ' ')
+    rm -f "$kicked_file"
+    [ -n "$kicked" ] && [ "$kicked" -gt 0 ] 2>/dev/null && \
+        _event info firewall "Сброшено прямых соединений: $kicked"
 }
 
 _quic_hook_add() {
@@ -334,6 +372,7 @@ _pause_firewall() {
     _quic_hook_del
     echo "paused" > "$WATCHDOG_STATE"
     log "Watchdog: redirect paused — traffic goes direct"
+    _event warn watchdog "Сервер недоступен — VPN на паузе"
 }
 
 # Re-attach the PREROUTING hook
@@ -346,6 +385,7 @@ _resume_firewall() {
     _kick_leaked_flows
     echo "ok" > "$WATCHDOG_STATE"
     log "Watchdog: redirect resumed — VPN reachable"
+    _event info watchdog "Сервер снова доступен"
 }
 
 # Background watchdog loop: when VPN server is unreachable for WATCHDOG_MAX_FAILS consecutive
