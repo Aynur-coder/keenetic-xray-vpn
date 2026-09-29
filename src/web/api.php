@@ -36,6 +36,7 @@ require_once __DIR__ . '/lib/links.php';
 require_once __DIR__ . '/lib/system.php';
 require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/servers.php';
+require_once __DIR__ . '/lib/apply.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -226,13 +227,8 @@ function set_features_patch($patch) {
     }
     // Side effects: toggle logs — regenerate config and restart Xray if running
     if (isset($patch['logs_enabled'])) {
-        $r = generate_xray_config();
-        if (!isset($r['error'])) {
-            $pid = trim(shell_run('cat /opt/var/run/xray.pid 2>/dev/null'));
-            if ($pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0') {
-                shell_run("kill -HUP $pid 2>/dev/null || (killall xray 2>/dev/null; sleep 1; /opt/sbin/xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo \$! > /opt/var/run/xray.pid)");
-            }
-        }
+        // A stopped Xray picks the new setting up from `start`, which regenerates anyway.
+        if (xray_running()) apply_changes('routing');
     }
     return $cur;
 }
@@ -366,7 +362,9 @@ function fetch_subscription($url) {
     }));
 }
 
-function generate_xray_config() {
+// Writes to $outFile (default: the live config). apply_changes() passes config.json.new
+// so a config Xray rejects never replaces the working one.
+function generate_xray_config(?string $outFile = null) {
     global $XRAY_DIR, $XRAY_CONF, $KEYS_FILE, $CACHED_FILE, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE, $STATE_FILE;
 
     $outbounds = [];
@@ -501,7 +499,10 @@ function generate_xray_config() {
         'routing' => ['domainStrategy' => 'IPIfNonMatch', 'rules' => $rules]
     ];
 
-    file_put_contents($XRAY_CONF, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    $json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if (@file_put_contents($outFile ?? $XRAY_CONF, $json) === false) {
+        return ['error' => 'Cannot write ' . ($outFile ?? $XRAY_CONF)];
+    }
     return ['ok' => true, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
 }
 
@@ -637,29 +638,17 @@ function write_derived_files() {
     lines_write($DIRECT_IPS_FILE, $direct);
 }
 
-function quick_apply() {
-    global $MANAGER;
-    $r = generate_xray_config();
-    if (isset($r['error'])) return;
-    write_derived_files();
-    shell_run('killall xray 2>/dev/null; sleep 1');
-    shell_run("$MANAGER firewall 2>/dev/null");
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
-    reload_adguard();
-    warmup_ipset();
+// Full apply (config + firewall + Xray + AdGuard + warmup), locked and config-tested.
+function quick_apply(): array {
+    return apply_changes('full');
 }
 
 // Routing-only apply: regenerate config and restart Xray, WITHOUT flushing the ipset,
 // restarting AdGuard, or re-warming DNS. Use this when only the outbound (server) of an
 // already-redirected rule changes — the domain's IP is already in the vpn1 ipset, so the
 // route switches the instant Xray reloads. ~1s vs ~12s, and other domains aren't disrupted.
-function gen_and_restart_xray() {
-    $r = generate_xray_config();
-    if (isset($r['error'])) return $r;
-    write_derived_files();
-    shell_run('killall xray 2>/dev/null; sleep 1');
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
-    return $r;
+function gen_and_restart_xray(): array {
+    return apply_changes('routing');
 }
 
 function reload_adguard() {
@@ -1014,20 +1003,15 @@ case 'status':
 
 case 'start':
     update_adguard_ipset();
-    $r = generate_xray_config();
-    if (isset($r['error'])) { echo json_encode($r); break; }
-    write_derived_files();
     shell_run("$MANAGER stop_watchdog 2>/dev/null");
-    shell_run('killall xray 2>/dev/null; sleep 1');
-    shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log; : > /opt/var/log/xray/error.log');
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    $r = apply_changes('full');
     shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
-    reload_adguard();
-    warmup_ipset();
-    sleep(2);
-    log_event('info', 'service', 'Xray запущен');
-    echo json_encode(['ok' => true]);
+    if ($r['ok']) {
+        sleep(2);
+        log_event('info', 'service', 'Xray запущен');
+    }
+    echo json_encode($r);
     break;
 
 case 'stop':
@@ -1040,20 +1024,15 @@ case 'stop':
 
 case 'restart':
     shell_run("$MANAGER stop_watchdog 2>/dev/null");
-    shell_run('killall xray 2>/dev/null; sleep 1');
     update_adguard_ipset();
-    $r = generate_xray_config();
-    if (isset($r['error'])) { echo json_encode($r); break; }
-    write_derived_files();
-    shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log');
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
+    $r = apply_changes('full');
     shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
-    reload_adguard();
-    warmup_ipset();
-    sleep(2);
-    log_event('info', 'service', 'Xray перезапущен');
-    echo json_encode(['ok' => true]);
+    if ($r['ok']) {
+        sleep(2);
+        log_event('info', 'service', 'Xray перезапущен');
+    }
+    echo json_encode($r);
     break;
 
 case 'warmup_ipset':

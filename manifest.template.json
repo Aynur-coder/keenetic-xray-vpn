@@ -8,6 +8,7 @@
     {"src": "src/web/lib/system.php",                   "dst": "/opt/share/www/xray/lib/system.php",                  "mode": "644"},
     {"src": "src/web/lib/events.php",                   "dst": "/opt/share/www/xray/lib/events.php",                  "mode": "644"},
     {"src": "src/web/lib/servers.php",                  "dst": "/opt/share/www/xray/lib/servers.php",                 "mode": "644"},
+    {"src": "src/web/lib/apply.php",                    "dst": "/opt/share/www/xray/lib/apply.php",                   "mode": "644"},
     {"src": "src/etc/xray/xray-manager.sh",             "dst": "/opt/etc/xray/xray-manager.sh",                       "mode": "755"},
     {"src": "src/etc/xray/update.sh",                   "dst": "/opt/etc/xray/update.sh",                             "mode": "755"},
     {"src": "src/etc/xray/migrate.sh",                  "dst": "/opt/etc/xray/migrate.sh",                            "mode": "755"},
