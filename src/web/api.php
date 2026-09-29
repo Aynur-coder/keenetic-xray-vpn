@@ -1267,6 +1267,14 @@ case 'server_probe':
     // is already running gets a Russian error instead of queueing (spinning
     // up a second temporary Xray while one is mid-probe would race on the
     // same loopback port and process bookkeeping).
+    //
+    // Same hazard apply_changes() guards against (apply.php:42,109): a dropped
+    // client connection during the ~22s probe window must not abort the script
+    // while it holds the probe lock / has a temp Xray running — that would leak
+    // the process, leave port 10899 bound, and hold the lock until the worker
+    // recycles. Set before anything else, unconditionally, exactly like apply.php.
+    ignore_user_abort(true);
+
     $id = $_POST['id'] ?? '';
     if ($id === '') { echo json_encode(['error' => 'Не указан id']); break; }
 

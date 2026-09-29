@@ -57,24 +57,53 @@ function probe_time_to_ms(?string $s): ?int {
 // ping_servers
 // ============================================================================
 
+// `curl -V`'s second-ish line looks like:
+//   Protocols: dict file ftp ftps http https imap ... telnet tftp
+// Entware's curl build may be compiled without telnet support (no `telnet://`
+// scheme at all — curl then fails the request outright rather than just
+// sending unexpected bytes). Detected once per ping run so the caller can
+// pick a scheme ping_build_script() can actually use.
+function curl_supports_telnet(string $curlVOutput): bool {
+    foreach (preg_split('/\r\n|\r|\n/', $curlVOutput) as $line) {
+        if (stripos(ltrim($line), 'Protocols:') !== 0) continue;
+        $protocols = preg_split('/\s+/', trim(substr(ltrim($line), strlen('Protocols:'))));
+        return in_array('telnet', $protocols, true);
+    }
+    return false;
+}
+
 // One BusyBox-sh-compatible script that backgrounds up to $maxParallel curls
 // at a time (each appending "id time_connect" to $resultsFile), waiting
 // between batches so no more than $maxParallel run concurrently, and once
 // more at the end for the last (possibly partial) batch. No arrays, no
 // fractional sleep — only what BusyBox ash supports.
+//
+// $scheme 'telnet' (preferred — see curl_supports_telnet()) dials
+// telnet://host:port with stdin from /dev/null, so curl does a bare TCP
+// connect-and-wait-for-the-timeout without ever sending a byte: several
+// Reality/VLESS/Trojan/Shadowsocks servers run active-probe defenses that
+// can blacklist a client sending plaintext HTTP at their port. 'http' is the
+// fallback for a curl build with no telnet:// support at all.
 function ping_build_script(
     array $targets, string $resultsFile, int $maxParallel = 8,
-    string $curlBin = '/opt/bin/curl', int $connectTimeout = 3, int $maxTime = 4
+    string $curlBin = '/opt/bin/curl', int $connectTimeout = 3, int $maxTime = 4,
+    string $scheme = 'telnet'
 ): string {
     $lines = [];
     $count = 0;
     $resultsFileQ = escapeshellarg($resultsFile);
     foreach ($targets as $t) {
-        $url = 'http://' . $t['host'] . ':' . $t['port'] . '/';
+        if ($scheme === 'telnet') {
+            $url = 'telnet://' . $t['host'] . ':' . $t['port'];
+            $stdin = ' < /dev/null';
+        } else {
+            $url = 'http://' . $t['host'] . ':' . $t['port'] . '/';
+            $stdin = '';
+        }
         $idQ = escapeshellarg((string)$t['id']);
         $urlQ = escapeshellarg($url);
         $lines[] = '(t=$(' . $curlBin . ' -s -o /dev/null --connect-timeout ' . $connectTimeout
-            . ' -m ' . $maxTime . " -w '%{time_connect}' $urlQ 2>/dev/null); echo $idQ \"\$t\" >> $resultsFileQ) &";
+            . ' -m ' . $maxTime . " -w '%{time_connect}' $urlQ$stdin 2>/dev/null); echo $idQ \"\$t\" >> $resultsFileQ) &";
         $count++;
         if ($maxParallel > 0 && $count % $maxParallel === 0) $lines[] = 'wait';
     }
@@ -106,6 +135,12 @@ function _ping_default_options(): array {
         'curl_bin'        => '/opt/bin/curl',
         'connect_timeout' => 3,
         'max_time'        => 4,
+        // Runs `curl -V` once per ping batch so the scheme (telnet vs. http
+        // fallback) is detected a single time, not once per target. Tests
+        // replace this with a fixed sample instead of shelling out.
+        'curl_v'          => function (string $curlBin): string {
+            return (string)shell_exec(escapeshellarg($curlBin) . ' -V 2>/dev/null');
+        },
         // Runs the built script; default backgrounds it via the real shell.
         // Tests replace this with a fake that writes canned lines to the
         // results file instead of spawning curl.
@@ -139,18 +174,22 @@ function ping_servers_run(array $targets, array $opt = []): array {
     }
     if (empty($pingable)) return $results;
 
+    $scheme = curl_supports_telnet(($opt['curl_v'])($opt['curl_bin'])) ? 'telnet' : 'http';
+
     $tmp = $opt['tmp_file'];
     @file_put_contents($tmp, '');
-    $script = ping_build_script(
-        $pingable, $tmp, (int)$opt['max_parallel'], $opt['curl_bin'],
-        (int)$opt['connect_timeout'], (int)$opt['max_time']
-    );
-    ($opt['run'])($script);
+    try {
+        $script = ping_build_script(
+            $pingable, $tmp, (int)$opt['max_parallel'], $opt['curl_bin'],
+            (int)$opt['connect_timeout'], (int)$opt['max_time'], $scheme
+        );
+        ($opt['run'])($script);
 
-    $raw = (string)(@file_get_contents($tmp) ?: '');
-    @unlink($tmp);
-
-    return $results + ping_parse_results($raw, array_column($pingable, 'id'));
+        $raw = (string)(@file_get_contents($tmp) ?: '');
+        return $results + ping_parse_results($raw, array_column($pingable, 'id'));
+    } finally {
+        @unlink($tmp);
+    }
 }
 
 // ============================================================================
@@ -222,6 +261,21 @@ function server_probe_run(string $link, array $opt = []): array {
     }
 
     $pid = ($opt['start_cmd'])($opt['xray_bin'], $conf);
+
+    // Belt-and-braces on top of the finally{} below: a fatal error (not a
+    // catchable Throwable — e.g. a memory-limit abort) would skip finally{}
+    // entirely and leak the temp Xray process/config. register_shutdown_function()
+    // still runs in that case. The $cleaned guard means the normal path (finally{}
+    // runs first) never re-invokes kill_cmd/unlink a second time.
+    $cleaned = false;
+    $cleanup = function () use ($opt, $pid, $conf, &$cleaned): void {
+        if ($cleaned) return;
+        $cleaned = true;
+        if ($pid !== null) ($opt['kill_cmd'])($pid);
+        @unlink($conf);
+    };
+    register_shutdown_function($cleanup);
+
     try {
         ($opt['sleep_fn'])((int)$opt['sleep_seconds']);
 
@@ -254,8 +308,7 @@ function server_probe_run(string $link, array $opt = []): array {
             'google_country' => $google_country, 'exit_country' => $exit_country, 'error' => null,
         ];
     } finally {
-        if ($pid !== null) ($opt['kill_cmd'])($pid);
-        @unlink($conf);
+        $cleanup();
     }
 }
 

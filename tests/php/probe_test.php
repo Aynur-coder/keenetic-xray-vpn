@@ -73,6 +73,58 @@ function test_ping_build_script_empty_targets(): void {
     eq(ping_build_script([], '/tmp/results.txt'), "\n", 'no targets produces an empty (no-op) script');
 }
 
+// --- curl_supports_telnet ---------------------------------------------------------
+
+function test_curl_supports_telnet_present(): void {
+    $out = "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.2 zlib/1.2.13\n"
+        . "Release-Date: 2023-12-06\n"
+        . "Protocols: dict file ftp ftps http https imap imaps pop3 pop3s rtsp smtp smtps telnet tftp\n"
+        . "Features: alt-svc AsynchDNS HTTP2 IPv6 Largefile NTLM SSL threadsafe TLS-SRP UnixSockets\n";
+    eq(curl_supports_telnet($out), true, 'telnet listed in Protocols: line is detected');
+}
+
+function test_curl_supports_telnet_absent(): void {
+    // Entware-style minimal curl build compiled without telnet support.
+    $out = "curl 8.5.0 (mipsel-linux-uclibc) libcurl/8.5.0 OpenSSL/3.0.2\n"
+        . "Release-Date: 2023-12-06\n"
+        . "Protocols: dict file ftp ftps http https imap imaps pop3 pop3s smtp smtps tftp\n"
+        . "Features: IPv6 Largefile NTLM SSL\n";
+    eq(curl_supports_telnet($out), false, 'telnet missing from Protocols: line is detected');
+}
+
+function test_curl_supports_telnet_no_protocols_line(): void {
+    eq(curl_supports_telnet(''), false, 'empty curl -V output: assume unsupported');
+    eq(curl_supports_telnet("curl 8.5.0\nRelease-Date: 2023-12-06\n"), false,
+        'no Protocols: line at all: assume unsupported');
+}
+
+// --- ping_build_script scheme selection ---------------------------------------------
+
+function test_ping_build_script_telnet_scheme(): void {
+    $targets = [['id' => 'a', 'host' => 'h1.example', 'port' => 443]];
+    $script = ping_build_script($targets, '/tmp/results.txt', 8, '/opt/bin/curl', 3, 4, 'telnet');
+    eq(strpos($script, "'telnet://h1.example:443'") !== false, true,
+        'telnet scheme dials telnet://host:port (no path)');
+    eq(strpos($script, '< /dev/null') !== false, true,
+        'stdin from /dev/null so curl never sends bytes over the connection');
+    eq(strpos($script, 'http://') !== false, false, 'no http:// fallback text when telnet is chosen');
+}
+
+function test_ping_build_script_http_fallback_scheme(): void {
+    $targets = [['id' => 'a', 'host' => 'h1.example', 'port' => 443]];
+    $script = ping_build_script($targets, '/tmp/results.txt', 8, '/opt/bin/curl', 3, 4, 'http');
+    eq(strpos($script, "'http://h1.example:443/'") !== false, true,
+        'http fallback scheme used when curl has no telnet support');
+    eq(strpos($script, '< /dev/null') !== false, false, 'no stdin redirect needed for the http fallback');
+}
+
+function test_ping_build_script_default_scheme_is_telnet(): void {
+    $targets = [['id' => 'a', 'host' => 'h1.example', 'port' => 443]];
+    $script = ping_build_script($targets, '/tmp/results.txt');
+    eq(strpos($script, 'telnet://h1.example:443') !== false, true,
+        'telnet is the default scheme when the caller does not pass one');
+}
+
 // --- ping_parse_results ---------------------------------------------------------
 
 function test_ping_parse_results(): void {
@@ -123,6 +175,69 @@ function test_ping_servers_run_uses_injected_runner(): void {
     $result = ping_servers_run($targets, $opt);
     eq($result, ['hy' => null, 'a' => 100], 'pinged target measured, skipped target forced null');
     eq(file_exists($tmp), false, 'work file cleaned up after the run');
+}
+
+function test_ping_servers_run_detects_scheme_once_and_uses_telnet(): void {
+    $tmp = sys_get_temp_dir() . '/probe_test_ping_' . bin2hex(random_bytes(4)) . '.txt';
+    $curlVCalls = 0;
+    $seenScript = null;
+    $targets = [
+        ['id' => 'a', 'host' => 'h1.example', 'port' => 443],
+        ['id' => 'b', 'host' => 'h2.example', 'port' => 8443],
+    ];
+    $opt = [
+        'tmp_file' => $tmp,
+        'curl_v'   => function (string $curlBin) use (&$curlVCalls): string {
+            $curlVCalls++;
+            return "curl 8.5.0\nProtocols: dict file http https telnet tftp\n";
+        },
+        'run' => function (string $script) use ($tmp, &$seenScript): void {
+            $seenScript = $script;
+            file_put_contents($tmp, "a 0.010000\nb 0.020000\n");
+        },
+    ];
+    $result = ping_servers_run($targets, $opt);
+
+    eq($curlVCalls, 1, 'curl -V queried exactly once for the whole batch, not once per target');
+    eq(strpos($seenScript, 'telnet://h1.example:443') !== false, true,
+        'telnet scheme used when curl -V reports support');
+    eq($result, ['a' => 10, 'b' => 20], 'both targets measured');
+}
+
+function test_ping_servers_run_falls_back_to_http_when_telnet_unsupported(): void {
+    $tmp = sys_get_temp_dir() . '/probe_test_ping_' . bin2hex(random_bytes(4)) . '.txt';
+    $seenScript = null;
+    $targets = [['id' => 'a', 'host' => 'h1.example', 'port' => 443]];
+    $opt = [
+        'tmp_file' => $tmp,
+        'curl_v'   => fn(string $curlBin): string => "curl 8.5.0\nProtocols: dict file http https tftp\n",
+        'run'      => function (string $script) use ($tmp, &$seenScript): void {
+            $seenScript = $script;
+            file_put_contents($tmp, "a 0.010000\n");
+        },
+    ];
+    ping_servers_run($targets, $opt);
+
+    eq(strpos($seenScript, 'http://h1.example:443/') !== false, true,
+        'http fallback used when curl -V has no telnet in Protocols:');
+    eq(strpos($seenScript, 'telnet://') !== false, false, 'telnet scheme not used in the fallback case');
+}
+
+function test_ping_servers_run_cleans_up_work_file_when_runner_throws(): void {
+    $tmp = sys_get_temp_dir() . '/probe_test_ping_' . bin2hex(random_bytes(4)) . '.txt';
+    $targets = [['id' => 'a', 'host' => 'h1.example', 'port' => 443]];
+    $opt = [
+        'tmp_file' => $tmp,
+        'curl_v'   => fn(string $curlBin): string => '',
+        'run'      => function (string $script): void { throw new RuntimeException('boom'); },
+    ];
+    try {
+        ping_servers_run($targets, $opt);
+        throw new RuntimeException('expected ping_servers_run to rethrow');
+    } catch (RuntimeException $e) {
+        eq($e->getMessage(), 'boom', 'original exception propagates');
+    }
+    eq(file_exists($tmp), false, 'work file cleaned up even when the runner throws');
 }
 
 // --- probe_build_config ---------------------------------------------------------
