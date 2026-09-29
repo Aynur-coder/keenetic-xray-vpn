@@ -333,26 +333,39 @@ _quic_block_add() {
 # Needs the Entware `conntrack` package; silently a no-op without it.
 _kick_leaked_flows() {
     command -v conntrack >/dev/null 2>&1 || return 0
-    local proto src dst sport dport rsrc kicked_file kicked
-    # The while loop below runs in a pipeline subshell, so a plain counter variable
-    # would not survive past it — count deleted flows via a counter file instead.
-    # Suffixed with $$ (this process's PID): _resume_firewall (background watchdog)
-    # and setup_firewall (foreground start/restart) can call this concurrently from
-    # separate processes, and a shared fixed path would let one invocation's
-    # truncate/remove clobber the other's in-flight count.
+    local proto src dst sport dport ip run kicked_file flows_file hits_file kicked
+    # Temp files are suffixed with $$ (this process's PID): _resume_firewall (background
+    # watchdog) and setup_firewall (foreground start/restart) can call this concurrently
+    # from separate processes, and a shared fixed path would let one invocation's
+    # truncate/remove clobber the other's. The deletions run in a pipeline subshell, so a
+    # plain counter variable would not survive past it — count them via a file instead.
+    run="/opt/var/run/xray-kick.$$"
     kicked_file="/opt/var/run/xray-kicked.$$.count"
+    flows_file="$run.flows"
+    hits_file="$run.hits"
     : > "$kicked_file"
+    : > "$hits_file"
+    # Candidate flows: LAN clients whose reply does not come from the router itself
+    # (redirected flows are answered by Xray on 192.168.*/10.*/127.* — those are fine).
+    # Fields: proto src dst sport dport rsrc.
     conntrack -L 2>/dev/null | grep -E '^(tcp|udp) ' | grep ' src=192\.168\.' | \
         sed -nE 's/^(tcp|udp) .*src=([0-9.]+) dst=([0-9.]+) sport=([0-9]+) dport=([0-9]+) .*src=([0-9.]+) dst=[0-9.]+ sport=[0-9]+.*/\1 \2 \3 \4 \5 \6/p' | \
-    while read -r proto src dst sport dport rsrc; do
-        # Redirected flows are answered by the router itself (Xray) — those are fine
-        case "$rsrc" in 192.168.*|10.*|127.*) continue ;; esac
-        ipset test $IPSET_NAME "$dst" >/dev/null 2>&1 || continue
-        conntrack -D -p "$proto" -s "$src" -d "$dst" --sport "$sport" --dport "$dport" \
-            >/dev/null 2>&1 && echo 1 >> "$kicked_file"
+        awk '$6 !~ /^(192\.168\.|10\.|127\.)/' > "$flows_file"
+    # One `ipset test` per unique destination, not per flow: a busy LAN has thousands of
+    # NAT'd flows to far fewer hosts, and every fork is expensive on MIPS.
+    awk '{ print $3 }' "$flows_file" | sort -u | while read -r ip; do
+        ipset test $IPSET_NAME "$ip" >/dev/null 2>&1 && echo "$ip" >> "$hits_file"
     done
+    if [ -s "$hits_file" ]; then
+        awk 'NR == FNR { hit[$1] = 1; next } ($3 in hit) { print $1, $2, $3, $4, $5 }' \
+            "$hits_file" "$flows_file" | \
+        while read -r proto src dst sport dport; do
+            conntrack -D -p "$proto" -s "$src" -d "$dst" --sport "$sport" --dport "$dport" \
+                >/dev/null 2>&1 && echo 1 >> "$kicked_file"
+        done
+    fi
     kicked=$(wc -l < "$kicked_file" 2>/dev/null | tr -d ' ')
-    rm -f "$kicked_file"
+    rm -f "$kicked_file" "$flows_file" "$hits_file"
     [ -n "$kicked" ] && [ "$kicked" -gt 0 ] 2>/dev/null && \
         _event info firewall "Сброшено прямых соединений: $kicked"
 }
