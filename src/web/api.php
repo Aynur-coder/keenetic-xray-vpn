@@ -33,6 +33,7 @@ $VERSION_FILE = "$XRAY_DIR/.version";
 $WATCHDOG_STATE = '/opt/var/run/xray-watchdog.state';
 
 require_once __DIR__ . '/lib/links.php';
+require_once __DIR__ . '/lib/system.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -53,10 +54,6 @@ function lines_read($f) {
 
 function lines_write($f, $lines) {
     file_put_contents($f, implode("\n", $lines) . "\n");
-}
-
-function shell_run($cmd) {
-    return trim(shell_exec($cmd . ' 2>&1') ?? '');
 }
 
 // ============================================================================
@@ -967,10 +964,8 @@ if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
 switch ($action) {
 
 case 'status':
-    $pid = trim(shell_run('cat /opt/var/run/xray.pid 2>/dev/null') ?? '');
-    $running = $pid && trim(shell_run("kill -0 $pid 2>/dev/null; echo \$?") ?? '') === '0';
-    // Fallback: pgrep in case PID file is stale or missing
-    if (!$running) $running = trim(shell_run('pgrep -x xray 2>/dev/null') ?? '') !== '';
+    $pid = xray_pid();
+    $running = $pid !== null;
     $state = json_read($STATE_FILE);
     $mem = shell_run("free -m | awk '/Mem:/{print \$2,\$3,\$4}'");
     $mp = explode(' ', $mem);
@@ -1648,8 +1643,7 @@ case 'raw_config': echo file_get_contents($XRAY_CONF) ?: '{}'; break;
 case 'test_connection':
     $real_ip = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');
     $proxy_ip = shell_run('/opt/bin/curl -s --max-time 10 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null');
-    $pid = shell_run('cat /opt/var/run/xray.pid 2>/dev/null');
-    $running = $pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0';
+    $running = xray_running();
     $domains = lines_read($DOMAINS_FILE);
     $test_domain = '';
     foreach (['github.com','google.com','anthropic.com'] as $td) {
@@ -1783,7 +1777,7 @@ case 'check_ips':
     $real_cache = '/opt/tmp/xray-real-ip.cache';
 
     // Skip VPN check when xray is down or watchdog has paused the redirect
-    $xray_up     = trim(shell_run('pgrep -x xray 2>/dev/null') ?? '') !== '';
+    $xray_up     = xray_running();
     $wd_state    = $xray_up && file_exists($WATCHDOG_STATE) ? trim(@file_get_contents($WATCHDOG_STATE)) : '';
     $vpn_chk     = $xray_up && $wd_state !== 'paused';
 
