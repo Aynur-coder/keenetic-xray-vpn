@@ -65,13 +65,29 @@ function rematch_server(array $hint, array $servers): ?string {
     return null;
 }
 
+// Whether a server can carry traffic: its own 'enabled' flag, and for a cached
+// subscription server (one with a 'sub' field) also its subscription's flag —
+// a disabled subscription disables all of its servers. $subs is list.json
+// (subscriptions); a subscription id not found there doesn't disable anything.
+function effective_enabled(array $srv, array $subs): bool {
+    if (empty($srv['enabled'])) return false;
+    $subId = (string)($srv['sub'] ?? '');
+    if ($subId === '') return true;
+    foreach ($subs as $sub) {
+        if (($sub['id'] ?? null) === $subId) {
+            return !(array_key_exists('enabled', $sub) && !$sub['enabled']);
+        }
+    }
+    return true;
+}
+
 // First enabled key, else first enabled cached server, else null.
-function _first_enabled_id(array $keys, array $cached): ?string {
+function _first_enabled_id(array $keys, array $cached, array $subs = []): ?string {
     foreach ($keys as $k) {
-        if (!empty($k['enabled']) && !empty($k['id'])) return $k['id'];
+        if (effective_enabled($k, $subs) && !empty($k['id'])) return $k['id'];
     }
     foreach ($cached as $srv) {
-        if (!empty($srv['enabled']) && !empty($srv['id'])) return $srv['id'];
+        if (effective_enabled($srv, $subs) && !empty($srv['id'])) return $srv['id'];
     }
     return null;
 }
@@ -79,23 +95,25 @@ function _first_enabled_id(array $keys, array $cached): ?string {
 // Resolves which outbound id should actually be used, given the recorded
 // selection in $state and the current keys/cached servers. Never throws and
 // never assumes the recorded id still exists — that's the whole point.
-function resolve_active(array $state, array $keys, array $cached): array {
+// $subs (list.json) makes servers of a disabled subscription count as disabled
+// ('fallback_disabled'); callers without it see only the servers' own flags.
+function resolve_active(array $state, array $keys, array $cached, array $subs = []): array {
     $active_id = $state['active_outbound'] ?? '';
 
     if ($active_id === '') {
-        return ['id' => _first_enabled_id($keys, $cached), 'reason' => 'default'];
+        return ['id' => _first_enabled_id($keys, $cached, $subs), 'reason' => 'default'];
     }
 
     foreach (array_merge($keys, $cached) as $srv) {
         if (($srv['id'] ?? null) === $active_id) {
-            if (!empty($srv['enabled'])) {
+            if (effective_enabled($srv, $subs)) {
                 return ['id' => $active_id, 'reason' => 'selected'];
             }
-            return ['id' => _first_enabled_id($keys, $cached), 'reason' => 'fallback_disabled'];
+            return ['id' => _first_enabled_id($keys, $cached, $subs), 'reason' => 'fallback_disabled'];
         }
     }
 
-    return ['id' => _first_enabled_id($keys, $cached), 'reason' => 'fallback_missing'];
+    return ['id' => _first_enabled_id($keys, $cached, $subs), 'reason' => 'fallback_missing'];
 }
 
 // cached_servers.json without the servers of subscription $subId (used when that

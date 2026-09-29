@@ -290,3 +290,39 @@ function test_purge_then_resolve_reports_fallback_for_deleted_active(): void {
     eq($r['reason'], 'fallback_missing', 'deleted active → fallback_missing');
     eq($r['id'], 'b1', 'falls back to the first enabled remaining server');
 }
+
+function test_effective_enabled_respects_subscription(): void {
+    $subs = [
+        ['id' => 'on', 'enabled' => true],
+        ['id' => 'off', 'enabled' => false],
+    ];
+    eq(effective_enabled(['id' => 'a', 'sub' => 'on', 'enabled' => true], $subs), true,
+        'enabled server of an enabled subscription');
+    eq(effective_enabled(['id' => 'b', 'sub' => 'off', 'enabled' => true], $subs), false,
+        'enabled server of a disabled subscription is off');
+    eq(effective_enabled(['id' => 'c', 'sub' => 'on', 'enabled' => false], $subs), false,
+        'disabled server stays off');
+    eq(effective_enabled(['id' => 'k', 'enabled' => true], $subs), true,
+        'key (no sub field) follows its own flag');
+    eq(effective_enabled(['id' => 'o', 'sub' => 'gone', 'enabled' => true], $subs), true,
+        'unknown subscription id does not disable the server');
+    eq(effective_enabled(['id' => 'b', 'sub' => 'off', 'enabled' => true], []), true,
+        'no subscription list → own flag only (old callers)');
+}
+
+function test_resolve_disabled_subscription_fallback(): void {
+    $subs = [['id' => 'subA', 'enabled' => false], ['id' => 'subB', 'enabled' => true]];
+    $cached = [
+        ['id' => 'a1', 'sub' => 'subA', 'enabled' => true],
+        ['id' => 'b1', 'sub' => 'subB', 'enabled' => true],
+    ];
+    $r = resolve_active(['active_outbound' => 'a1'], [], $cached, $subs);
+    eq($r['reason'], 'fallback_disabled', 'selected server of a disabled subscription → fallback');
+    eq($r['id'], 'b1', 'fallback skips servers of disabled subscriptions');
+
+    $r = resolve_active([], [], $cached, $subs);
+    eq($r['id'], 'b1', 'default choice skips disabled subscriptions too');
+
+    $r = resolve_active(['active_outbound' => 'b1'], [], $cached, $subs);
+    eq([$r['id'], $r['reason']], ['b1', 'selected'], 'server of an enabled subscription stays');
+}

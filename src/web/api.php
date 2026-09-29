@@ -304,7 +304,7 @@ function overview_link_proto($link) {
     return '';
 }
 
-function overview_build_servers(array $keys, array $cached) {
+function overview_build_servers(array $keys, array $cached, array $subs = []) {
     $rows = [];
     foreach (array_merge($keys, $cached) as $s) {
         if (empty($s['id'])) continue;
@@ -312,7 +312,7 @@ function overview_build_servers(array $keys, array $cached) {
             'id'      => $s['id'],
             'name'    => $s['name'] ?? '',
             'proto'   => overview_link_proto($s['link'] ?? ''),
-            'enabled' => !empty($s['enabled']),
+            'enabled' => effective_enabled($s, $subs),
         ];
     }
     return $rows;
@@ -467,6 +467,7 @@ function refresh_subscriptions(): array {
 // so a config Xray rejects never replaces the working one.
 function generate_xray_config(?string $outFile = null) {
     global $XRAY_DIR, $XRAY_CONF, $KEYS_FILE, $CACHED_FILE, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE, $STATE_FILE;
+    global $SUBS_FILE;
 
     $outbounds = [];
     $server_ips = [];
@@ -475,7 +476,10 @@ function generate_xray_config(?string $outFile = null) {
     $state = json_read($STATE_FILE);
     $keys = json_read($KEYS_FILE);
     $cached_for_resolve = json_read($CACHED_FILE);
-    $resolved = resolve_active($state, $keys, $cached_for_resolve);
+    // A disabled subscription disables its servers: no outbound, and a selected one
+    // falls back ('fallback_disabled') instead of staying active.
+    $subs = json_read($SUBS_FILE);
+    $resolved = resolve_active($state, $keys, $cached_for_resolve, $subs);
     $active_id = $resolved['id'] ?? '';
 
     foreach ($keys as $k) {
@@ -493,7 +497,7 @@ function generate_xray_config(?string $outFile = null) {
 
     $cached = $cached_for_resolve;
     foreach ($cached as $srv) {
-        if (empty($srv['enabled'])) continue;
+        if (!effective_enabled($srv, $subs)) continue;
         $tag = 'sub-' . ($srv['id'] ?? uniqid());
         $ob = build_outbound_from_link($srv['link'], $tag);
         if ($ob) {
@@ -1112,7 +1116,8 @@ case 'overview':
     $mem_total = (int)(($mp[0] ?? 0) / 1024);
     $mem_used = (int)(($mp[1] ?? 0) / 1024);
     $wg_up = shell_run("/opt/bin/wg show wg0 2>/dev/null | head -1") !== '';
-    $servers = overview_build_servers(json_read($KEYS_FILE), json_read($CACHED_FILE));
+    $servers = overview_build_servers(json_read($KEYS_FILE), json_read($CACHED_FILE),
+        json_read($SUBS_FILE));
 
     $probe_cache = '/opt/tmp/xray-probe.json';
     $probe = null;
@@ -1206,7 +1211,7 @@ case 'servers':
     if (array_key_exists('effective_outbound', $state)) {
         $activeId = $state['effective_outbound'];
     } else {
-        $activeId = resolve_active($state, $keys, $cached)['id'];
+        $activeId = resolve_active($state, $keys, $cached, $subs)['id'];
     }
 
     echo json_encode(list_servers($keys, $cached, $subs, $flags, $pingCache, $probeCache, $activeId));
