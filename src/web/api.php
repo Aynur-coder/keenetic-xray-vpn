@@ -41,6 +41,7 @@ require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/rules.php';
 require_once __DIR__ . '/lib/overview.php';
 require_once __DIR__ . '/lib/probe.php';
+require_once __DIR__ . '/lib/auth.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -2190,11 +2191,23 @@ case 'set_ui_password':
     $cfg = _auth_cfg();
     if (!empty($cfg['hash']) && !is_authenticated()) { require_auth(); }
     $pass = $_POST['password'] ?? '';
-    // Optional (the legacy UI never sends it): when the new UI passes the current password,
-    // a wrong one refuses the change instead of silently overwriting it.
-    if (isset($_POST['current']) && !empty($cfg['hash']) && !check_login((string)$_POST['current'])) {
+    // Changing an existing password from outside the LAN requires the current one; the LAN
+    // is trusted, so there it stays optional (legacy UI sends none; forgotten-password path).
+    // Wrong/missing `current` counts against the same per-IP limiter as login.
+    $current = isset($_POST['current']) ? (string)$_POST['current'] : null;
+    $has_password = !empty($cfg['hash']);
+    if ($has_password && ($current !== null || !is_local_request())) {
+        $rl = _login_attempts_check();
+        if (!empty($rl['blocked'])) {
+            http_response_code(429);
+            echo json_encode(['error' => 'too_many_attempts', 'retry_after' => $rl['retry_after']]);
+            break;
+        }
+    }
+    if (!ui_password_change_allowed($has_password, is_local_request(), $current, 'check_login')) {
+        _login_attempts_record_fail();
         usleep(700000); // same brute-force slowdown as login
-        echo json_encode(['error' => 'invalid_current_password']);
+        echo json_encode(['error' => 'Неверный текущий пароль']);
         break;
     }
     echo json_encode(set_ui_password($pass));

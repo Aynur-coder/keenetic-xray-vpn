@@ -11,6 +11,7 @@ import { Toggle } from '../components/toggle.js';
 import { toast } from '../components/toast.js';
 import { confirm } from '../components/confirm.js';
 import { useUpdater, UpdatesCard } from './settings-update.js';
+import { waitText } from './login.js';
 
 const THEMES = [['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']];
 // logs_enabled regenerates the config and restarts Xray under the 60 s apply lock.
@@ -18,6 +19,8 @@ const APPLY_TIMEOUT_MS = 70000;
 // test_kn_password logs in to the Keenetic API and lists devices.
 const KN_TIMEOUT_MS = 30000;
 const MIN_PASSWORD = 4;
+// set_ui_password's refusal for a missing/wrong current password (shared limiter with login).
+const CURRENT_WRONG = 'Неверный текущий пароль';
 
 const FEATURES = {
   wireguard: { label: 'WireGuard', hint: 'VPN-сервер для подключения к домашней сети извне',
@@ -161,8 +164,13 @@ function PanelPasswordForm({ auth, onChanged }) {
     if (needCurrent) data.current = form.current;
     const res = await api('set_ui_password', data, { quiet: true });
     setBusy(false);
-    if (res.error === 'invalid_current_password') {
-      setErrors({ current: errorText(res.error) });
+    if (res.error === CURRENT_WRONG) {
+      setErrors({ current: CURRENT_WRONG });
+      return;
+    }
+    if (res.error === 'too_many_attempts') {
+      const wait = res.retry_after ? ` Повторите через ${waitText(res.retry_after)}.` : '';
+      setErrors({ current: `Слишком много неверных попыток.${wait}` });
       return;
     }
     if (res.error === 'password_too_short') {
