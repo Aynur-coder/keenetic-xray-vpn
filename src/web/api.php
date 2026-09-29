@@ -1324,7 +1324,6 @@ case 'add_link':
         if (strpos($link, 'vless://') === 0) $type = 'vless';
         elseif (strpos($link, 'ss://') === 0) $type = 'shadowsocks';
         elseif (strpos($link, 'trojan://') === 0) $type = 'trojan';
-        elseif (strpos($link, 'vmess://') === 0) $type = 'vmess';
         elseif (is_hysteria2_link($link)) $type = 'hysteria2';
         $name = '';
         if (preg_match('/#(.+)$/', $link, $nm)) $name = urldecode($nm[1]);

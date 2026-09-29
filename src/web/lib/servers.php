@@ -103,6 +103,13 @@ function resolve_active(array $state, array $keys, array $cached): array {
 // (api.php's add_link does the actual writing/fetching/applying). Blank lines
 // are silently dropped; anything else link_kind() doesn't recognize is
 // reported in 'skipped' so the UI can tell the user which line was bad.
+//
+// vmess:// is deliberately never bucketed into 'keys': there is no vmess
+// outbound builder (build_outbound_from_link() has no vmess branch), so a
+// vmess key added here would silently never route any traffic. link_kind()
+// already doesn't classify it as a 'key' either; called out explicitly here
+// (with its own reason) so it isn't lumped in with genuinely unrecognized
+// input.
 function classify_lines(string $text): array {
     $subscriptions = [];
     $keys = [];
@@ -110,6 +117,10 @@ function classify_lines(string $text): array {
     foreach (explode("\n", $text) as $raw) {
         $line = trim($raw);
         if ($line === '') continue;
+        if (stripos($line, 'vmess://') === 0) {
+            $skipped[] = ['line' => $line, 'reason' => 'vmess не поддерживается'];
+            continue;
+        }
         $kind = link_kind($line);
         if ($kind === 'subscription') {
             $subscriptions[] = $line;

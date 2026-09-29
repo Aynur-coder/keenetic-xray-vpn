@@ -247,3 +247,16 @@ function test_add_link_split(): void {
     eq($result['keys'], ['vless://u@h:1#Name', 'hy2://a@b:1'], 'keys split out, trimmed');
     eq($result['skipped'], [['line' => 'not a link', 'reason' => 'unrecognized']], 'unrecognized lines skipped with reason');
 }
+
+function test_add_link_vmess_skipped_with_reason(): void {
+    // There is no vmess outbound builder (build_outbound_from_link() has no vmess
+    // branch), so a vmess key must never be silently accepted into 'keys' — it would
+    // sit there as a server that can never actually route traffic. It gets its own
+    // skip reason instead of being lumped in with genuinely unrecognized lines.
+    $vmess = 'vmess://' . base64_encode(json_encode(['add' => 'v.example', 'port' => 443]));
+    $result = classify_lines("vless://u@h:1\n" . $vmess . "\n");
+    eq($result['keys'], ['vless://u@h:1'], 'vmess line never reaches keys');
+    eq($result['subscriptions'], [], 'vmess line never reaches subscriptions');
+    eq($result['skipped'], [['line' => $vmess, 'reason' => 'vmess не поддерживается']],
+        'vmess line skipped with its own reason');
+}
