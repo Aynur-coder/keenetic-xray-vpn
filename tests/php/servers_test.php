@@ -326,3 +326,52 @@ function test_resolve_disabled_subscription_fallback(): void {
     $r = resolve_active(['active_outbound' => 'b1'], [], $cached, $subs);
     eq([$r['id'], $r['reason']], ['b1', 'selected'], 'server of an enabled subscription stays');
 }
+
+// --- merge_refreshed_servers --------------------------------------------------
+
+function _merge_srv(string $sub, string $name, string $host, bool $enabled = true): array {
+    $link = 'vless://11111111-1111-1111-1111-111111111111@' . $host
+        . ':443?security=reality&sni=example.com&fp=chrome&pbk=PUBKEY&sid=abcd';
+    return ['id' => md5($link . '#' . $name), 'name' => $name, 'link' => $link,
+            'enabled' => $enabled, 'sub' => $sub];
+}
+
+function test_merge_refreshed_servers_preserves_flags(): void {
+    $subs = [['id' => 's1', 'url' => 'https://a', 'enabled' => true]];
+    $old = [_merge_srv('s1', 'A', 'a.example', false), _merge_srv('s1', 'B', 'b.example', false),
+            _merge_srv('s1', 'C', 'c.example', true)];
+    $fetched = ['s1' => [
+        _merge_srv('s1', 'A', 'a.example'),        // same id: flag carried by id
+        _merge_srv('s1', 'B', 'b-new.example'),    // link reissued: carried by name+proto
+        _merge_srv('s1', 'C', 'c.example'),
+        _merge_srv('s1', 'D', 'd.example'),        // new server: enabled
+    ]];
+    $m = merge_refreshed_servers($old, $fetched, $subs);
+    eq(array_column($m, 'name'), ['A', 'B', 'C', 'D'], 'fetched servers replace the old list');
+    eq(array_column($m, 'enabled'), [false, false, true, true], 'enabled flags preserved');
+    eq($m[1]['link'], $fetched['s1'][1]['link'], 'reissued server takes the new link');
+    eq($m[1]['id'], $fetched['s1'][1]['id'], 'reissued server takes the new id');
+}
+
+function test_merge_refreshed_servers_failed_fetch_keeps_old(): void {
+    $subs = [['id' => 's1', 'url' => 'https://a', 'enabled' => true],
+             ['id' => 's2', 'url' => 'https://b', 'enabled' => true]];
+    $old = [_merge_srv('s1', 'A', 'a.example', false), _merge_srv('s2', 'X', 'x.example')];
+    $m = merge_refreshed_servers($old, ['s2' => [_merge_srv('s2', 'Y', 'y.example')]], $subs);
+    eq(array_column($m, 'name'), ['A', 'Y'], 'failed fetch (no entry) keeps old servers');
+    eq($m[0], $old[0], 'kept server unchanged');
+
+    $m = merge_refreshed_servers($old, ['s1' => [], 's2' => []], $subs);
+    eq($m, $old, 'empty fetch keeps old servers');
+}
+
+function test_merge_refreshed_servers_disabled_sub_keeps_old(): void {
+    $subs = [['id' => 's1', 'url' => 'https://a', 'enabled' => false],
+             ['id' => 's2', 'url' => 'https://b', 'enabled' => true]];
+    $old = [_merge_srv('s1', 'A', 'a.example'), _merge_srv('s1', 'B', 'b.example', false),
+            _merge_srv('s2', 'X', 'x.example'), _merge_srv('gone', 'G', 'g.example'),
+            ['id' => 'legacy', 'name' => 'L', 'link' => 'ss://x', 'enabled' => true]];
+    $m = merge_refreshed_servers($old, ['s2' => [_merge_srv('s2', 'X', 'x.example')]], $subs);
+    eq(array_column($m, 'name'), ['A', 'B', 'X'], 'disabled sub kept; deleted sub dropped');
+    eq(array_column($m, 'enabled'), [true, false, true], 'kept servers keep their flags');
+}

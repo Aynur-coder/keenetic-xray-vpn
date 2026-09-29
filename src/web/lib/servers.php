@@ -124,6 +124,62 @@ function purge_cached_for_sub(array $cached, string $subId): array {
     return array_values(array_filter($cached, fn($s) => ($s['sub'] ?? '') !== $subId));
 }
 
+// New cached_servers.json after a subscription refresh, subscription by
+// subscription in $subs order:
+// - a disabled subscription (or one without a url) was not fetched: its
+//   previously cached servers are kept as they are;
+// - a subscription whose fetch failed or came back empty ($fetchedBySub has no
+//   entry for it, or an empty one): its previous servers are kept, so a TSPU
+//   reset or a host being down never wipes them;
+// - otherwise its fetched servers replace the old ones, each keeping the
+//   user's 'enabled' flag: by id (md5(link), stable while the link is), else —
+//   the link was reissued — by the same name+proto match rematch_server() uses
+//   for the active selection, among that subscription's old servers.
+// Servers of subscriptions no longer in $subs (and entries with no 'sub') are
+// dropped, as the old rebuild-from-scratch did.
+//
+// $fetchedBySub: sub id => list of fresh server records (id, name, link,
+// enabled, sub).
+function merge_refreshed_servers(array $old, array $fetchedBySub, array $subs): array {
+    $oldBySub = [];
+    foreach ($old as $srv) {
+        $oldBySub[(string)($srv['sub'] ?? '')][] = $srv;
+    }
+
+    $merged = [];
+    foreach ($subs as $sub) {
+        $subId = (string)($sub['id'] ?? '');
+        $previous = $oldBySub[$subId] ?? [];
+        $fetched = $fetchedBySub[$subId] ?? [];
+        if (empty($sub['enabled']) || empty($sub['url']) || empty($fetched)) {
+            foreach ($previous as $srv) $merged[] = $srv;
+            continue;
+        }
+
+        $flagById = [];
+        $flagByNameProto = [];
+        foreach ($previous as $srv) {
+            $enabled = !empty($srv['enabled']);
+            if (isset($srv['id'])) $flagById[$srv['id']] = $enabled;
+            $h = server_hint($srv);
+            $key = $h['name'] . "\0" . $h['proto'];
+            if (!array_key_exists($key, $flagByNameProto)) $flagByNameProto[$key] = $enabled;
+        }
+        foreach ($fetched as $srv) {
+            $id = $srv['id'] ?? null;
+            if ($id !== null && array_key_exists($id, $flagById)) {
+                $srv['enabled'] = $flagById[$id];
+            } else {
+                $h = server_hint($srv);
+                $key = $h['name'] . "\0" . $h['proto'];
+                if (array_key_exists($key, $flagByNameProto)) $srv['enabled'] = $flagByNameProto[$key];
+            }
+            $merged[] = $srv;
+        }
+    }
+    return $merged;
+}
+
 // Splits pasted text (one or many lines) into subscription URLs, single-server
 // keys, and lines that are neither — the pure half of the one-field "add"
 // (api.php's add_link does the actual writing/fetching/applying). Blank lines

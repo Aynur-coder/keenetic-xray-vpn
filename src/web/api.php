@@ -397,9 +397,10 @@ function fetch_subscription($url) {
     }));
 }
 
-// Refetches every enabled subscription and rebuilds cached_servers.json from
-// scratch, updates each subscription's 'updated' timestamp (and 'last_error'
-// when its fetch came back empty), rematches the active selection if its id
+// Refetches every enabled subscription and rebuilds cached_servers.json
+// (merge_refreshed_servers: user 'enabled' flags survive, disabled or failed
+// subscriptions keep their previous servers), updates each subscription's
+// 'updated' timestamp (and 'last_error' when its fetch came back empty), rematches the active selection if its id
 // went away, and logs one event. Shared by 'update_subscriptions' (which then
 // does its own routing-only restart) and 'add_link' (which folds this into
 // one 'full' apply alongside any newly-added keys).
@@ -407,8 +408,9 @@ function refresh_subscriptions(): array {
     global $SUBS_FILE, $CACHED_FILE, $STATE_FILE, $KEYS_FILE;
 
     $subs = json_read($SUBS_FILE);
-    $before_ids = array_column(json_read($CACHED_FILE), 'id');
-    $all_servers = [];
+    $old_servers = json_read($CACHED_FILE);
+    $before_ids = array_column($old_servers, 'id');
+    $fetched = [];
     foreach ($subs as &$sub) {
         if (empty($sub['enabled']) || empty($sub['url'])) continue;
         $links = fetch_subscription($sub['url']);
@@ -421,11 +423,14 @@ function refresh_subscriptions(): array {
             $l = trim($l);
             $name = '';
             if (preg_match('/#(.+)$/', $l, $nm)) $name = urldecode($nm[1]);
-            $all_servers[] = ['id' => md5($l), 'name' => $name ?: 'Server', 'link' => preg_replace('/#.*$/', '', $l), 'enabled' => true, 'sub' => $sub['id'] ?? ''];
+            $fetched[(string)($sub['id'] ?? '')][] = ['id' => md5($l), 'name' => $name ?: 'Server', 'link' => preg_replace('/#.*$/', '', $l), 'enabled' => true, 'sub' => $sub['id'] ?? ''];
         }
         $sub['updated'] = date('Y-m-d H:i:s');
     }
     unset($sub);
+    // Keeps per-server 'enabled' flags, and the old servers of subscriptions that
+    // are disabled or whose fetch failed (lib/servers.php).
+    $all_servers = merge_refreshed_servers($old_servers, $fetched, $subs);
     json_write($SUBS_FILE, $subs);
     json_write($CACHED_FILE, $all_servers);
     $after_ids = array_column($all_servers, 'id');
