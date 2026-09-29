@@ -18,6 +18,9 @@ FULLVPN_FILE="$RULES_DIR/fullvpn_devices.txt"
 IPSET_NAME="vpn1"
 IPSET6_NAME="vpn6"
 REDIR_PORT=1080
+# Full-VPN devices are redirected here instead: Xray routes them by inbound tag, which
+# needs no MAC->IP lookup and covers IPv6 (a device's v6 addresses are not knowable).
+FULLVPN_PORT=1083
 WATCHDOG_PID="/opt/var/run/xray-watchdog.pid"
 WATCHDOG_STATE="/opt/var/run/xray-watchdog.state"
 WATCHDOG_INTERVAL=30
@@ -140,37 +143,6 @@ generate_config() {
         ip_rules=$(grep -v '^#\|^$' "$IPS_FILE" | sed 's/^/"/;s/$/"/' | tr '\n' ',' | sed 's/,$//')
     fi
     
-    # Build full-vpn source IPs (MAC->IP lookup with multiple fallbacks)
-    local fullvpn_sources=""
-    if [ -s "$FULLVPN_FILE" ]; then
-        while IFS= read -r mac || [ -n "$mac" ]; do
-            [ -z "$mac" ] && continue
-            [ "${mac#\#}" != "$mac" ] && continue
-            # Method 1: ARP table (skip FAILED/INCOMPLETE entries)
-            local ip=$(ip neigh show dev br0 | grep -iv 'failed\|incomplete' | grep -i "$mac" | awk '{print $1}' | head -1)
-            # Method 2: all interfaces ARP
-            if [ -z "$ip" ]; then
-                ip=$(ip neigh | grep -iv 'failed\|incomplete' | grep -i "$mac" | awk '{print $1}' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            fi
-            # Method 3: DHCP leases file
-            if [ -z "$ip" ]; then
-                local mac_lower=$(echo "$mac" | tr '[:upper:]' '[:lower:]')
-                ip=$(awk -v m="$mac_lower" '$2==m{print $3}' /tmp/dhcp.leases 2>/dev/null | head -1)
-            fi
-            # Method 4: ndmc RCI (Keenetic API)
-            if [ -z "$ip" ] && command -v ndmc >/dev/null 2>&1; then
-                ip=$(ndmc -c "show ip hotspot" 2>/dev/null | grep -i "$mac" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            fi
-            if [ -n "$ip" ]; then
-                if [ -n "$fullvpn_sources" ]; then fullvpn_sources="$fullvpn_sources,"; fi
-                fullvpn_sources="$fullvpn_sources\"$ip\""
-                log "Full VPN device $mac → $ip"
-            else
-                log "Full VPN device $mac: IP not found (iptables MAC rule still active)"
-            fi
-        done < "$FULLVPN_FILE"
-    fi
-
     # Generate config
     cat > "$XRAY_CONF" << CONF
 {
@@ -183,6 +155,14 @@ generate_config() {
     {
       "tag": "tproxy-in",
       "port": $REDIR_PORT,
+      "protocol": "dokodemo-door",
+      "settings": {"network": "tcp,udp", "followRedirect": true},
+      "sniffing": {"enabled": true, "destOverride": ["http","tls","quic"], "routeOnly": true},
+      "streamSettings": {"sockopt": {"tproxy": "redirect"}}
+    },
+    {
+      "tag": "fullvpn-in",
+      "port": $FULLVPN_PORT,
       "protocol": "dokodemo-door",
       "settings": {"network": "tcp,udp", "followRedirect": true},
       "sniffing": {"enabled": true, "destOverride": ["http","tls","quic"], "routeOnly": true},
@@ -214,12 +194,10 @@ generate_config() {
       {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
 CONF
 
-    # Full VPN devices rule
-    if [ -n "$fullvpn_sources" ]; then
-        cat >> "$XRAY_CONF" << CONF
-      {"type": "field", "outboundTag": "$active_tag", "source": [$fullvpn_sources]},
+    # Full VPN devices rule (everything arriving on fullvpn-in goes through the tunnel)
+    cat >> "$XRAY_CONF" << CONF
+      {"type": "field", "outboundTag": "$active_tag", "inboundTag": ["fullvpn-in"]},
 CONF
-    fi
 
     # Domain rules
     if [ -n "$domain_rules" ]; then
@@ -385,11 +363,11 @@ setup_firewall() {
     iptables -t nat -F XRAY
 
     # Anti-loopback: never redirect connections destined to Xray's own inbound ports
-    # (dokodemo $REDIR_PORT, socks 1081, http 1082) or to any of the router's own
+    # (dokodemo $REDIR_PORT/$FULLVPN_PORT, socks 1081, http 1082) or to any of the router's own
     # addresses. Otherwise dokodemo followRedirect reports a local Xray port as the
     # original destination and Xray ends up dialing itself, flooding the log with
     # "app/proxyman/inbound: loopback connection detected" until it crashes/restarts.
-    for _xport in $REDIR_PORT 1081 1082; do
+    for _xport in $REDIR_PORT $FULLVPN_PORT 1081 1082; do
         iptables -t nat -A XRAY -p tcp --dport "$_xport" -j RETURN 2>/dev/null
     done
     for _laddr in $(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
@@ -421,7 +399,7 @@ setup_firewall() {
         while IFS= read -r mac || [ -n "$mac" ]; do
             [ -z "$mac" ] && continue
             [ "${mac#\#}" != "$mac" ] && continue
-            iptables -t nat -A XRAY -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $REDIR_PORT
+            iptables -t nat -A XRAY -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $FULLVPN_PORT
         done < "$FULLVPN_FILE"
     fi
     
@@ -436,7 +414,7 @@ setup_firewall() {
     ip6tables -t nat -N XRAY6 2>/dev/null
     ip6tables -t nat -F XRAY6
     # Anti-loopback (same rationale as IPv4 above)
-    for _xport in $REDIR_PORT 1081 1082; do
+    for _xport in $REDIR_PORT $FULLVPN_PORT 1081 1082; do
         ip6tables -t nat -A XRAY6 -p tcp --dport "$_xport" -j RETURN 2>/dev/null
     done
     for _laddr6 in $(ip -6 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
@@ -452,7 +430,7 @@ setup_firewall() {
         while IFS= read -r mac || [ -n "$mac" ]; do
             [ -z "$mac" ] && continue
             [ "${mac#\#}" != "$mac" ] && continue
-            ip6tables -t nat -A XRAY6 -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $REDIR_PORT
+            ip6tables -t nat -A XRAY6 -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $FULLVPN_PORT
         done < "$FULLVPN_FILE"
     fi
     

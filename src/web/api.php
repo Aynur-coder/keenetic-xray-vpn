@@ -492,7 +492,6 @@ function generate_xray_config() {
         $btag = resolve_target('ip:' . $ipv, $targets, $id_to_tag, $active_tag);
         $ip_buckets[$btag][] = $ipv;
     }
-    $fullvpn_macs = lines_read($FULLVPN_FILE);
 
     // Use explicit private ranges instead of geoip:private — geoip.dat may not exist on MIPS Entware
     $private_ranges = ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16',
@@ -501,44 +500,20 @@ function generate_xray_config() {
     $rules = [];
     $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => $private_ranges];
     foreach ($server_ips as $sip) {
+        // gethostbyname() hands back the hostname unchanged when resolution fails.
+        // A bare hostname in an "ip" rule makes Xray reject the whole config, so a
+        // server that stops resolving must fall back to a domain rule instead of
+        // taking every other server down with it.
         $resolved = gethostbyname($sip);
-        $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => [$resolved !== $sip ? $resolved : $sip]];
+        $is_ip = _is_ipv4($resolved) || strpos($resolved, ':') !== false;
+        $rules[] = $is_ip
+            ? ['type' => 'field', 'outboundTag' => 'direct', 'ip' => [$resolved]]
+            : ['type' => 'field', 'outboundTag' => 'direct', 'domain' => ['full:' . $sip]];
     }
 
-    if (!empty($fullvpn_macs)) {
-        // Exclude FAILED/INCOMPLETE ARP entries (no IP yet)
-        $arp_lines = array_filter(
-            explode("\n", shell_run('ip neigh show dev br0')),
-            fn($l) => !preg_match('/\b(FAILED|INCOMPLETE)\b/i', $l)
-        );
-        $arp = implode("\n", $arp_lines);
-
-        $dhcp_leases = @file_get_contents('/tmp/dhcp.leases') ?: '';
-
-        $fullvpn_ips = [];
-        foreach ($fullvpn_macs as $mac) {
-            $ip = '';
-            // Method 1: ARP table (REACHABLE / STALE)
-            if (preg_match('/^(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/im', $arp, $am)) {
-                $ip = $am[1];
-            }
-            // Method 2: DHCP leases file (mac is field 2, ip is field 3)
-            if (!$ip && preg_match('/^\S+\s+' . preg_quote(strtolower($mac), '/') . '\s+(\d+\.\d+\.\d+\.\d+)/im', $dhcp_leases, $dm)) {
-                $ip = $dm[1];
-            }
-            // Method 3: ndmc show ip hotspot
-            if (!$ip) {
-                $hotspot = shell_run('ndmc -c "show ip hotspot" 2>/dev/null');
-                if (preg_match('/(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/i', $hotspot, $hm)) {
-                    $ip = $hm[1];
-                }
-            }
-            if ($ip) $fullvpn_ips[] = $ip;
-        }
-        if (!empty($fullvpn_ips)) {
-            $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'source' => $fullvpn_ips];
-        }
-    }
+    // Full-VPN devices are redirected by MAC to the fullvpn-in inbound (see setup_firewall),
+    // so routing by inbound tag covers them on IPv4 and IPv6 without any MAC->IP lookup.
+    $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'inboundTag' => ['fullvpn-in']];
 
     // One routing rule per target outbound. Each domain/IP lands in exactly one bucket,
     // so first-match (domainStrategy IPIfNonMatch) is unambiguous. ksort = deterministic config.
@@ -563,6 +538,10 @@ function generate_xray_config() {
             : ['loglevel' => 'none',    'access' => '',                              'error'  => ''],
         'inbounds' => [
             ['tag' => 'tproxy-in', 'port' => 1080, 'protocol' => 'dokodemo-door',
+             'settings' => ['network' => 'tcp,udp', 'followRedirect' => true],
+             'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true],
+             'streamSettings' => ['sockopt' => ['tproxy' => 'redirect']]],
+            ['tag' => 'fullvpn-in', 'port' => 1083, 'protocol' => 'dokodemo-door',
              'settings' => ['network' => 'tcp,udp', 'followRedirect' => true],
              'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true],
              'streamSettings' => ['sockopt' => ['tproxy' => 'redirect']]],
@@ -1445,6 +1424,7 @@ case 'add_device':
     if (!preg_match('/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/', $mac)) { echo json_encode(['error' => 'Invalid MAC']); break; }
     if (!in_array($mac, $macs)) $macs[] = $mac;
     lines_write($FULLVPN_FILE, $macs);
+    quick_apply(); // rebuild the MAC redirect rules — nothing changes until then
     echo json_encode(['ok' => true]);
     break;
 
@@ -1453,6 +1433,7 @@ case 'delete_device':
     $mac = strtoupper(trim($_POST['mac'] ?? ''));
     $macs = array_values(array_filter($macs, fn($m) => strtoupper($m) !== $mac));
     lines_write($FULLVPN_FILE, $macs);
+    quick_apply(); // rebuild the MAC redirect rules — nothing changes until then
     echo json_encode(['ok' => true]);
     break;
 
