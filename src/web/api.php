@@ -40,6 +40,7 @@ require_once __DIR__ . '/lib/servers.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/rules.php';
 require_once __DIR__ . '/lib/overview.php';
+require_once __DIR__ . '/lib/probe.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -1209,6 +1210,109 @@ case 'servers':
     }
 
     echo json_encode(list_servers($keys, $cached, $subs, $flags, $pingCache, $probeCache, $activeId));
+    break;
+
+case 'ping_servers':
+    // TCP-connect ping for every server (or just $ids, JSON-encoded array of
+    // ids, if given), cached 300s in xray-ping.json. Reuses the cache
+    // wholesale while it's fresh; otherwise only the ids actually needed are
+    // re-pinged and merged over whatever else the cache already knew, so a
+    // request for one server never throws away everyone else's last result.
+    $all = array_merge(json_read($KEYS_FILE), json_read($CACHED_FILE));
+    $byId = [];
+    foreach ($all as $s) { if (!empty($s['id'])) $byId[$s['id']] = $s; }
+
+    $requested = null;
+    $idsParam = $_POST['ids'] ?? null;
+    if (is_string($idsParam) && $idsParam !== '') {
+        $decoded = json_decode($idsParam, true);
+        if (is_array($decoded)) $requested = array_values(array_map('strval', $decoded));
+    }
+    $wantIds = $requested ?? array_keys($byId);
+
+    $pingCacheFile = '/opt/tmp/xray-ping.json';
+    $pingCache = json_read($pingCacheFile);
+    $cachedResults = is_array($pingCache['results'] ?? null) ? $pingCache['results'] : [];
+    $isFresh = isset($pingCache['ts']) && (time() - (int)$pingCache['ts']) < 300;
+
+    if ($isFresh) {
+        $out = [];
+        foreach ($wantIds as $id) $out[$id] = $cachedResults[$id] ?? null;
+        echo json_encode(['results' => $out]);
+        break;
+    }
+
+    $targets = [];
+    foreach ($wantIds as $id) {
+        if (!isset($byId[$id])) continue;
+        $link = $byId[$id]['link'] ?? '';
+        $hp = link_host_port($link);
+        $targets[] = ['id' => $id, 'host' => $hp['host'], 'port' => $hp['port'],
+                      'skip' => link_proto($link) === 'hysteria2'];
+    }
+    $fresh = ping_servers_run($targets);
+
+    $merged = $cachedResults;
+    foreach ($fresh as $id => $ms) $merged[$id] = $ms;
+    json_write($pingCacheFile, ['ts' => time(), 'results' => $merged]);
+
+    $out = [];
+    foreach ($wantIds as $id) $out[$id] = $merged[$id] ?? null;
+    echo json_encode(['results' => $out]);
+    break;
+
+case 'server_probe':
+    // On-demand country probe through a temporary Xray instance (Task 9).
+    // Cached 3600s in xray-probe.json; a fresh request while another probe
+    // is already running gets a Russian error instead of queueing (spinning
+    // up a second temporary Xray while one is mid-probe would race on the
+    // same loopback port and process bookkeeping).
+    $id = $_POST['id'] ?? '';
+    if ($id === '') { echo json_encode(['error' => 'Не указан id']); break; }
+
+    $srv = null;
+    foreach (array_merge(json_read($KEYS_FILE), json_read($CACHED_FILE)) as $s) {
+        if (($s['id'] ?? '') === $id) { $srv = $s; break; }
+    }
+    if (!$srv) { echo json_encode(['error' => 'Сервер не найден']); break; }
+
+    $probeCacheFile = '/opt/tmp/xray-probe.json';
+    $probeCache = json_read($probeCacheFile);
+    $cachedRow = $probeCache[$id] ?? null;
+    if (is_array($cachedRow) && isset($cachedRow['ts']) && (time() - (int)$cachedRow['ts']) < 3600) {
+        echo json_encode([
+            'ok'             => empty($cachedRow['error']),
+            'delay_ms'       => $cachedRow['delay_ms'] ?? null,
+            'exit_ip'        => $cachedRow['exit_ip'] ?? null,
+            'google_country' => $cachedRow['google_country'] ?? null,
+            'exit_country'   => $cachedRow['exit_country'] ?? null,
+            'error'          => $cachedRow['error'] ?? null,
+        ]);
+        break;
+    }
+
+    // Non-blocking: apply_acquire_lock() with a 0s timeout returns immediately
+    // (success if free, null if another probe already holds it).
+    $probeLock = apply_acquire_lock('/opt/var/run/xray-probe.lock', 0);
+    if ($probeLock === null) { echo json_encode(['error' => 'Проверка уже идёт']); break; }
+    try {
+        $row = server_probe_run($srv['link'] ?? '');
+    } finally {
+        flock($probeLock, LOCK_UN);
+        fclose($probeLock);
+    }
+
+    $probeCache[$id] = [
+        'ts'             => time(),
+        'delay_ms'       => $row['delay_ms'],
+        'exit_ip'        => $row['exit_ip'],
+        'google_country' => $row['google_country'],
+        'exit_country'   => $row['exit_country'],
+        'error'          => $row['error'],
+    ];
+    json_write($probeCacheFile, $probeCache);
+
+    echo json_encode($row);
     break;
 
 case 'set_server_flags':
