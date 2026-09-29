@@ -60,8 +60,14 @@ export function useUpdater() {
   const alive = useRef(true);
   const startedAt = useRef(0);
 
+  // Polling generation: bumped on every start/stop. A status_update answer from an older
+  // generation (slow while lighttpd restarts) is dropped, so it can neither finish a run
+  // twice nor flip a finished card back to «running».
+  const generation = useRef(0);
+
   function stopPolling() {
-    clearInterval(timer.current);
+    generation.current += 1;
+    clearTimeout(timer.current);
     timer.current = null;
   }
 
@@ -95,26 +101,35 @@ export function useUpdater() {
     }
   }
 
-  async function poll(kind) {
+  // One request at a time: the next poll is scheduled only after this one has answered.
+  async function poll(kind, gen) {
     const r = await api('status_update', null, { quiet: true });
-    if (!alive.current || r.error) return; // services restart mid-update: keep polling
+    if (!alive.current || gen !== generation.current) return;
+    const next = () => {
+      timer.current = setTimeout(() => poll(kind, gen), POLL_MS);
+    };
+    if (r.error) {
+      next(); // services restart mid-update: keep polling
+      return;
+    }
     const p = progressOf(r);
     if (p.phase === 'running' && Date.now() - startedAt.current > STUCK_MS) {
       p.phase = 'failed';
       p.message = 'Процесс обновления не отвечает больше 10 минут';
     }
     setJob((j) => (j ? { ...j, ...p } : j));
-    if (p.phase !== 'running') {
-      stopPolling();
-      finish(kind, p.phase === 'done');
+    if (p.phase === 'running') {
+      next();
+      return;
     }
+    stopPolling(); // bumps the generation: this run can finish only once
+    finish(kind, p.phase === 'done');
   }
 
   function startPolling(kind) {
     stopPolling();
     startedAt.current = Date.now();
-    poll(kind);
-    timer.current = setInterval(() => poll(kind), POLL_MS);
+    poll(kind, generation.current);
   }
 
   async function install() {
@@ -157,8 +172,11 @@ export function useUpdater() {
 
   // Coming back to the page during a run (or reloading it) picks the progress up again.
   async function resume() {
+    const gen = generation.current;
     const r = await api('status_update', null, { quiet: true });
-    if (!alive.current || r.error || !RUNNING.includes(r.status)) return;
+    // gen changed = the user started an install/rollback meanwhile; that one wins.
+    if (!alive.current || gen !== generation.current) return;
+    if (r.error || !RUNNING.includes(r.status)) return;
     if (Date.now() / 1000 - (r.updated_at || 0) > STUCK_MS / 1000) return;
     const kind = /откат/i.test(r.message || '') ? 'rollback' : 'update';
     setJob({ kind, ...progressOf(r) });
@@ -280,8 +298,7 @@ function Progress({ job, onRollback, onDismiss }) {
 }
 
 function ChangelogSheet({ open, onClose, fallback, current }) {
-  // {markdown, current} | {error}. `fallback` = check_update's section for the new version
-  // (update.sh prints it without its «## [x]» heading, so the caller adds one).
+  // {markdown, current} | {error}. `fallback`: the new version's section from check_update.
   const [data, setData] = useState(null);
   useEffect(() => {
     if (!open || (data && !data.error)) return;
@@ -311,6 +328,14 @@ function ChangelogSheet({ open, onClose, fallback, current }) {
   `;
 }
 
+// check_update's changelog for the new version. update.sh prints the section without its
+// «## [x]» heading (the renderer needs one); add it unless the text already has one.
+function changelogSection(r) {
+  if (!r || !r.changelog) return '';
+  if (/^\s*##\s+\[/.test(r.changelog)) return r.changelog;
+  return `## [${r.latest}]\n${r.changelog}`;
+}
+
 export function UpdatesCard({ id, updater, version }) {
   const { check, job, runCheck, install, rollback, dismiss } = updater;
   const [notesOpen, setNotesOpen] = useState(false);
@@ -331,7 +356,7 @@ export function UpdatesCard({ id, updater, version }) {
         <${Button} variant="ghost" disabled=${running} onClick=${rollback}>Откатить…</${Button}>
       </div>
       <${ChangelogSheet} open=${notesOpen} onClose=${() => setNotesOpen(false)}
-        fallback=${r && r.changelog ? `## [${r.latest}]\n${r.changelog}` : ''}
+        fallback=${changelogSection(r)}
         current=${(r && r.current) || version} />
     </${Card}>
   `;
