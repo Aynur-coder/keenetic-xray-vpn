@@ -336,7 +336,11 @@ _kick_leaked_flows() {
     local proto src dst sport dport rsrc kicked_file kicked
     # The while loop below runs in a pipeline subshell, so a plain counter variable
     # would not survive past it — count deleted flows via a counter file instead.
-    kicked_file="/opt/var/run/xray-kicked.count"
+    # Suffixed with $$ (this process's PID): _resume_firewall (background watchdog)
+    # and setup_firewall (foreground start/restart) can call this concurrently from
+    # separate processes, and a shared fixed path would let one invocation's
+    # truncate/remove clobber the other's in-flight count.
+    kicked_file="/opt/var/run/xray-kicked.$$.count"
     : > "$kicked_file"
     conntrack -L 2>/dev/null | grep -E '^(tcp|udp) ' | grep ' src=192\.168\.' | \
         sed -nE 's/^(tcp|udp) .*src=([0-9.]+) dst=([0-9.]+) sport=([0-9]+) dport=([0-9]+) .*src=([0-9.]+) dst=[0-9.]+ sport=[0-9]+.*/\1 \2 \3 \4 \5 \6/p' | \
@@ -619,6 +623,7 @@ start() {
         log "Config missing or invalid — regenerating"
         generate_config || {
             log "ERROR: config generation failed"
+            _event error service "Ошибка старта: не удалось сгенерировать конфиг"
             return 1
         }
     fi
@@ -639,6 +644,7 @@ start() {
     else
         log "ERROR: Xray failed to start"
         cat "$LOG_DIR/error.log" 2>/dev/null
+        _event error service "Ошибка старта: Xray не запустился"
         return 1
     fi
 }
