@@ -10,7 +10,8 @@
 //                        contains "hang", it stalls 15 s instead (client timeout path)
 //   tests/ui/.locked   — actions other than login/logout/get_onboarding_status/
 //                        get_features answer 401 {error:auth_required};
-//                        login with password "test" removes the lock
+//                        login with password "test" removes the lock; password
+//                        "locked" answers 429 {too_many_attempts, retry_after: 125}
 //   tests/ui/.scenario   — a name, e.g. "stopped": fixtures/<name>/<action>.json is
 //                          served instead of fixtures/<action>.json when it exists
 
@@ -31,7 +32,10 @@ if ($path === '/api.php') {
     }
 
     if ($action === 'login') {
-        if (($_POST['password'] ?? '') === 'test') {
+        if (($_POST['password'] ?? '') === 'locked') {
+            http_response_code(429);
+            echo json_encode(['error' => 'too_many_attempts', 'retry_after' => 125]);
+        } elseif (($_POST['password'] ?? '') === 'test') {
             @unlink("$uiDir/.locked");
             echo json_encode(['ok' => true]);
         } else {

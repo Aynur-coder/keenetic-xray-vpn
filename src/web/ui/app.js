@@ -119,7 +119,8 @@ function App() {
       return;
     }
     window.scrollTo(0, 0);
-    if (heading.current) heading.current.focus({ preventScroll: true });
+    // The login screen puts focus in its password field itself.
+    if (heading.current && route !== 'login') heading.current.focus({ preventScroll: true });
   }, [route]);
 
   let content;

@@ -2190,6 +2190,13 @@ case 'set_ui_password':
     $cfg = _auth_cfg();
     if (!empty($cfg['hash']) && !is_authenticated()) { require_auth(); }
     $pass = $_POST['password'] ?? '';
+    // Optional (the legacy UI never sends it): when the new UI passes the current password,
+    // a wrong one refuses the change instead of silently overwriting it.
+    if (isset($_POST['current']) && !empty($cfg['hash']) && !check_login((string)$_POST['current'])) {
+        usleep(700000); // same brute-force slowdown as login
+        echo json_encode(['error' => 'invalid_current_password']);
+        break;
+    }
     echo json_encode(set_ui_password($pass));
     break;
 

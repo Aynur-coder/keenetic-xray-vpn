@@ -18,6 +18,10 @@ const ERROR_TEXT = {
   too_many_attempts: 'Слишком много попыток входа, подождите',
   password_too_short: 'Пароль слишком короткий',
   no_password: 'Введите пароль',
+  invalid_current_password: 'Текущий пароль неверный',
+  check_failed: 'Не удалось проверить обновления — нет связи с GitHub',
+  cache_invalid: 'Не удалось проверить обновления',
+  already_running: 'Обновление уже выполняется',
 };
 
 export function errorText(error) {
