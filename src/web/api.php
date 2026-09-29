@@ -38,6 +38,7 @@ require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/servers.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/rules.php';
+require_once __DIR__ . '/lib/overview.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -286,6 +287,33 @@ function test_kn_password($pass) {
 function get_installed_version() {
     global $VERSION_FILE;
     return file_exists($VERSION_FILE) ? trim(@file_get_contents($VERSION_FILE)) : 'dev';
+}
+
+// --- overview action helpers -------------------------------------------------
+// build_overview() (lib/overview.php) is pure logic; these turn keys.json +
+// cached_servers.json into the flattened rows it expects.
+
+// Scheme of a key/subscription link, normalised (hy2 -> hysteria2).
+function overview_link_proto($link) {
+    if (preg_match('#^([a-z0-9]+)://#i', (string)$link, $m)) {
+        $scheme = strtolower($m[1]);
+        return $scheme === 'hy2' ? 'hysteria2' : $scheme;
+    }
+    return '';
+}
+
+function overview_build_servers(array $keys, array $cached) {
+    $rows = [];
+    foreach (array_merge($keys, $cached) as $s) {
+        if (empty($s['id'])) continue;
+        $rows[] = [
+            'id'      => $s['id'],
+            'name'    => $s['name'] ?? '',
+            'proto'   => overview_link_proto($s['link'] ?? ''),
+            'enabled' => !empty($s['enabled']),
+        ];
+    }
+    return $rows;
 }
 
 // --- Expired-subscription detection -----------------------------------------
@@ -964,7 +992,7 @@ $PUBLIC_READ_ACTIONS = [
     'keys', 'subscriptions', 'subscription_servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search', 'rule_targets',
-    'wg_peers', 'logs', 'raw_config', 'events',
+    'wg_peers', 'logs', 'raw_config', 'events', 'overview',
 ];
 if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
     require_auth();
@@ -999,6 +1027,53 @@ case 'status':
         // tunnel cannot work (expired subscription / no servers at all).
         'subscription' => subscription_health(),
     ]);
+    break;
+
+case 'overview':
+    // Single consistent status for the UI (Task 7): one call replacing the
+    // several ad-hoc reads (status, subscription health, probe/update caches)
+    // the UI used to stitch together itself. No network requests: the update
+    // check and probe results are whatever is already cached on disk.
+    $pid = xray_pid();
+    $running = $pid !== null;
+    $state = json_read($STATE_FILE);
+    $watchdog = $running && file_exists($WATCHDOG_STATE) ? trim(@file_get_contents($WATCHDOG_STATE)) : '';
+    $mem = shell_run("free -m | awk '/Mem:/{print \$2,\$3,\$4}'");
+    $mp = explode(' ', $mem);
+    $mem_total = (int)(($mp[0] ?? 0) / 1024);
+    $mem_used = (int)(($mp[1] ?? 0) / 1024);
+    $wg_up = shell_run("/opt/bin/wg show wg0 2>/dev/null | head -1") !== '';
+    $servers = overview_build_servers(json_read($KEYS_FILE), json_read($CACHED_FILE));
+
+    $probe_cache = '/opt/tmp/xray-probe.json';
+    $probe = null;
+    if (file_exists($probe_cache)) {
+        $decoded = json_decode((string)@file_get_contents($probe_cache), true);
+        if (is_array($decoded)) $probe = $decoded;
+    }
+
+    // check_update caches for 6h; overview never triggers the network check itself,
+    // it only reuses whatever that cache already holds.
+    $update_cache = '/opt/tmp/xray-vpn-update-check.json';
+    $update_available = false;
+    if (file_exists($update_cache)) {
+        $decoded = json_decode((string)@file_get_contents($update_cache), true);
+        if (is_array($decoded)) $update_available = !empty($decoded['available']);
+    }
+
+    echo json_encode(build_overview([
+        'xray_running'        => $running,
+        'watchdog'            => $watchdog,
+        'state'               => $state,
+        'servers'             => $servers,
+        'subscription_health' => subscription_health(),
+        'probe'               => $probe,
+        'mem'                 => [$mem_used, $mem_total],
+        'wg_up'               => $wg_up,
+        'version'             => get_installed_version(),
+        'update_available'    => $update_available,
+        'features'            => get_features(),
+    ]));
     break;
 
 case 'start':
