@@ -64,7 +64,8 @@ $types = [
 ];
 $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
 header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
-header('Cache-Control: no-store');
+// Same as the router's lighttpd rule (91-shadowsocks.conf): always revalidate UI files.
+header('Cache-Control: no-cache');
 if ($ext === 'php') {
     include $file;
 } else {
