@@ -7,6 +7,7 @@ import { useStore } from '../store.js';
 import { setTheme } from '../theme.js';
 import { Card } from '../components/card.js';
 import { Button } from '../components/button.js';
+import { Icon } from '../components/icons.js';
 import { Toggle } from '../components/toggle.js';
 import { toast } from '../components/toast.js';
 import { confirm } from '../components/confirm.js';
@@ -37,30 +38,52 @@ const FEATURES = {
 function FeatureRow({ id, features, busy, onToggle }) {
   const f = FEATURES[id];
   const ready = !!features;
+  const pending = !ready || !!busy[id];
   return html`
     <div class="setting">
       <div class="setting__text">
         <span class="setting__label" id=${`feat-${id}`}>${f.label}</span>
         <span class="setting__hint">${f.hint}</span>
       </div>
-      ${busy[id] ? html`<span class="spinner setting__spin" aria-hidden="true"></span>` : null}
+      ${pending ? html`<span class="spinner setting__spin" aria-hidden="true"></span>` : null}
       <${Toggle} checked=${ready && !!features[id]} label=${f.label}
-        disabled=${!ready || !!busy[id]} onChange=${(v) => onToggle(id, v)} />
+        disabled=${pending} busy=${pending} onChange=${(v) => onToggle(id, v)} />
+    </div>
+  `;
+}
+
+// Shown in place of the toggles' section while get_features has failed — never a fake OFF.
+function FeatureLoadError({ error, onRetry }) {
+  return html`
+    <div class="upd-status">
+      <${Icon} name="alert" class="tone-red" />
+      <span class="upd-status__text">
+        <strong>Не удалось загрузить функции</strong>
+        <span class="muted">${error}</span>
+      </span>
+    </div>
+    <div class="actions">
+      <${Button} variant="secondary" onClick=${onRetry}>Повторить</${Button}>
     </div>
   `;
 }
 
 function useFeatures() {
   const [features, setFeatures] = useState(null);
+  const [error, setError] = useState('');
   const [busy, setBusy] = useState({}); // {feature id: true} while its request runs
 
-  useEffect(() => {
+  function load() {
+    setError('');
     api('get_features', null, { quiet: true }).then((r) => {
-      if (!r.error) setFeatures(r);
+      if (r.error) setError(errorText(r.error));
+      else setFeatures(r);
     });
-  }, []);
+  }
+  useEffect(load, []);
 
   async function toggle(id, value) {
+    if (!features) return; // still loading (or failed) — nothing real to flip yet
     const f = FEATURES[id];
     setBusy((b) => ({ ...b, [id]: true }));
     setFeatures((cur) => ({ ...cur, [id]: value }));
@@ -79,7 +102,7 @@ function useFeatures() {
     }
     refreshOverview();
   }
-  return { features, busy, toggle };
+  return { features, error, busy, toggle, reload: load };
 }
 
 function GeneralCard({ id }) {
@@ -352,7 +375,7 @@ function SessionCard({ id }) {
 export function SettingsScreen() {
   const version = useStore((s) => (s.overview ? s.overview.version : ''));
   const updater = useUpdater();
-  const { features, busy, toggle } = useFeatures();
+  const { features, error: featuresError, busy, toggle, reload: reloadFeatures } = useFeatures();
   const [auth, setAuth] = useState(null);
   const [knSet, setKnSet] = useState(null);
 
@@ -396,12 +419,18 @@ export function SettingsScreen() {
         <${GeneralCard} id="s-general" />
         <${UpdatesCard} id="s-updates" updater=${updater} version=${version} />
         <${Card} id="s-features" title="Функции" class="settings__card">
-          <${FeatureRow} id="wireguard" ...${rowProps} />
-          <${FeatureRow} id="adguard" ...${rowProps} />
-          <${FeatureRow} id="auto_update" ...${rowProps} />
+          ${featuresError
+            ? html`<${FeatureLoadError} error=${featuresError} onRetry=${reloadFeatures} />`
+            : html`
+              <${FeatureRow} id="wireguard" ...${rowProps} />
+              <${FeatureRow} id="adguard" ...${rowProps} />
+              <${FeatureRow} id="auto_update" ...${rowProps} />
+            `}
         </${Card}>
         <${Card} id="s-diagnostics" title="Диагностика" class="settings__card">
-          <${FeatureRow} id="logs_enabled" ...${rowProps} />
+          ${featuresError
+            ? html`<${FeatureLoadError} error=${featuresError} onRetry=${reloadFeatures} />`
+            : html`<${FeatureRow} id="logs_enabled" ...${rowProps} />`}
           <p class="muted settings__note">Остальные инструменты диагностики появятся позже.</p>
         </${Card}>
         <${SecurityCard} id="s-security" auth=${auth} knSet=${knSet} reload=${loadAuth} />
