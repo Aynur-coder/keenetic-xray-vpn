@@ -35,6 +35,7 @@ $WATCHDOG_STATE = '/opt/var/run/xray-watchdog.state';
 require_once __DIR__ . '/lib/links.php';
 require_once __DIR__ . '/lib/system.php';
 require_once __DIR__ . '/lib/events.php';
+require_once __DIR__ . '/lib/servers.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -373,9 +374,11 @@ function generate_xray_config() {
     $id_to_tag = [];
     $active_tag = '';
     $state = json_read($STATE_FILE);
-    $active_id = $state['active_outbound'] ?? '';
-
     $keys = json_read($KEYS_FILE);
+    $cached_for_resolve = json_read($CACHED_FILE);
+    $resolved = resolve_active($state, $keys, $cached_for_resolve);
+    $active_id = $resolved['id'] ?? '';
+
     foreach ($keys as $k) {
         if (empty($k['enabled'])) continue;
         $tag = 'key-' . ($k['id'] ?? uniqid());
@@ -385,11 +388,11 @@ function generate_xray_config() {
             if (!empty($k['id'])) $id_to_tag[$k['id']] = $tag;
             $addr = outbound_address($ob);
             if ($addr) $server_ips[] = $addr;
-            if ($active_id === $k['id'] || (!$active_tag && $active_id === '')) $active_tag = $tag;
+            if ($active_id !== '' && $active_id === $k['id']) $active_tag = $tag;
         }
     }
 
-    $cached = json_read($CACHED_FILE);
+    $cached = $cached_for_resolve;
     foreach ($cached as $srv) {
         if (empty($srv['enabled'])) continue;
         $tag = 'sub-' . ($srv['id'] ?? uniqid());
@@ -399,7 +402,7 @@ function generate_xray_config() {
             if (!empty($srv['id'])) $id_to_tag[$srv['id']] = $tag;
             $addr = outbound_address($ob);
             if ($addr) $server_ips[] = $addr;
-            if ($active_id === $srv['id']) $active_tag = $tag;
+            if ($active_id !== '' && $active_id === $srv['id']) $active_tag = $tag;
         }
     }
 
@@ -409,6 +412,15 @@ function generate_xray_config() {
             if ($ob['tag'] !== 'direct' && $ob['tag'] !== 'block') { $active_tag = $ob['tag']; break; }
         }
     }
+
+    // Record what actually ended up active (which can differ from $resolved['id'] when
+    // its link failed to build a usable outbound) so the UI can show why.
+    $effective_id = array_search($active_tag, $id_to_tag, true);
+    $effective_id = $effective_id !== false ? $effective_id : null;
+    $state['effective_outbound'] = $effective_id;
+    $state['effective_reason'] = ($effective_id !== null && $effective_id === $active_id)
+        ? $resolved['reason'] : 'fallback_missing';
+    json_write($STATE_FILE, $state);
 
     usort($outbounds, function($a, $b) use ($active_tag) {
         if ($a['tag'] === $active_tag) return -1;
@@ -1130,6 +1142,31 @@ case 'update_subscriptions':
     log_event('info', 'subscription',
         "Подписка $name обновлена: " . count($all_servers) . " сервер(ов) (+$added, \u{2212}$removed)",
         ['count' => count($all_servers), 'added' => $added, 'removed' => $removed]);
+
+    // The selected server's cached id is md5(link): if the subscription reissued its
+    // link, the id vanished from $all_servers and the old selection is now orphaned.
+    // Use the hint recorded by select_server to find it again by name+proto/host+port.
+    $state = json_read($STATE_FILE);
+    $active_id = $state['active_outbound'] ?? '';
+    $still_present = $active_id !== '' && (
+        in_array($active_id, $after_ids, true) ||
+        in_array($active_id, array_column(json_read($KEYS_FILE), 'id'), true)
+    );
+    if ($active_id !== '' && !$still_present && !empty($state['active_hint'])) {
+        $matched_id = rematch_server($state['active_hint'], $all_servers);
+        if ($matched_id !== null) {
+            $matched = null;
+            foreach ($all_servers as $s) { if (($s['id'] ?? '') === $matched_id) { $matched = $s; break; } }
+            $state['active_outbound'] = $matched_id;
+            if ($matched) $state['active_hint'] = server_hint($matched);
+            json_write($STATE_FILE, $state);
+            log_event('info', 'server', 'Выбранный сервер найден заново: ' . ($matched['name'] ?? $matched_id),
+                ['id' => $matched_id]);
+        }
+        // No match: leave active_outbound as-is. resolve_active() will report
+        // fallback_missing rather than silently landing on some other server.
+    }
+
     echo json_encode(['ok' => true, 'count' => count($all_servers)]);
     break;
 
@@ -1147,11 +1184,17 @@ case 'select_server':
     $id = $_POST['id'] ?? '';
     $state = json_read($STATE_FILE);
     $state['active_outbound'] = $id;
-    json_write($STATE_FILE, $state);
     $name = $id;
     foreach (array_merge(json_read($CACHED_FILE), json_read($KEYS_FILE)) as $s) {
-        if (($s['id'] ?? '') === $id && !empty($s['name'])) { $name = $s['name']; break; }
+        if (($s['id'] ?? '') === $id) {
+            // Remembered so update_subscriptions can find this server again even
+            // after its id (and possibly its link) changes.
+            $state['active_hint'] = server_hint($s);
+            if (!empty($s['name'])) $name = $s['name'];
+            break;
+        }
     }
+    json_write($STATE_FILE, $state);
     log_event('info', 'server', "Сервер: $name", ['id' => $id]);
     echo json_encode(['ok' => true]);
     break;
