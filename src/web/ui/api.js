@@ -4,6 +4,7 @@
 //   api(action, data)                 POST form-encoded
 //   api(action, data, {method:'GET'}) GET with data as query parameters
 //   {quiet: true}                     no toast on error (caller shows it itself)
+//   {timeout: ms}                     longer wait for slow actions (apply, probe)
 import { store } from './store.js';
 import { toast } from './components/toast.js';
 
@@ -43,6 +44,7 @@ function toQuery(data) {
 export async function api(action, data, opts = {}) {
   const method = opts.method || (data ? 'POST' : 'GET');
   const quiet = !!opts.quiet;
+  const timeoutMs = opts.timeout || TIMEOUT_MS;
   const query = new URLSearchParams({ action });
   const init = { method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
   if (method === 'GET') {
@@ -52,7 +54,7 @@ export async function api(action, data, opts = {}) {
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   init.signal = controller.signal;
 
   let res;
@@ -97,4 +99,21 @@ function offline(quiet) {
   store.set({ offline: true });
   if (!quiet) toast(OFFLINE_ERROR, 'error');
   return { error: OFFLINE_ERROR };
+}
+
+// Loaders for the shared store slices (polling in app.js, screens after a change).
+export async function refreshOverview() {
+  const res = await api('overview', null, { quiet: true });
+  if (!res.error) store.set({ overview: res });
+}
+
+export async function refreshIps() {
+  const res = await api('check_ips', null, { quiet: true });
+  if (!res.error) store.set({ ips: res });
+}
+
+export async function refreshServers() {
+  const res = await api('servers', null, { quiet: true });
+  if (!res.error) store.set({ servers: res });
+  return res;
 }

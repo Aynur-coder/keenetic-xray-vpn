@@ -1,7 +1,7 @@
 // Root of the new UI: hash routing, layout (sidebar ≥900 px / bottom nav <900 px), polling.
 import { html, render, useState, useEffect, useRef } from './vendor/preact-htm.js';
-import { api, OFFLINE_ERROR } from './api.js';
-import { store, useStore } from './store.js';
+import { api, OFFLINE_ERROR, refreshOverview, refreshIps } from './api.js';
+import { useStore } from './store.js';
 import { initTheme, adoptRouterTheme } from './theme.js';
 import { Icon } from './components/icons.js';
 import { Toasts } from './components/toast.js';
@@ -67,16 +67,6 @@ function useVisiblePolling(task, ms, enabled) {
       document.removeEventListener('visibilitychange', start);
     };
   }, [enabled]);
-}
-
-async function refreshOverview() {
-  const res = await api('overview', null, { quiet: true });
-  if (!res.error) store.set({ overview: res });
-}
-
-async function refreshIps() {
-  const res = await api('check_ips', null, { quiet: true });
-  if (!res.error) store.set({ ips: res });
 }
 
 function NavLinks({ route, updateDot }) {

@@ -34,6 +34,10 @@ const PATHS = {
     d="M5 12.9a10 10 0 0 1 4.2-2.6" /><path d="M14.8 10.3A10 10 0 0 1 19 12.9" /><path
     d="M2 9.3a15 15 0 0 1 4.3-2.9" /><path d="M10.6 5.1A15 15 0 0 1 22 9.3" /><path
     d="M12 20h.01" />`,
+  play: html`<path d="M7 4.5v15l12.5-7.5z" />`,
+  stop: html`<rect x="6" y="6" width="12" height="12" rx="2" />`,
+  restart: html`<path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" />`,
+  swap: html`<path d="M4 8h14l-4-4" /><path d="M20 16H6l4 4" />`,
   lock: html`<rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8
     0v4" />`,
 };

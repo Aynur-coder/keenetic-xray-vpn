@@ -11,6 +11,8 @@
 //   tests/ui/.locked   — actions other than login/logout/get_onboarding_status/
 //                        get_features answer 401 {error:auth_required};
 //                        login with password "test" removes the lock
+//   tests/ui/.scenario   — a name, e.g. "stopped": fixtures/<name>/<action>.json is
+//                          served instead of fixtures/<action>.json when it exists
 
 $root = realpath(__DIR__ . '/../../src/web');
 $uiDir = __DIR__;
@@ -45,7 +47,14 @@ if ($path === '/api.php') {
         return true;
     }
 
-    $fixture = "$uiDir/fixtures/" . preg_replace('/[^a-z0-9_]/', '', $action) . '.json';
+    $name = preg_replace('/[^a-z0-9_]/', '', $action) . '.json';
+    $fixture = "$uiDir/fixtures/$name";
+    $scenario = file_exists("$uiDir/.scenario")
+        ? trim((string)file_get_contents("$uiDir/.scenario")) : '';
+    $scenario = preg_replace('/[^a-z0-9_-]/', '', $scenario);
+    if ($scenario !== '' && file_exists("$uiDir/fixtures/$scenario/$name")) {
+        $fixture = "$uiDir/fixtures/$scenario/$name";
+    }
     echo file_exists($fixture) ? file_get_contents($fixture) : '{}';
     return true;
 }

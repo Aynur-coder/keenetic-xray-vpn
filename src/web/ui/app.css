@@ -471,3 +471,140 @@ body.has-sheet { overflow: hidden; }
 @media (min-width: 900px) {
   .toasts { left: auto; right: var(--sp-3); bottom: var(--sp-3); width: 380px; }
 }
+
+/* ---------- Shared bits ---------- */
+
+.actions { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.mono { font-family: var(--mono); }
+.tone-muted { color: var(--text-3); }
+.tone-red { color: var(--red); }
+.tone-orange { color: var(--orange); }
+.tone-green { color: var(--green); }
+.link { font-size: 14px; font-weight: 550; text-decoration: none; }
+.link:hover { text-decoration: underline; }
+
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 32px; padding: 0 12px; border-radius: 999px;
+  font-size: 13px; background: var(--surface-2); border: 1px solid var(--border);
+}
+.chip__label { color: var(--text-2); }
+.chip--muted { color: var(--text-3); }
+.chip--red {
+  color: var(--red); background: var(--red-soft);
+  border-color: color-mix(in srgb, var(--red) 35%, transparent);
+}
+.chip--red .chip__label { color: inherit; }
+
+.callouts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-1); }
+.callout {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+  padding: 12px var(--sp-2);
+  border-radius: var(--radius-sm); border: 1px solid transparent;
+}
+.callout > .icon { align-self: flex-start; margin-top: 2px; }
+.callout__text { flex: 1 1 200px; min-width: 0; display: grid; gap: 2px; color: var(--text); }
+.callout__sub { color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.callout__action { flex: none; margin-left: auto; }
+.callout--red {
+  background: var(--red-soft); border-color: color-mix(in srgb, var(--red) 35%, transparent);
+}
+.callout--red > .icon { color: var(--red); }
+.callout--orange {
+  background: var(--orange-soft);
+  border-color: color-mix(in srgb, var(--orange) 35%, transparent);
+}
+.callout--orange > .icon { color: var(--orange); }
+
+/* ---------- Обзор ---------- */
+
+.overview-grid { display: grid; gap: var(--sp-2); }
+@media (min-width: 900px) {
+  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+  .overview-grid > .card { display: flex; flex-direction: column; }
+  .overview-grid > .card > .card__body { flex: 1; align-content: start; }
+}
+
+.state-card .card__body { gap: var(--sp-2); }
+.state { display: flex; align-items: flex-start; gap: 12px; }
+.state__dot {
+  flex: none; width: 14px; height: 14px; margin-top: 9px; border-radius: 50%;
+  background: var(--text-3);
+}
+.state__dot--green { background: var(--green); box-shadow: 0 0 0 5px var(--green-soft); }
+.state__dot--orange { background: var(--orange); box-shadow: 0 0 0 5px var(--orange-soft); }
+.state__dot--red { background: var(--red); box-shadow: 0 0 0 5px var(--red-soft); }
+.state__text { min-width: 0; display: grid; gap: 2px; }
+.state__label { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; }
+.state__reason { color: var(--text-2); overflow-wrap: anywhere; }
+.state__reason.is-error { color: var(--red); font-family: var(--mono); font-size: 13px; }
+
+.server { display: grid; gap: 6px; }
+.server__name {
+  font-size: 18px; font-weight: 650;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.server__meta { display: flex; align-items: center; gap: var(--sp-1); font-size: 14px; }
+.server + .chips { margin-top: var(--sp-half); }
+.chips + .actions { margin-top: var(--sp-1); }
+
+.ips {
+  margin: 0; display: grid; gap: var(--sp-2);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.ips__item { min-width: 0; display: grid; gap: 2px; align-content: start; }
+.ips dt { color: var(--text-2); font-size: 13px; }
+.ips dd { margin: 0; }
+.ips__value { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.ips__note { color: var(--text-2); font-size: 13px; }
+
+.events { list-style: none; margin: 0; padding: 0; display: grid; }
+.event {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: start;
+  gap: 10px; padding: var(--sp-1) 0;
+  border-top: 1px solid var(--border);
+}
+.event:first-child { border-top: 0; padding-top: 0; }
+.event__time { color: var(--text-3); font-size: 13px; font-variant-numeric: tabular-nums;
+  line-height: 22px; white-space: nowrap; }
+.event__icon { display: inline-flex; padding-top: 3px; color: var(--text-3); }
+.event--warn .event__icon { color: var(--orange); }
+.event--error .event__icon { color: var(--red); }
+.event__msg { overflow-wrap: anywhere; }
+
+/* ---------- Server picker ---------- */
+
+.picker { display: grid; gap: 12px; }
+.picker__loading { display: flex; align-items: center; gap: var(--sp-1); padding: var(--sp-2) 0; }
+.picker__list {
+  max-height: min(60vh, 520px); overflow-y: auto; overscroll-behavior: contain;
+  margin: 0 calc(-1 * var(--sp-1)); padding: 0 var(--sp-1);
+}
+.picker__head {
+  position: sticky; top: 0; z-index: 1;
+  padding: var(--sp-1) 4px 6px;
+  background: var(--surface);
+  color: var(--text-2); font-size: 12px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.pick {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  min-height: 56px; padding: var(--sp-1) 12px 8px 8px;
+  border: 0; border-radius: var(--radius-sm);
+  background: none; text-align: left; cursor: pointer;
+}
+.pick:hover:not([aria-disabled="true"]) { background: var(--surface-2); }
+.pick[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.pick.is-current { background: var(--accent-soft); }
+.pick__mark {
+  flex: none; width: 24px; display: inline-flex; justify-content: center; color: var(--accent);
+}
+.pick__text { flex: 1; min-width: 0; display: grid; }
+.pick__name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick__sub {
+  color: var(--text-2); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick__meta { flex: none; display: inline-flex; align-items: center; gap: var(--sp-1); }
+.pick__ping { color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }

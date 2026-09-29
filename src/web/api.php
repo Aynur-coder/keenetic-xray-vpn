@@ -1517,6 +1517,7 @@ case 'toggle_server':
 
 case 'select_server':
     $id = $_POST['id'] ?? '';
+    if ($id === '') { echo json_encode(['error' => 'Не указан id']); break; }
     $state = json_read($STATE_FILE);
     $state['active_outbound'] = $id;
     $name = $id;
@@ -1539,7 +1540,12 @@ case 'select_server':
     }
     json_write($STATE_FILE, $state);
     log_event('info', 'server', "Сервер: $name", ['id' => $id]);
-    echo json_encode(['ok' => true]);
+    // Applied right here (like `restart`, watchdog paused around it so it doesn't
+    // count the switch as an outage) — the UI gets the real outcome in one call.
+    shell_run("$MANAGER stop_watchdog 2>/dev/null");
+    $r = apply_changes('full');
+    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
+    echo json_encode($r);
     break;
 
 case 'rule_targets': echo json_encode((object)rule_targets()); break;

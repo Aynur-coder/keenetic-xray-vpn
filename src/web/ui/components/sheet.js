@@ -26,7 +26,9 @@ export function Sheet({ open, title, onClose, footer, children }) {
         return;
       }
       if (e.key !== 'Tab' || !node) return;
-      const items = [...node.querySelectorAll(FOCUSABLE)];
+      // tabindex=-1 = not in the Tab order (roving lists), so not a trap edge either.
+      const items = [...node.querySelectorAll(FOCUSABLE)]
+        .filter((el) => el.getAttribute('tabindex') !== '-1');
       if (items.length === 0) {
         e.preventDefault();
         return;

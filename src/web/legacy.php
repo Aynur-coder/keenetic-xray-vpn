@@ -1127,12 +1127,11 @@ async function selectServer(id, el){
   el.classList.add('applying');
   const status=$('#serverApplyStatus');
   if(status) status.textContent='Переключаю...';
-  await api('select_server',{id});
-  await api('restart');
+  const r=await api('select_server',{id}); // select_server applies the config itself
   el.classList.remove('applying');
   el.classList.add('active-server');
   if(status) status.textContent='';
-  toast('Сервер изменён');
+  if(r.error) toast('Ошибка: '+r.error,true); else toast('Сервер изменён');
   setTimeout(()=>{ loadServers(); loadStatus(); },2500);
 }
 
