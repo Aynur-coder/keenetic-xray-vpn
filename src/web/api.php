@@ -469,7 +469,7 @@ function refresh_subscriptions(): array {
     return ['count' => count($all_servers), 'added' => $added, 'removed' => $removed];
 }
 
-// Writes to $outFile (default: the live config). apply_changes() passes config.json.new
+// Writes to $outFile (default: the live config). apply_changes() passes config.new.json
 // so a config Xray rejects never replaces the working one.
 function generate_xray_config(?string $outFile = null) {
     global $XRAY_DIR, $XRAY_CONF, $KEYS_FILE, $CACHED_FILE, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE, $STATE_FILE;

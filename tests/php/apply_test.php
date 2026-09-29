@@ -50,7 +50,7 @@ function test_bad_config_keeps_old(): void {
     eq($r['ok'], false, 'rejected config is not ok');
     eq(strpos((string)$r['error'], 'illegal ip rule') !== false, true, 'error carries Xray reason');
     eq(file_get_contents("$dir/config.json"), '{"old":true}', 'old config untouched');
-    eq(file_exists("$dir/config.json.new"), false, '.new removed');
+    eq(file_exists("$dir/config.new.json"), false, '.new removed');
     eq(file_exists("$dir/restarts"), false, 'xray not restarted');
 
     $state = json_decode((string)file_get_contents("$dir/state.json"), true);
@@ -76,7 +76,7 @@ function test_good_config_replaces(): void {
     eq($r['error'], null, 'no error');
     eq($r['xray_running'], true, 'reports xray running');
     eq(file_get_contents("$dir/config.json"), '{"new":true}', 'config replaced');
-    eq(file_exists("$dir/config.json.new"), false, '.new renamed away');
+    eq(file_exists("$dir/config.new.json"), false, '.new renamed away');
     eq(trim((string)file_get_contents("$dir/restarts")), 'restarted', 'restarted once');
 
     $state = json_decode((string)file_get_contents("$dir/state.json"), true);
@@ -213,7 +213,7 @@ function test_rejected_config_starts_old_when_stopped(): void {
     $dir = $env['dir'];
     // Fake xray: rejects the new candidate, accepts the old live config.
     file_put_contents($env['opt']['xray_bin'], "#!/bin/sh\ncase \"\$4\" in\n"
-        . "  *.new) echo 'illegal ip rule: bad.example.com'; exit 1;;\n"
+        . "  *.new.json) echo 'illegal ip rule: bad.example.com'; exit 1;;\n"
         . "  *) echo 'Configuration OK.'; exit 0;;\nesac\n");
     $opt = $env['opt'];
     $opt['pidof_cmd'] = 'true'; // Xray is stopped
@@ -328,5 +328,22 @@ function test_full_apply_restarts_watchdog(): void {
     file_put_contents($opt['xray_bin'], "#!/bin/sh\necho bad; exit 1\n");
     apply_changes('full', $opt);
     eq(file_exists($log), false, 'rejected config: watchdog untouched');
+    _apply_cleanup($dir);
+}
+
+// Real Xray picks the config format from the file extension: a candidate named
+// config.json.new is refused with "Failed to get format of …config.json.new" (seen on
+// the router, Xray 26). The file handed to `xray run -test` must end in .json.
+function test_candidate_config_has_json_extension(): void {
+    $env = _apply_env(0, 'unused');
+    $dir = $env['dir'];
+    file_put_contents($env['opt']['xray_bin'], "#!/bin/sh\ncase \"\$4\" in\n"
+        . "  *.json) echo 'Configuration OK.'; exit 0;;\n"
+        . "  *) echo \"Failed to get format of \$4\"; exit 1;;\nesac\n");
+    $r = apply_changes('full', $env['opt']);
+    eq($r['error'], null, 'candidate accepted by an extension-sensitive xray');
+    eq($r['ok'], true, 'apply ok');
+    eq(file_get_contents("$dir/config.json"), '{"new":true}', 'config replaced');
+    eq(glob("$dir/config.*new*") ?: [], [], 'no candidate file left behind');
     _apply_cleanup($dir);
 }

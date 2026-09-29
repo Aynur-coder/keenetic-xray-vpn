@@ -51,7 +51,7 @@ function apply_changes(string $mode = 'full', array $opt = []): array {
     ignore_user_abort(true);
     $opt += apply_default_options($mode, $opt['conf'] ?? '/opt/etc/xray/config.json');
     $conf = $opt['conf'];
-    $new = $conf . '.new';
+    $new = apply_candidate_path($conf);
 
     $lock = apply_acquire_lock($opt['lock'], (int)$opt['lock_timeout']);
     if ($lock === null) {
@@ -147,6 +147,14 @@ function apply_restart(string $mode, array $opt): void {
     shell_run($opt['restart_cmd']);
     if ($opt['after_restart']) ($opt['after_restart'])($mode);
     if ($mode === 'full') shell_exec($opt['watchdog_start_cmd']);
+}
+
+// Where the candidate config is written before `xray run -test`. Xray picks the
+// config format from the file extension ("Failed to get format of config.json.new"),
+// so the candidate keeps .json: config.json -> config.new.json.
+function apply_candidate_path(string $conf): string {
+    $base = substr($conf, -5) === '.json' ? substr($conf, 0, -5) : $conf;
+    return $base . '.new.json';
 }
 
 // null when Xray accepts $file, otherwise the reason it gave.
