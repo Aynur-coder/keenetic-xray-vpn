@@ -1158,7 +1158,7 @@ case 'update_subscriptions':
             $matched = null;
             foreach ($all_servers as $s) { if (($s['id'] ?? '') === $matched_id) { $matched = $s; break; } }
             $state['active_outbound'] = $matched_id;
-            if ($matched) $state['active_hint'] = server_hint($matched);
+            if ($matched) $state['active_hint'] = server_hint($matched) + ['source' => 'sub'];
             json_write($STATE_FILE, $state);
             log_event('info', 'server', 'Выбранный сервер найден заново: ' . ($matched['name'] ?? $matched_id),
                 ['id' => $matched_id]);
@@ -1185,14 +1185,22 @@ case 'select_server':
     $state = json_read($STATE_FILE);
     $state['active_outbound'] = $id;
     $name = $id;
-    foreach (array_merge(json_read($CACHED_FILE), json_read($KEYS_FILE)) as $s) {
-        if (($s['id'] ?? '') === $id) {
-            // Remembered so update_subscriptions can find this server again even
-            // after its id (and possibly its link) changes.
-            $state['active_hint'] = server_hint($s);
-            if (!empty($s['name'])) $name = $s['name'];
-            break;
+    $found = null;
+    $source = null;
+    foreach (json_read($CACHED_FILE) as $s) {
+        if (($s['id'] ?? '') === $id) { $found = $s; $source = 'sub'; break; }
+    }
+    if (!$found) {
+        foreach (json_read($KEYS_FILE) as $s) {
+            if (($s['id'] ?? '') === $id) { $found = $s; $source = 'key'; break; }
         }
+    }
+    if ($found) {
+        // Remembered (with its source) so update_subscriptions can find this server
+        // again after its id/link changes — but only when it came from a subscription;
+        // rematch_server() refuses to rematch a 'key' hint onto a subscription server.
+        $state['active_hint'] = server_hint($found) + ['source' => $source];
+        if (!empty($found['name'])) $name = $found['name'];
     }
     json_write($STATE_FILE, $state);
     log_event('info', 'server', "Сервер: $name", ['id' => $id]);

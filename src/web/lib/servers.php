@@ -38,7 +38,16 @@ function server_hint(array $srv): array {
 // Finds the id of the enabled server in $servers that best matches $hint:
 // same name+proto first (a subscription can list the same name twice, once
 // per protocol, so proto disambiguates), then same host+port, else null.
+//
+// $servers is always a subscription's cached server list. A hint recorded for
+// a *key* selection (source === 'key') must never be rematched onto one of
+// these — a deleted key coincidentally sharing a name with a subscription
+// server is not "the same server found again", it's an unrelated one. A hint
+// with no 'source' (state.json written before this field existed) is treated
+// as a subscription hint, matching the old unconditional-rematch behavior.
 function rematch_server(array $hint, array $servers): ?string {
+    if (($hint['source'] ?? 'sub') !== 'sub') return null;
+
     foreach ($servers as $srv) {
         if (empty($srv['enabled'])) continue;
         $h = server_hint($srv);

@@ -84,6 +84,37 @@ function test_rematch_none(): void {
     eq(rematch_server($hint, $servers), null, 'no name+proto or host+port match');
 }
 
+function test_rematch_skipped_for_deleted_key(): void {
+    // The active selection was a *key* (not a subscription server) that has since been
+    // deleted. Even though a subscription server with the same name+proto now exists,
+    // it must not be treated as "found again" — that would silently move the selection
+    // onto an unrelated server. rematch_server() returning null here is what keeps
+    // update_subscriptions from touching active_outbound, so resolve_active() reports
+    // fallback_missing instead.
+    $hint = server_hint(_sthlm_vless('deleted-key-id'));
+    $hint['source'] = 'key';
+    $servers = [
+        ['id' => 'new-id', 'name' => '🇸🇪 Стокгольм [Wi-Fi]', 'enabled' => true,
+            'link' => 'vless://33333333-3333-3333-3333-333333333333@new.example:8443?security=reality'
+                . '&sni=example.com&fp=chrome&pbk=Y&sid=5678'],
+    ];
+    eq(rematch_server($hint, $servers), null, 'a key-sourced hint is never rematched onto a subscription server');
+}
+
+function test_rematch_legacy_hint_without_source(): void {
+    // state.json written before this field existed has no 'source' key at all — treat
+    // it as a subscription hint (the old unconditional-rematch behavior) rather than
+    // refusing to rematch it.
+    $hint = server_hint(_sthlm_vless('old-id-gone'));
+    eq(isset($hint['source']), false, 'server_hint() itself never adds a source');
+    $servers = [
+        ['id' => 'new-id', 'name' => '🇸🇪 Стокгольм [Wi-Fi]', 'enabled' => true,
+            'link' => 'vless://33333333-3333-3333-3333-333333333333@new.example:8443?security=reality'
+                . '&sni=example.com&fp=chrome&pbk=Y&sid=5678'],
+    ];
+    eq(rematch_server($hint, $servers), 'new-id', 'a legacy hint with no source still rematches');
+}
+
 function test_rematch_skips_disabled(): void {
     $hint = server_hint(_sthlm_vless('old-id-gone'));
     $servers = [
