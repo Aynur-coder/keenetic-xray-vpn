@@ -4,6 +4,7 @@
   "files": [
     {"src": "src/web/index.php",                        "dst": "/opt/share/www/xray/index.php",                       "mode": "644"},
     {"src": "src/web/api.php",                          "dst": "/opt/share/www/xray/api.php",                         "mode": "644"},
+    {"src": "src/web/lib/links.php",                    "dst": "/opt/share/www/xray/lib/links.php",                   "mode": "644"},
     {"src": "src/etc/xray/xray-manager.sh",             "dst": "/opt/etc/xray/xray-manager.sh",                       "mode": "755"},
     {"src": "src/etc/xray/update.sh",                   "dst": "/opt/etc/xray/update.sh",                             "mode": "755"},
     {"src": "src/etc/xray/migrate.sh",                  "dst": "/opt/etc/xray/migrate.sh",                            "mode": "755"},
@@ -30,6 +31,7 @@
   ],
   "directories": [
     {"path": "/opt/share/www/xray",        "mode": "755"},
+    {"path": "/opt/share/www/xray/lib",    "mode": "755"},
     {"path": "/opt/etc/xray",              "mode": "755"},
     {"path": "/opt/etc/xray/rules",        "mode": "755"},
     {"path": "/opt/etc/xray/subscriptions","mode": "755"},
