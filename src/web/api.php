@@ -306,6 +306,28 @@ function parse_vless_link($link) {
     ];
 }
 
+// hysteria2://auth@host:port/?sni=...&insecure=1&obfs=salamander&obfs-password=...#name
+// (hy2:// is the short alias). auth may itself be "user:pass" — keep it verbatim.
+function parse_hysteria2_link($link) {
+    $link = preg_replace('/#.*$/', '', $link);
+    if (!preg_match('/^(?:hysteria2|hy2):\/\/(?:([^@]*)@)?([^\/?]+?)(?::([0-9,\-]+))?\/?(?:\?(.*))?$/',
+            $link, $m)) return null;
+    $params = [];
+    parse_str($m[4] ?? '', $params);
+    $host = trim($m[2], '[]');
+    // Port hopping lists ("443,20000-30000") are not supported yet: dial the first port
+    $port = (int)(preg_split('/[,\-]/', $m[3] ?? '')[0] ?: 443);
+    if ($host === '' || $port <= 0) return null;
+    return [
+        'auth' => urldecode($m[1] ?? ''), 'address' => $host, 'port' => $port,
+        'sni' => $params['sni'] ?? '',
+        'insecure' => ($params['insecure'] ?? '') === '1',
+        // Hysteria prints the fingerprint as hex, optionally colon-separated
+        'pin' => strtolower(str_replace(':', '', $params['pinSHA256'] ?? '')),
+        'obfs' => $params['obfs'] ?? '',
+    ];
+}
+
 function parse_ss_link($link) {
     $link = preg_replace('/#.*$/', '', $link);
     $link = preg_replace('/\?.*@/', '@', $link);
@@ -419,7 +441,40 @@ function build_outbound_from_link($link, $tag) {
         if (!$s) return null;
         return ['tag' => $tag, 'protocol' => 'shadowsocks', 'settings' => ['servers' => [$s]]];
     }
+    if (is_hysteria2_link($link)) {
+        $h = parse_hysteria2_link($link);
+        // Salamander obfs needs Xray's finalmask config; skip rather than emit a server
+        // that silently never connects.
+        if (!$h || $h['obfs'] !== '') return null;
+        $tls = ['serverName' => $h['sni'] ?: $h['address'], 'alpn' => ['h3']];
+        if ($h['pin'] !== '') {
+            $tls['pinnedPeerCertSha256'] = $h['pin'];
+        } elseif ($h['insecure']) {
+            // Xray 26 removed allowInsecure (the whole config then fails to load), and an
+            // unverified certificate is open to MITM anyway — skip instead of guessing.
+            return null;
+        }
+        // Xray splits Hysteria across two blocks: server in settings, auth in the transport
+        return [
+            'tag' => $tag, 'protocol' => 'hysteria',
+            'settings' => ['version' => 2, 'address' => $h['address'], 'port' => $h['port']],
+            'streamSettings' => [
+                'network' => 'hysteria', 'security' => 'tls', 'tlsSettings' => $tls,
+                'hysteriaSettings' => ['version' => 2, 'auth' => $h['auth']],
+            ],
+        ];
+    }
     return null;
+}
+
+function is_hysteria2_link($link) {
+    return strpos($link, 'hysteria2://') === 0 || strpos($link, 'hy2://') === 0;
+}
+
+// Server address of a built outbound, whatever the protocol's layout
+function outbound_address($ob) {
+    return $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address']
+        ?? $ob['settings']['address'] ?? '';
 }
 
 function fetch_subscription($url) {
@@ -430,7 +485,8 @@ function fetch_subscription($url) {
     return array_values(array_filter(explode("\n", $content), function($l) {
         $l = trim($l);
         return strpos($l, 'vless://') === 0 || strpos($l, 'ss://') === 0 ||
-               strpos($l, 'trojan://') === 0 || strpos($l, 'vmess://') === 0;
+               strpos($l, 'trojan://') === 0 || strpos($l, 'vmess://') === 0 ||
+               is_hysteria2_link($l);
     }));
 }
 
@@ -452,7 +508,7 @@ function generate_xray_config() {
         if ($ob) {
             $outbounds[] = $ob;
             if (!empty($k['id'])) $id_to_tag[$k['id']] = $tag;
-            $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
+            $addr = outbound_address($ob);
             if ($addr) $server_ips[] = $addr;
             if ($active_id === $k['id'] || (!$active_tag && $active_id === '')) $active_tag = $tag;
         }
@@ -466,7 +522,7 @@ function generate_xray_config() {
         if ($ob) {
             $outbounds[] = $ob;
             if (!empty($srv['id'])) $id_to_tag[$srv['id']] = $tag;
-            $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
+            $addr = outbound_address($ob);
             if ($addr) $server_ips[] = $addr;
             if ($active_id === $srv['id']) $active_tag = $tag;
         }
@@ -735,7 +791,8 @@ define('WARMUP_PID_FILE', '/tmp/vpn_warmup.pid');
 function warmup_stop() {
     $pidfile = WARMUP_PID_FILE;
     $pid = trim(@file_get_contents($pidfile) ?: '');
-    if ($pid !== '' && ctype_digit($pid)) {
+    // preg_match, not ctype_digit: Entware's PHP ships without the ctype extension
+    if (preg_match('/^\d+$/', $pid)) {
         // Children first (else the loop forks a fresh dig as we kill the parent), then parent
         shell_exec("ps -o pid,ppid 2>/dev/null | awk '\$2==$pid {print \$1}' | xargs -r kill -9 2>/dev/null");
         shell_exec("kill -9 $pid 2>/dev/null");
@@ -1127,6 +1184,7 @@ case 'add_key':
     if (strpos($link, 'vless://') === 0) $type = 'vless';
     elseif (strpos($link, 'ss://') === 0) $type = 'shadowsocks';
     elseif (strpos($link, 'trojan://') === 0) $type = 'trojan';
+    elseif (is_hysteria2_link($link)) $type = 'hysteria2';
     $keys[] = ['id' => uniqid(), 'name' => $name, 'link' => $link, 'enabled' => true, 'type' => $type];
     json_write($KEYS_FILE, $keys);
     echo json_encode(['ok' => true]);
@@ -1400,6 +1458,11 @@ case 'delete_ip':
     $targets = rule_targets();
     unset($targets['ip:' . $ip]);
     json_write($RULE_TARGETS_FILE, $targets);
+    // setup_firewall no longer flushes the ipset, so drop the entry explicitly
+    if ($ip !== '') {
+        $set = strpos($ip, ':') !== false ? 'vpn6' : 'vpn1';
+        shell_run("ipset del $set " . escapeshellarg($ip) . ' 2>/dev/null');
+    }
     quick_apply();
     echo json_encode(['ok' => true]);
     break;

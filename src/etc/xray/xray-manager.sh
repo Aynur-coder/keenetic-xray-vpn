@@ -241,6 +241,12 @@ _get_vpn_server() {
         addr=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.servers[0].address" 2>/dev/null)
         port=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.servers[0].port" 2>/dev/null)
     fi
+    if [ -z "$addr" ]; then
+        # Hysteria keeps the server flat in settings. It listens on UDP, but the probe is only
+        # "does the host answer at all": a TCP connect that is refused still counts as alive.
+        addr=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.address" 2>/dev/null)
+        port=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.port" 2>/dev/null)
+    fi
     [ -n "$addr" ] && [ -n "$port" ] && printf '%s %s\n' "$addr" "$port"
 }
 
@@ -266,10 +272,66 @@ _logs_enabled() {
     [ "$v" != "false" ]
 }
 
+# QUIC guard. Only TCP is redirected into Xray, so HTTP/3 (UDP 443) to a proxied destination
+# would leave through the WAN with the real IP — geo-checked services (Gemini, etc.) then see
+# Russia. Rejecting it makes browsers fall back to TCP, which does go through the tunnel.
+_quic_block_add() {
+    iptables -N XRAY_QUIC 2>/dev/null
+    iptables -F XRAY_QUIC
+    iptables -A XRAY_QUIC -p udp --dport 443 -m set --match-set $IPSET_NAME dst -j REJECT
+    ip6tables -N XRAY_QUIC6 2>/dev/null
+    ip6tables -F XRAY_QUIC6
+    ip6tables -A XRAY_QUIC6 -p udp --dport 443 -m set --match-set $IPSET6_NAME dst -j REJECT \
+        2>/dev/null
+    if [ -s "$FULLVPN_FILE" ]; then
+        while IFS= read -r mac || [ -n "$mac" ]; do
+            [ -z "$mac" ] && continue
+            [ "${mac#\#}" != "$mac" ] && continue
+            iptables -A XRAY_QUIC -p udp --dport 443 -m mac --mac-source "$mac" -j REJECT
+            ip6tables -A XRAY_QUIC6 -p udp --dport 443 -m mac --mac-source "$mac" -j REJECT \
+                2>/dev/null
+        done < "$FULLVPN_FILE"
+    fi
+    _quic_hook_add
+}
+
+# Drop connections that already bypass Xray although their destination is now proxied.
+# NAT redirect and the QUIC reject only apply to NEW flows; Keenetic FASTNAT keeps an
+# established direct flow alive for as long as the client uses it — a browser that opened
+# chatgpt.com while the IP was not yet in the set keeps showing the real WAN IP for hours.
+# Deleting the conntrack entry forces a reconnect, which then goes through the tunnel.
+# Needs the Entware `conntrack` package; silently a no-op without it.
+_kick_leaked_flows() {
+    command -v conntrack >/dev/null 2>&1 || return 0
+    local proto src dst sport dport rsrc
+    conntrack -L 2>/dev/null | grep -E '^(tcp|udp) ' | grep ' src=192\.168\.' | \
+        sed -nE 's/^(tcp|udp) .*src=([0-9.]+) dst=([0-9.]+) sport=([0-9]+) dport=([0-9]+) .*src=([0-9.]+) dst=[0-9.]+ sport=[0-9]+.*/\1 \2 \3 \4 \5 \6/p' | \
+    while read -r proto src dst sport dport rsrc; do
+        # Redirected flows are answered by the router itself (Xray) — those are fine
+        case "$rsrc" in 192.168.*|10.*|127.*) continue ;; esac
+        ipset test $IPSET_NAME "$dst" >/dev/null 2>&1 || continue
+        conntrack -D -p "$proto" -s "$src" -d "$dst" --sport "$sport" --dport "$dport" \
+            >/dev/null 2>&1
+    done
+}
+
+_quic_hook_add() {
+    iptables -C FORWARD -i br0 -p udp -j XRAY_QUIC 2>/dev/null || \
+    iptables -I FORWARD 1 -i br0 -p udp -j XRAY_QUIC 2>/dev/null
+    ip6tables -C FORWARD -i br0 -p udp -j XRAY_QUIC6 2>/dev/null || \
+    ip6tables -I FORWARD 1 -i br0 -p udp -j XRAY_QUIC6 2>/dev/null
+}
+
+_quic_hook_del() {
+    iptables -D FORWARD -i br0 -p udp -j XRAY_QUIC 2>/dev/null
+    ip6tables -D FORWARD -i br0 -p udp -j XRAY_QUIC6 2>/dev/null
+}
+
 # Remove the PREROUTING hook so traffic bypasses xray (XRAY chain stays intact for fast resume)
 _pause_firewall() {
     iptables -t nat -D PREROUTING -p tcp -i br0 -j XRAY 2>/dev/null
     ip6tables -t nat -D PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
+    _quic_hook_del
     echo "paused" > "$WATCHDOG_STATE"
     log "Watchdog: redirect paused — traffic goes direct"
 }
@@ -280,6 +342,8 @@ _resume_firewall() {
     iptables -t nat -I PREROUTING -p tcp -i br0 -j XRAY
     ip6tables -t nat -C PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null || \
     ip6tables -t nat -I PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
+    _quic_hook_add
+    _kick_leaked_flows
     echo "ok" > "$WATCHDOG_STATE"
     log "Watchdog: redirect resumed — VPN reachable"
 }
@@ -338,10 +402,22 @@ setup_firewall() {
     ipset create $IPSET_NAME hash:net family inet 2>/dev/null
     ipset create $IPSET6_NAME hash:net family inet6 2>/dev/null
     
-    # Flush ipset
-    ipset flush $IPSET_NAME 2>/dev/null
-    ipset flush $IPSET6_NAME 2>/dev/null
-    
+    # No flush: the sets also hold every IP AdGuard resolved for proxied domains, and clients
+    # keep those IPs in their DNS caches. Emptying the set on each rule change or restart sent
+    # already-open services (Gemini etc.) straight out the WAN until they happened to re-query
+    # DNS. Stale entries are harmless — Xray still routes them by sniffed domain. Only IPs
+    # explicitly routed "direct" must leave the set.
+    if [ -s "$DIRECT_IPS_FILE" ]; then
+        while IFS= read -r ip || [ -n "$ip" ]; do
+            [ -z "$ip" ] && continue
+            if echo "$ip" | grep -q ':'; then
+                ipset del $IPSET6_NAME "$ip" 2>/dev/null
+            else
+                ipset del $IPSET_NAME "$ip" 2>/dev/null
+            fi
+        done < "$DIRECT_IPS_FILE"
+    fi
+
     # Add IPs from file (skip those routed "direct" — they must bypass the ipset/Xray)
     if [ -s "$IPS_FILE" ]; then
         while IFS= read -r ip || [ -n "$ip" ]; do
@@ -438,7 +514,10 @@ setup_firewall() {
     
     ip6tables -t nat -C PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null || \
     ip6tables -t nat -I PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
-    
+
+    _quic_block_add
+    _kick_leaked_flows
+
     log "Firewall rules applied"
 }
 
@@ -450,6 +529,11 @@ cleanup_firewall() {
     ip6tables -t nat -D PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
     ip6tables -t nat -F XRAY6 2>/dev/null
     ip6tables -t nat -X XRAY6 2>/dev/null
+    _quic_hook_del
+    iptables -F XRAY_QUIC 2>/dev/null
+    iptables -X XRAY_QUIC 2>/dev/null
+    ip6tables -F XRAY_QUIC6 2>/dev/null
+    ip6tables -X XRAY_QUIC6 2>/dev/null
     log "Firewall rules removed"
 }
 

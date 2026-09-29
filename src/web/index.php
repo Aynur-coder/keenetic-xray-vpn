@@ -136,6 +136,7 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .badge{display:inline-block;padding:2px 7px;border-radius:5px;font-size:10px;font-weight:700;text-transform:uppercase;margin-left:5px}
 .badge-vless{background:var(--accent-soft);color:var(--accent2)}
 .badge-ss,.badge-shadowsocks{background:rgba(34,197,94,.15);color:var(--green)}
+.badge-hysteria2{background:rgba(245,158,11,.15);color:var(--orange)}
 .badge-active{background:rgba(34,197,94,.2);color:var(--green)}
 .badge-off{background:rgba(239,68,68,.15);color:var(--red)}
 .badge-soft{background:var(--accent-soft);color:var(--accent2)}
@@ -1073,6 +1074,11 @@ function loadPanel(name){
 }
 
 // Parse VLESS/SS link params
+// Protocol label for a share link (subscription entries carry no type field)
+function linkType(link){
+  const p=(link||'').split('://')[0].toLowerCase();
+  return p==='hy2'?'hysteria2':p==='ss'?'ss':p||'?';
+}
 function parseLinkParams(link){
   if(!link)return {};
   const m=link.match(/\?([^#]*)/);
@@ -1090,7 +1096,7 @@ async function loadServers(){
   if(activeId&&!selectedServer)selectedServer=activeId;
   const all=[];
   if(Array.isArray(keys))keys.forEach(k=>{if(k.link)all.push({id:k.id,name:k.name||'Key',type:k.type,link:k.link,enabled:k.enabled,src:'key'})});
-  if(Array.isArray(servers))servers.forEach(s=>{all.push({id:s.id,name:s.name||'Server',type:s.link?.startsWith('vless://')?'vless':'ss',link:s.link,enabled:s.enabled,src:'sub'})});
+  if(Array.isArray(servers))servers.forEach(s=>{all.push({id:s.id,name:s.name||'Server',type:linkType(s.link),link:s.link,enabled:s.enabled,src:'sub'})});
   if(!all.length){list.innerHTML='<div class="empty-state">Нет серверов. Добавьте подписку или ключ.</div>';return}
   all.forEach(item=>{
     const el=document.createElement('div');
@@ -1582,7 +1588,7 @@ $('#w3Next').addEventListener('click', async ()=>{
 });
 
 // Step 4: pick server
-// Parse vless:// ss:// trojan:// links → {proto, addr, port}
+// Parse vless:// ss:// trojan:// hysteria2:// links → {proto, addr, port}
 function _parseLinkInfo(link){
   if(!link) return {proto:'',addr:'',port:''};
   const proto=(link.split('://')[0]||'').toUpperCase();

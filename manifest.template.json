@@ -25,7 +25,8 @@
     {"src": "defaults/rules/github_lists.json",         "dst": "/opt/etc/xray/rules/github_lists.json",               "mode": "644", "only_if_missing": true},
     {"src": "defaults/AdGuardHome.yaml",                "dst": "/opt/etc/AdGuardHome/AdGuardHome.yaml",               "mode": "644", "only_if_missing": true},
     {"src": "defaults/adguardhome.conf",                "dst": "/opt/etc/AdGuardHome/adguardhome.conf",               "mode": "644", "only_if_missing": true},
-    {"src": "defaults/ndm/netfilter.d/10-dns-redirect.sh", "dst": "/opt/etc/ndm/netfilter.d/10-dns-redirect.sh",     "mode": "755", "only_if_missing": false}
+    {"src": "defaults/ndm/netfilter.d/10-dns-redirect.sh", "dst": "/opt/etc/ndm/netfilter.d/10-dns-redirect.sh",     "mode": "755", "only_if_missing": false},
+    {"src": "defaults/ndm/netfilter.d/20-xray-quic.sh", "dst": "/opt/etc/ndm/netfilter.d/20-xray-quic.sh",         "mode": "755", "only_if_missing": false}
   ],
   "directories": [
     {"path": "/opt/share/www/xray",        "mode": "755"},
@@ -49,6 +50,7 @@
     "php8-mod-curl",
     "php8-mod-session",
     "curl",
+    "conntrack",
     "lighttpd",
     "lighttpd-mod-cgi",
     "lighttpd-mod-redirect",
