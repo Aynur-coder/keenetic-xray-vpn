@@ -38,6 +38,8 @@ const APPLY_BUSY_ERROR = 'Другое применение изменений �
  * @return array{ok: bool, xray_running: bool, error: ?string}
  */
 function apply_changes(string $mode = 'full', array $opt = []): array {
+    // A client disconnect must not abort us between kill and start, or with the lock held.
+    ignore_user_abort(true);
     $opt += apply_default_options($mode, $opt['conf'] ?? '/opt/etc/xray/config.json');
     $conf = $opt['conf'];
     $new = $conf . '.new';
@@ -104,6 +106,7 @@ function apply_changes(string $mode = 'full', array $opt = []): array {
  * @return array{ok: bool, error: ?string}
  */
 function apply_stop(array $opt = []): array {
+    ignore_user_abort(true);
     $manager = '/opt/etc/xray/xray-manager.sh';
     $opt += [
         'lock'         => '/opt/var/run/xray-apply.lock',
@@ -175,7 +178,10 @@ function apply_default_options(string $mode, string $conf): array {
 function apply_acquire_lock(string $file, int $timeout) {
     $dir = dirname($file);
     if ($dir !== '' && !is_dir($dir)) @mkdir($dir, 0755, true);
-    $h = @fopen($file, 'c');
+    // 'e' = O_CLOEXEC: children started while the lock is held (xray run &,
+    // AdGuard restart, warmup) must not inherit the fd, or a request killed
+    // before it unlocks would leave the lock held for as long as they live.
+    $h = @fopen($file, 'ce');
     if (!$h) return null;
     $deadline = microtime(true) + $timeout;
     while (true) {

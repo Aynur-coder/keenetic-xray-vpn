@@ -238,3 +238,35 @@ function test_rejected_config_starts_old_when_stopped(): void {
     eq(file_exists("$dir/restarts"), false, 'no old config: Xray not started');
     _apply_cleanup($dir);
 }
+
+// A lock holder that dies (SIGKILL, fatal error) must not leave the lock held
+// through background children it spawned (xray run &, warmup...).
+function test_lock_not_inherited_by_background_children(): void {
+    $env = _apply_env(0, 'Configuration OK.');
+    $dir = $env['dir'];
+    $lib = var_export(realpath(__DIR__ . '/../../src/web/lib/apply.php'), true);
+    $code = 'require ' . $lib . ';'
+        . ' $h = apply_acquire_lock(' . var_export($env['opt']['lock'], true) . ', 5);'
+        . ' shell_exec("sleep 30 > /dev/null 2>&1 & echo \$! > ' . $dir . '/bg.pid");'
+        . ' touch(' . var_export("$dir/child-ready", true) . '); sleep(30);';
+    $child = proc_open([PHP_BINARY, '-r', $code], [], $pipes);
+    for ($i = 0; $i < 100 && !file_exists("$dir/child-ready"); $i++) usleep(50000);
+    eq(file_exists("$dir/child-ready"), true, 'child took the lock and spawned a background job');
+    proc_terminate($child, 9);
+    proc_close($child);
+
+    $env['opt']['lock_timeout'] = 5;
+    $t0 = microtime(true);
+    $r = apply_changes('routing', $env['opt']);
+    $elapsed = microtime(true) - $t0;
+    $bg = (int)trim((string)@file_get_contents("$dir/bg.pid"));
+    if ($bg > 0) _apply_kill($bg);
+
+    eq($r['ok'], true, 'lock free after the holder was killed');
+    eq($elapsed < 2, true, 'acquired promptly (elapsed ' . round($elapsed, 2) . 's)');
+    _apply_cleanup($dir);
+}
+
+function _apply_kill(int $pid): void {
+    shell_exec('kill ' . $pid . ' 2>/dev/null');
+}
