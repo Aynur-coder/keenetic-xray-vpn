@@ -97,3 +97,101 @@ function resolve_active(array $state, array $keys, array $cached): array {
 
     return ['id' => _first_enabled_id($keys, $cached), 'reason' => 'fallback_missing'];
 }
+
+// Splits pasted text (one or many lines) into subscription URLs, single-server
+// keys, and lines that are neither — the pure half of the one-field "add"
+// (api.php's add_link does the actual writing/fetching/applying). Blank lines
+// are silently dropped; anything else link_kind() doesn't recognize is
+// reported in 'skipped' so the UI can tell the user which line was bad.
+function classify_lines(string $text): array {
+    $subscriptions = [];
+    $keys = [];
+    $skipped = [];
+    foreach (explode("\n", $text) as $raw) {
+        $line = trim($raw);
+        if ($line === '') continue;
+        $kind = link_kind($line);
+        if ($kind === 'subscription') {
+            $subscriptions[] = $line;
+        } elseif ($kind === 'key') {
+            $keys[] = $line;
+        } else {
+            $skipped[] = ['line' => $line, 'reason' => 'unrecognized'];
+        }
+    }
+    return ['subscriptions' => $subscriptions, 'keys' => $keys, 'skipped' => $skipped];
+}
+
+// Builds the unified server list the UI renders: one row per source
+// (subscription, plus a single 'keys' source for manually-added keys) and one
+// row per server (keys.json + cached_servers.json entries), decorated with
+// this install's favorite flags and whatever ping/probe results are cached.
+//
+// $flags: server_flags.json contents, id => ['favorite' => bool].
+// $pingCache: xray-ping.json's 'results' map, id => ms|null (or [] if absent).
+// $probeCache: xray-probe.json contents as-is, id => probe row (or [] if absent).
+// $activeId: the currently active outbound id, or null.
+function list_servers(
+    array $keys, array $cached, array $subs, array $flags,
+    array $pingCache, array $probeCache, ?string $activeId
+): array {
+    $sources = [];
+    foreach ($subs as $sub) {
+        $subId = $sub['id'] ?? '';
+        $count = 0;
+        foreach ($cached as $s) {
+            if (($s['sub'] ?? '') === $subId) $count++;
+        }
+        $sources[] = [
+            'id'      => $subId,
+            'kind'    => 'subscription',
+            'name'    => $sub['name'] ?? '',
+            'count'   => $count,
+            'updated' => $sub['updated'] ?? '',
+            'error'   => $sub['last_error'] ?? null,
+            'enabled' => !empty($sub['enabled']),
+        ];
+    }
+    $sources[] = [
+        'id'      => 'keys',
+        'kind'    => 'keys',
+        'name'    => 'Ключи',
+        'count'   => count($keys),
+        'updated' => null,
+        'error'   => null,
+        'enabled' => true,
+    ];
+
+    $servers = [];
+    foreach ($keys as $k) {
+        $servers[] = _server_row($k, 'keys', $flags, $pingCache, $probeCache, $activeId);
+    }
+    foreach ($cached as $s) {
+        $servers[] = _server_row($s, (string)($s['sub'] ?? ''), $flags, $pingCache, $probeCache, $activeId);
+    }
+
+    return ['sources' => $sources, 'servers' => $servers];
+}
+
+function _server_row(
+    array $srv, string $source, array $flags,
+    array $pingCache, array $probeCache, ?string $activeId
+): array {
+    $id = $srv['id'] ?? '';
+    $hp = link_host_port($srv['link'] ?? '');
+    $probe = is_array($probeCache[$id] ?? null) ? $probeCache[$id] : [];
+    return [
+        'id'             => $id,
+        'source'         => $source,
+        'name'           => $srv['name'] ?? '',
+        'proto'          => link_proto($srv['link'] ?? ''),
+        'host'           => $hp['host'],
+        'port'           => $hp['port'],
+        'enabled'        => !empty($srv['enabled']),
+        'favorite'       => !empty($flags[$id]['favorite'] ?? false),
+        'active'         => $activeId !== null && $id !== '' && $id === $activeId,
+        'ping_ms'        => $pingCache[$id] ?? null,
+        'google_country' => $probe['google_country'] ?? null,
+        'exit_country'   => $probe['exit_country'] ?? null,
+    ];
+}

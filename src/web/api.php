@@ -7,6 +7,7 @@ $RULES_DIR = "$XRAY_DIR/rules";
 $SUBS_FILE = "$XRAY_DIR/subscriptions/list.json";
 $KEYS_FILE = "$XRAY_DIR/subscriptions/keys.json";
 $CACHED_FILE = "$XRAY_DIR/subscriptions/cached_servers.json";
+$SERVER_FLAGS_FILE = "$XRAY_DIR/subscriptions/server_flags.json";
 $DOMAINS_FILE = "$RULES_DIR/domains.txt";
 $IPS_FILE = "$RULES_DIR/ips.txt";
 $FULLVPN_FILE = "$RULES_DIR/fullvpn_devices.txt";
@@ -392,6 +393,73 @@ function fetch_subscription($url) {
                strpos($l, 'trojan://') === 0 || strpos($l, 'vmess://') === 0 ||
                is_hysteria2_link($l);
     }));
+}
+
+// Refetches every enabled subscription and rebuilds cached_servers.json from
+// scratch, updates each subscription's 'updated' timestamp (and 'last_error'
+// when its fetch came back empty), rematches the active selection if its id
+// went away, and logs one event. Shared by 'update_subscriptions' (which then
+// does its own routing-only restart) and 'add_link' (which folds this into
+// one 'full' apply alongside any newly-added keys).
+function refresh_subscriptions(): array {
+    global $SUBS_FILE, $CACHED_FILE, $STATE_FILE, $KEYS_FILE;
+
+    $subs = json_read($SUBS_FILE);
+    $before_ids = array_column(json_read($CACHED_FILE), 'id');
+    $all_servers = [];
+    foreach ($subs as &$sub) {
+        if (empty($sub['enabled']) || empty($sub['url'])) continue;
+        $links = fetch_subscription($sub['url']);
+        if (empty($links)) {
+            $sub['last_error'] = 'Подписка не вернула серверов';
+        } else {
+            unset($sub['last_error']);
+        }
+        foreach ($links as $l) {
+            $l = trim($l);
+            $name = '';
+            if (preg_match('/#(.+)$/', $l, $nm)) $name = urldecode($nm[1]);
+            $all_servers[] = ['id' => md5($l), 'name' => $name ?: 'Server', 'link' => preg_replace('/#.*$/', '', $l), 'enabled' => true, 'sub' => $sub['id'] ?? ''];
+        }
+        $sub['updated'] = date('Y-m-d H:i:s');
+    }
+    unset($sub);
+    json_write($SUBS_FILE, $subs);
+    json_write($CACHED_FILE, $all_servers);
+    $after_ids = array_column($all_servers, 'id');
+    $added = count(array_diff($after_ids, $before_ids));
+    $removed = count(array_diff($before_ids, $after_ids));
+    $updated_names = array_filter(array_map(fn($s) => $s['name'] ?? '', $subs), fn($n) => $n !== '');
+    $name = reset($updated_names) ?: 'Подписка';
+    log_event('info', 'subscription',
+        "Подписка $name обновлена: " . count($all_servers) . " сервер(ов) (+$added, \u{2212}$removed)",
+        ['count' => count($all_servers), 'added' => $added, 'removed' => $removed]);
+
+    // The selected server's cached id is md5(link): if the subscription reissued its
+    // link, the id vanished from $all_servers and the old selection is now orphaned.
+    // Use the hint recorded by select_server to find it again by name+proto/host+port.
+    $state = json_read($STATE_FILE);
+    $active_id = $state['active_outbound'] ?? '';
+    $still_present = $active_id !== '' && (
+        in_array($active_id, $after_ids, true) ||
+        in_array($active_id, array_column(json_read($KEYS_FILE), 'id'), true)
+    );
+    if ($active_id !== '' && !$still_present && !empty($state['active_hint'])) {
+        $matched_id = rematch_server($state['active_hint'], $all_servers);
+        if ($matched_id !== null) {
+            $matched = null;
+            foreach ($all_servers as $s) { if (($s['id'] ?? '') === $matched_id) { $matched = $s; break; } }
+            $state['active_outbound'] = $matched_id;
+            if ($matched) $state['active_hint'] = server_hint($matched) + ['source' => 'sub'];
+            json_write($STATE_FILE, $state);
+            log_event('info', 'server', 'Выбранный сервер найден заново: ' . ($matched['name'] ?? $matched_id),
+                ['id' => $matched_id]);
+        }
+        // No match: leave active_outbound as-is. resolve_active() will report
+        // fallback_missing rather than silently landing on some other server.
+    }
+
+    return ['count' => count($all_servers), 'added' => $added, 'removed' => $removed];
 }
 
 // Writes to $outFile (default: the live config). apply_changes() passes config.json.new
@@ -989,7 +1057,7 @@ $PUBLIC_READ_ACTIONS = [
     'status', 'login', 'logout', 'auth_status',
     'get_onboarding_status', 'get_features', 'get_version',
     'check_update', 'status_update', 'check_ips', 'changelog_full',
-    'keys', 'subscriptions', 'subscription_servers',
+    'keys', 'subscriptions', 'subscription_servers', 'servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search', 'rule_targets',
     'wg_peers', 'logs', 'raw_config', 'events', 'overview',
@@ -1113,6 +1181,73 @@ case 'warmup_ipset':
     echo json_encode(['ok' => true, 'domains' => count(all_domains())]);
     break;
 
+case 'servers':
+    // Unified list (Task 8): every source (each subscription + one 'keys'
+    // group) and every server, decorated with favorites and whatever
+    // ping/probe results are already cached. No network requests here.
+    $keys = json_read($KEYS_FILE);
+    $cached = json_read($CACHED_FILE);
+    $subs = json_read($SUBS_FILE);
+    $flags = json_read($SERVER_FLAGS_FILE);
+
+    $pingCache = [];
+    if (file_exists('/opt/tmp/xray-ping.json')) {
+        $decoded = json_decode((string)@file_get_contents('/opt/tmp/xray-ping.json'), true);
+        if (is_array($decoded) && is_array($decoded['results'] ?? null)) $pingCache = $decoded['results'];
+    }
+    $probeCache = [];
+    if (file_exists('/opt/tmp/xray-probe.json')) {
+        $decoded = json_decode((string)@file_get_contents('/opt/tmp/xray-probe.json'), true);
+        if (is_array($decoded)) $probeCache = $decoded;
+    }
+
+    $state = json_read($STATE_FILE);
+    if (array_key_exists('effective_outbound', $state)) {
+        $activeId = $state['effective_outbound'];
+    } else {
+        $activeId = resolve_active($state, $keys, $cached)['id'];
+    }
+
+    echo json_encode(list_servers($keys, $cached, $subs, $flags, $pingCache, $probeCache, $activeId));
+    break;
+
+case 'set_server_flags':
+    $id = $_POST['id'] ?? '';
+    if ($id === '') { echo json_encode(['error' => 'No id']); break; }
+
+    $enabledChanged = false;
+    if (isset($_POST['enabled'])) {
+        $value = (bool)(int)$_POST['enabled'];
+        $found = false;
+        $keys = json_read($KEYS_FILE);
+        foreach ($keys as &$k) { if (($k['id'] ?? '') === $id) { $k['enabled'] = $value; $found = true; } }
+        unset($k);
+        if ($found) {
+            json_write($KEYS_FILE, $keys);
+        } else {
+            $cached = json_read($CACHED_FILE);
+            foreach ($cached as &$s) { if (($s['id'] ?? '') === $id) { $s['enabled'] = $value; $found = true; } }
+            unset($s);
+            if ($found) json_write($CACHED_FILE, $cached);
+        }
+        if (!$found) { echo json_encode(['error' => 'not_found']); break; }
+        $enabledChanged = true;
+    }
+
+    if (isset($_POST['favorite'])) {
+        $flags = json_read($SERVER_FLAGS_FILE);
+        $flags[$id] = ['favorite' => (bool)(int)$_POST['favorite']];
+        json_write($SERVER_FLAGS_FILE, $flags);
+    }
+
+    if (!$enabledChanged) { echo json_encode(['ok' => true]); break; }
+    // Enabling/disabling only changes which outbounds exist, not domain/ip ipset
+    // membership, so a routing-only restart is enough (same as toggle_key/toggle_server).
+    $result = gen_and_restart_xray();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $result['xray_running']]);
+    break;
+
 case 'keys': echo json_encode(json_read($KEYS_FILE)); break;
 
 case 'add_key':
@@ -1154,6 +1289,70 @@ case 'toggle_key':
     echo json_encode(['ok' => true, 'xray_running' => $result['xray_running']]);
     break;
 
+case 'rename_key':
+    $id = $_POST['id'] ?? '';
+    $name = trim($_POST['name'] ?? '');
+    if ($id === '' || $name === '') { echo json_encode(['error' => 'Bad params']); break; }
+    $keys = json_read($KEYS_FILE);
+    $found = false;
+    foreach ($keys as &$k) { if (($k['id'] ?? '') === $id) { $k['name'] = $name; $found = true; } }
+    unset($k);
+    if (!$found) { echo json_encode(['error' => 'not_found']); break; }
+    json_write($KEYS_FILE, $keys);
+    echo json_encode(['ok' => true]);
+    break;
+
+case 'add_link':
+    // One-field "add" (Task 8): pasted text may hold subscription URLs, single-
+    // server keys, or a mix of both, one per line. Reuses add_subscription's and
+    // add_key's own storage shape, then fetches any new subscriptions and applies
+    // the config ONCE at the end (never once per line).
+    $split = classify_lines($_POST['text'] ?? '');
+
+    $subs = json_read($SUBS_FILE);
+    $added_subscriptions = 0;
+    foreach ($split['subscriptions'] as $url) {
+        $subs[] = ['id' => uniqid(), 'name' => 'Sub ' . (count($subs) + 1), 'url' => $url, 'enabled' => true, 'updated' => ''];
+        $added_subscriptions++;
+    }
+    if ($added_subscriptions > 0) json_write($SUBS_FILE, $subs);
+
+    $keys = json_read($KEYS_FILE);
+    $added_keys = 0;
+    foreach ($split['keys'] as $link) {
+        $type = 'unknown';
+        if (strpos($link, 'vless://') === 0) $type = 'vless';
+        elseif (strpos($link, 'ss://') === 0) $type = 'shadowsocks';
+        elseif (strpos($link, 'trojan://') === 0) $type = 'trojan';
+        elseif (strpos($link, 'vmess://') === 0) $type = 'vmess';
+        elseif (is_hysteria2_link($link)) $type = 'hysteria2';
+        $name = '';
+        if (preg_match('/#(.+)$/', $link, $nm)) $name = urldecode($nm[1]);
+        $keys[] = ['id' => uniqid(), 'name' => $name !== '' ? $name : ('Key ' . (count($keys) + 1)),
+            'link' => $link, 'enabled' => true, 'type' => $type];
+        $added_keys++;
+    }
+    if ($added_keys > 0) json_write($KEYS_FILE, $keys);
+
+    if ($added_subscriptions === 0 && $added_keys === 0) {
+        echo json_encode(['ok' => true, 'added_subscriptions' => 0, 'added_keys' => 0, 'skipped' => $split['skipped']]);
+        break;
+    }
+
+    if ($added_subscriptions > 0) refresh_subscriptions();
+
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+
+    echo json_encode([
+        'ok' => true,
+        'added_subscriptions' => $added_subscriptions,
+        'added_keys' => $added_keys,
+        'skipped' => $split['skipped'],
+        'xray_running' => $apply['xray_running'],
+    ]);
+    break;
+
 case 'subscriptions': echo json_encode(json_read($SUBS_FILE)); break;
 
 case 'add_subscription':
@@ -1174,62 +1373,25 @@ case 'delete_subscription':
     echo json_encode(['ok' => true]);
     break;
 
-case 'update_subscriptions':
+case 'toggle_subscription':
     $subs = json_read($SUBS_FILE);
-    $before_ids = array_column(json_read($CACHED_FILE), 'id');
-    $all_servers = [];
-    foreach ($subs as &$sub) {
-        if (empty($sub['enabled']) || empty($sub['url'])) continue;
-        $links = fetch_subscription($sub['url']);
-        foreach ($links as $l) {
-            $l = trim($l);
-            $name = '';
-            if (preg_match('/#(.+)$/', $l, $nm)) $name = urldecode($nm[1]);
-            $all_servers[] = ['id' => md5($l), 'name' => $name ?: 'Server', 'link' => preg_replace('/#.*$/', '', $l), 'enabled' => true, 'sub' => $sub['id'] ?? ''];
-        }
-        $sub['updated'] = date('Y-m-d H:i:s');
-    }
+    $id = $_POST['id'] ?? '';
+    $found = false;
+    foreach ($subs as &$s) { if (($s['id'] ?? '') === $id) { $s['enabled'] = !$s['enabled']; $found = true; } }
+    unset($s);
+    if (!$found) { echo json_encode(['error' => 'not_found']); break; }
     json_write($SUBS_FILE, $subs);
-    json_write($CACHED_FILE, $all_servers);
-    $after_ids = array_column($all_servers, 'id');
-    $added = count(array_diff($after_ids, $before_ids));
-    $removed = count(array_diff($before_ids, $after_ids));
-    $updated_names = array_filter(array_map(fn($s) => $s['name'] ?? '', $subs), fn($n) => $n !== '');
-    $name = reset($updated_names) ?: 'Подписка';
-    log_event('info', 'subscription',
-        "Подписка $name обновлена: " . count($all_servers) . " сервер(ов) (+$added, \u{2212}$removed)",
-        ['count' => count($all_servers), 'added' => $added, 'removed' => $removed]);
+    echo json_encode(['ok' => true]);
+    break;
 
-    // The selected server's cached id is md5(link): if the subscription reissued its
-    // link, the id vanished from $all_servers and the old selection is now orphaned.
-    // Use the hint recorded by select_server to find it again by name+proto/host+port.
-    $state = json_read($STATE_FILE);
-    $active_id = $state['active_outbound'] ?? '';
-    $still_present = $active_id !== '' && (
-        in_array($active_id, $after_ids, true) ||
-        in_array($active_id, array_column(json_read($KEYS_FILE), 'id'), true)
-    );
-    if ($active_id !== '' && !$still_present && !empty($state['active_hint'])) {
-        $matched_id = rematch_server($state['active_hint'], $all_servers);
-        if ($matched_id !== null) {
-            $matched = null;
-            foreach ($all_servers as $s) { if (($s['id'] ?? '') === $matched_id) { $matched = $s; break; } }
-            $state['active_outbound'] = $matched_id;
-            if ($matched) $state['active_hint'] = server_hint($matched) + ['source' => 'sub'];
-            json_write($STATE_FILE, $state);
-            log_event('info', 'server', 'Выбранный сервер найден заново: ' . ($matched['name'] ?? $matched_id),
-                ['id' => $matched_id]);
-        }
-        // No match: leave active_outbound as-is. resolve_active() will report
-        // fallback_missing rather than silently landing on some other server.
-    }
-
+case 'update_subscriptions':
+    $refreshed = refresh_subscriptions();
     // Refreshing a subscription only changes which outbounds exist, not domain/ip
     // ipset membership, so a routing-only restart is enough — and it applies the new
     // server list immediately instead of leaving Xray on the stale one.
     $result = gen_and_restart_xray();
     if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
-    echo json_encode(['ok' => true, 'count' => count($all_servers), 'xray_running' => $result['xray_running']]);
+    echo json_encode(['ok' => true, 'count' => $refreshed['count'], 'xray_running' => $result['xray_running']]);
     break;
 
 case 'subscription_servers': echo json_encode(json_read($CACHED_FILE)); break;

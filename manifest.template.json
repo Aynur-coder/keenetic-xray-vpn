@@ -26,6 +26,7 @@
     {"src": "defaults/subscriptions/list.json",         "dst": "/opt/etc/xray/subscriptions/list.json",               "mode": "644", "only_if_missing": true},
     {"src": "defaults/subscriptions/keys.json",         "dst": "/opt/etc/xray/subscriptions/keys.json",               "mode": "644", "only_if_missing": true},
     {"src": "defaults/subscriptions/cached_servers.json","dst": "/opt/etc/xray/subscriptions/cached_servers.json",    "mode": "644", "only_if_missing": true},
+    {"src": "defaults/subscriptions/server_flags.json",  "dst": "/opt/etc/xray/subscriptions/server_flags.json",     "mode": "644", "only_if_missing": true},
     {"src": "defaults/rules/domains.txt",               "dst": "/opt/etc/xray/rules/domains.txt",                     "mode": "644", "only_if_missing": true},
     {"src": "defaults/rules/ips.txt",                   "dst": "/opt/etc/xray/rules/ips.txt",                         "mode": "644", "only_if_missing": true},
     {"src": "defaults/rules/fullvpn_devices.txt",       "dst": "/opt/etc/xray/rules/fullvpn_devices.txt",             "mode": "644", "only_if_missing": true},

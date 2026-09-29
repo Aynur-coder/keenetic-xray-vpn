@@ -161,3 +161,89 @@ function test_resolve_nothing_enabled(): void {
     $cached = [];
     eq(resolve_active($state, $keys, $cached), ['id' => null, 'reason' => 'default'], 'no enabled servers at all');
 }
+
+function test_list_groups_by_source(): void {
+    $keys = [
+        ['id' => 'k1', 'name' => 'Key 1', 'enabled' => true, 'link' => 'vless://u@h:1'],
+    ];
+    $cached = [
+        ['id' => 'c1', 'name' => 'C1', 'enabled' => true, 'link' => 'vless://u@h:2', 'sub' => 'sub1'],
+        ['id' => 'c2', 'name' => 'C2', 'enabled' => true, 'link' => 'vless://u@h:3', 'sub' => 'sub1'],
+    ];
+    $subs = [
+        ['id' => 'sub1', 'name' => 'My Sub', 'url' => 'https://x', 'enabled' => true, 'updated' => '2026-01-01'],
+    ];
+    $result = list_servers($keys, $cached, $subs, [], [], [], null);
+
+    eq($result['sources'], [
+        ['id' => 'sub1', 'kind' => 'subscription', 'name' => 'My Sub', 'count' => 2,
+            'updated' => '2026-01-01', 'error' => null, 'enabled' => true],
+        ['id' => 'keys', 'kind' => 'keys', 'name' => 'Ключи', 'count' => 1,
+            'updated' => null, 'error' => null, 'enabled' => true],
+    ], 'one source per subscription plus a keys source, with server counts');
+
+    $sourceIds = array_column($result['servers'], 'source', 'id');
+    eq($sourceIds, ['k1' => 'keys', 'c1' => 'sub1', 'c2' => 'sub1'], 'each server tagged with its source id');
+
+    // A subscription's last_error surfaces as the source's error.
+    $subs[0]['last_error'] = 'fetch failed';
+    $result2 = list_servers($keys, $cached, $subs, [], [], [], null);
+    eq($result2['sources'][0]['error'], 'fetch failed', 'subscription last_error surfaces as source error');
+}
+
+function test_list_marks_active_and_favorite(): void {
+    $keys = [
+        ['id' => 'k1', 'name' => 'Key 1', 'enabled' => true, 'link' => 'vless://u@h:1'],
+        ['id' => 'k2', 'name' => 'Key 2', 'enabled' => true, 'link' => 'vless://u@h:2'],
+    ];
+    $flags = ['k2' => ['favorite' => true]];
+    $result = list_servers($keys, [], [], $flags, [], [], 'k1');
+
+    $byId = array_column($result['servers'], null, 'id');
+    eq($byId['k1']['active'], true, 'k1 is the active server');
+    eq($byId['k2']['active'], false, 'k2 is not active');
+    eq($byId['k1']['favorite'], false, 'k1 has no favorite flag');
+    eq($byId['k2']['favorite'], true, 'k2 is favorited');
+
+    // No active id at all: nothing is marked active.
+    $result2 = list_servers($keys, [], [], [], [], [], null);
+    eq($result2['servers'][0]['active'], false, 'null activeId marks nothing active');
+}
+
+function test_list_proto_from_link(): void {
+    $keys = [
+        ['id' => 'hy', 'name' => 'HY2', 'enabled' => true,
+            'link' => 'hysteria2://pw@hy.example:443/?sni=hy.example'],
+        ['id' => 'vl', 'name' => 'VLESS', 'enabled' => true,
+            'link' => 'vless://11111111-1111-1111-1111-111111111111@v.example:443?security=reality'
+                . '&sni=example.com&fp=chrome&pbk=PUBKEY&sid=abcd'],
+        ['id' => 'ss', 'name' => 'SS', 'enabled' => true,
+            'link' => 'ss://YWVzLTI1Ni1nY206cGFzcw==@ss.example:8443'],
+    ];
+    $result = list_servers($keys, [], [], [], [], [], null);
+    $byId = array_column($result['servers'], null, 'id');
+
+    eq($byId['hy']['proto'], 'hysteria2', 'hysteria2 proto from link');
+    eq($byId['hy']['host'], 'hy.example', 'hysteria2 host from link');
+    eq($byId['hy']['port'], 443, 'hysteria2 port from link');
+
+    eq($byId['vl']['proto'], 'vless', 'vless proto from link');
+    eq($byId['vl']['host'], 'v.example', 'vless host from link');
+    eq($byId['vl']['port'], 443, 'vless port from link');
+
+    eq($byId['ss']['proto'], 'ss', 'ss proto from link');
+    eq($byId['ss']['host'], 'ss.example', 'ss host from link');
+    eq($byId['ss']['port'], 8443, 'ss port from link');
+}
+
+function test_add_link_split(): void {
+    $text = "https://sub.example/a\n"
+        . "  vless://u@h:1#Name  \n"
+        . "\n"
+        . "not a link\n"
+        . "hy2://a@b:1\n";
+    $result = classify_lines($text);
+    eq($result['subscriptions'], ['https://sub.example/a'], 'subscription url split out');
+    eq($result['keys'], ['vless://u@h:1#Name', 'hy2://a@b:1'], 'keys split out, trimmed');
+    eq($result['skipped'], [['line' => 'not a link', 'reason' => 'unrecognized']], 'unrecognized lines skipped with reason');
+}

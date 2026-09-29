@@ -140,6 +140,48 @@ function is_hysteria2_link($link) {
     return strpos($link, 'hysteria2://') === 0 || strpos($link, 'hy2://') === 0;
 }
 
+// Normalizes a link's scheme to the small set of proto names the UI shows
+// ('vless','ss','trojan','vmess','hysteria2'); hy2 is hysteria2's alias.
+// '' for anything without a recognizable scheme.
+function link_proto(string $link): string {
+    if (preg_match('#^([a-z0-9]+)://#i', $link, $m)) {
+        $scheme = strtolower($m[1]);
+        return $scheme === 'hy2' ? 'hysteria2' : $scheme;
+    }
+    return '';
+}
+
+// Host/port for display, for any supported key link. Independent of
+// build_outbound_from_link() (which may reject a link this still describes,
+// e.g. salamander-obfuscated hysteria2) and of server_hint() (which only
+// covers vless/ss/hysteria2 and names shadowsocks 'shadowsocks', not 'ss').
+// ['host' => '', 'port' => 0] when the link can't be parsed.
+function link_host_port(string $link): array {
+    if (strpos($link, 'vless://') === 0) {
+        $v = parse_vless_link($link);
+        if ($v) return ['host' => $v['address'], 'port' => $v['port']];
+    } elseif (strpos($link, 'ss://') === 0) {
+        $s = parse_ss_link($link);
+        if ($s) return ['host' => $s['address'], 'port' => $s['port']];
+    } elseif (is_hysteria2_link($link)) {
+        $h = parse_hysteria2_link($link);
+        if ($h) return ['host' => $h['address'], 'port' => $h['port']];
+    } elseif (strpos($link, 'trojan://') === 0) {
+        $u = parse_url(preg_replace('/#.*$/', '', $link));
+        if (is_array($u) && !empty($u['host'])) {
+            return ['host' => $u['host'], 'port' => (int)($u['port'] ?? 443)];
+        }
+    } elseif (strpos($link, 'vmess://') === 0) {
+        $payload = substr(preg_replace('/#.*$/', '', $link), strlen('vmess://'));
+        $decoded = base64_decode($payload, true);
+        $j = $decoded !== false ? json_decode($decoded, true) : null;
+        if (is_array($j) && !empty($j['add'])) {
+            return ['host' => (string)$j['add'], 'port' => (int)($j['port'] ?? 0)];
+        }
+    }
+    return ['host' => '', 'port' => 0];
+}
+
 // Server address of a built outbound, whatever the protocol's layout
 function outbound_address($ob) {
     return $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address']
