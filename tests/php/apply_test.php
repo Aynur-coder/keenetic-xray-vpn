@@ -143,3 +143,98 @@ function test_apply_error_line_trimmed(): void {
     eq(apply_error_line("a\nlast reason\n  \n"), 'last reason', 'last non-empty line');
     eq(apply_error_line(''), 'xray -test failed', 'fallback for empty output');
 }
+
+// Child process that holds $lock for 2 s; returns once it has the lock.
+function _apply_hold_lock(string $lock, string $ready) {
+    $code = '$h = fopen(' . var_export($lock, true) . ', "c"); flock($h, LOCK_EX);'
+        . ' touch(' . var_export($ready, true) . '); sleep(2);';
+    $child = proc_open([PHP_BINARY, '-r', $code], [], $pipes);
+    for ($i = 0; $i < 100 && !file_exists($ready); $i++) usleep(50000);
+    return $child;
+}
+
+function test_stop_waits_for_lock(): void {
+    $env = _apply_env(0, 'Configuration OK.');
+    $dir = $env['dir'];
+    $child = _apply_hold_lock($env['opt']['lock'], "$dir/child-ready");
+    eq(file_exists("$dir/child-ready"), true, 'child took the lock');
+
+    $t0 = microtime(true);
+    $r = apply_stop(['lock' => $env['opt']['lock'], 'stop_cmd' => "echo stopped > $dir/stopped"]);
+    $elapsed = microtime(true) - $t0;
+    proc_close($child);
+
+    eq($r['ok'], true, 'stop succeeds once the lock frees');
+    eq($elapsed >= 1.5, true, 'stop waited for the running apply (elapsed ' . round($elapsed, 2) . 's)');
+    eq(trim((string)file_get_contents("$dir/stopped")), 'stopped', 'stop command ran');
+
+    // A stop that cannot get the lock does nothing.
+    $h = fopen($env['opt']['lock'], 'c');
+    flock($h, LOCK_EX);
+    @unlink("$dir/stopped");
+    $r = apply_stop(['lock' => $env['opt']['lock'], 'lock_timeout' => 1,
+                     'stop_cmd' => "echo stopped > $dir/stopped"]);
+    flock($h, LOCK_UN);
+    fclose($h);
+    eq($r['error'], 'Другое применение изменений ещё идёт', 'stop times out with busy error');
+    eq(file_exists("$dir/stopped"), false, 'stop command not run on timeout');
+    _apply_cleanup($dir);
+}
+
+function test_effective_written_only_on_success(): void {
+    $gen = function (string $out): array {
+        file_put_contents($out, '{"new":true}');
+        return ['ok' => true,
+                'state' => ['effective_outbound' => 'key-2', 'effective_reason' => 'selected']];
+    };
+
+    $env = _apply_env(1, 'illegal ip rule');
+    $env['opt']['generate'] = $gen;
+    apply_changes('routing', $env['opt']);
+    $state = json_decode((string)file_get_contents($env['dir'] . '/state.json'), true);
+    eq(array_key_exists('effective_outbound', $state), false, 'rejected config: effective not written');
+    eq(array_key_exists('effective_reason', $state), false, 'rejected config: reason not written');
+    _apply_cleanup($env['dir']);
+
+    $env = _apply_env(0, 'Configuration OK.');
+    $env['opt']['generate'] = $gen;
+    apply_changes('routing', $env['opt']);
+    $state = json_decode((string)file_get_contents($env['dir'] . '/state.json'), true);
+    eq($state['effective_outbound'] ?? null, 'key-2', 'accepted config: effective written');
+    eq($state['effective_reason'] ?? null, 'selected', 'accepted config: reason written');
+    eq($state['selected'] ?? null, 'key-1', 'other state keys preserved');
+    _apply_cleanup($env['dir']);
+}
+
+function test_rejected_config_starts_old_when_stopped(): void {
+    $env = _apply_env(0, 'unused');
+    $dir = $env['dir'];
+    // Fake xray: rejects the new candidate, accepts the old live config.
+    file_put_contents($env['opt']['xray_bin'], "#!/bin/sh\ncase \"\$4\" in\n"
+        . "  *.new) echo 'illegal ip rule: bad.example.com'; exit 1;;\n"
+        . "  *) echo 'Configuration OK.'; exit 0;;\nesac\n");
+    $opt = $env['opt'];
+    $opt['pidof_cmd'] = 'true'; // Xray is stopped
+
+    $r = apply_changes('full', $opt);
+    eq(file_exists("$dir/restarts"), false, 'without the option a stopped Xray stays stopped');
+
+    $opt['start_old_if_stopped'] = true;
+    $r = apply_changes('full', $opt);
+    eq($r['ok'], false, 'still reports the rejection');
+    eq(strpos((string)$r['error'], 'illegal ip rule') !== false, true, 'rejection reason returned');
+    eq(file_get_contents("$dir/config.json"), '{"old":true}', 'old config kept');
+    eq(trim((string)file_get_contents("$dir/restarts")), 'restarted', 'Xray started on old config');
+
+    // Xray already running: left alone on its old config.
+    @unlink("$dir/restarts");
+    $r = apply_changes('full', ['pidof_cmd' => 'echo 4242'] + $opt);
+    eq(file_exists("$dir/restarts"), false, 'running Xray not restarted');
+
+    // No old config: nothing to fall back to.
+    unlink("$dir/config.json");
+    $r = apply_changes('full', $opt);
+    eq($r['ok'], false, 'no old config: error');
+    eq(file_exists("$dir/restarts"), false, 'no old config: Xray not started');
+    _apply_cleanup($dir);
+}

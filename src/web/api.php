@@ -415,10 +415,12 @@ function generate_xray_config(?string $outFile = null) {
     // its link failed to build a usable outbound) so the UI can show why.
     $effective_id = array_search($active_tag, $id_to_tag, true);
     $effective_id = $effective_id !== false ? $effective_id : null;
-    $state['effective_outbound'] = $effective_id;
-    $state['effective_reason'] = ($effective_id !== null && $effective_id === $active_id)
-        ? $resolved['reason'] : 'fallback_missing';
-    json_write($STATE_FILE, $state);
+    // Returned, not written: apply_changes() persists it only once Xray accepted this config.
+    $effectiveState = [
+        'effective_outbound' => $effective_id,
+        'effective_reason'   => ($effective_id !== null && $effective_id === $active_id)
+            ? $resolved['reason'] : 'fallback_missing',
+    ];
 
     usort($outbounds, function($a, $b) use ($active_tag) {
         if ($a['tag'] === $active_tag) return -1;
@@ -503,7 +505,7 @@ function generate_xray_config(?string $outFile = null) {
     if (@file_put_contents($outFile ?? $XRAY_CONF, $json) === false) {
         return ['error' => 'Cannot write ' . ($outFile ?? $XRAY_CONF)];
     }
-    return ['ok' => true, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
+    return ['ok' => true, 'state' => $effectiveState, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
 }
 
 // Strip Xray domain match-type prefixes -> bare hostname.
@@ -1005,7 +1007,7 @@ case 'start':
     update_adguard_ipset();
     shell_run("$MANAGER stop_watchdog 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log; : > /opt/var/log/xray/error.log');
-    $r = apply_changes('full');
+    $r = apply_changes('full', ['start_old_if_stopped' => true]);
     shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
     if ($r['ok']) {
         sleep(2);
@@ -1015,18 +1017,16 @@ case 'start':
     break;
 
 case 'stop':
-    shell_run("$MANAGER stop_watchdog 2>/dev/null");
-    shell_run('killall xray 2>/dev/null; rm -f /opt/var/run/xray.pid');
-    shell_run("$MANAGER cleanup_firewall 2>/dev/null");
-    log_event('info', 'service', 'Xray остановлен');
-    echo json_encode(['ok' => true]);
+    $r = apply_stop();
+    if ($r['ok']) log_event('info', 'service', 'Xray остановлен');
+    echo json_encode($r);
     break;
 
 case 'restart':
     shell_run("$MANAGER stop_watchdog 2>/dev/null");
     update_adguard_ipset();
     shell_run(': > /opt/var/log/xray/access.log');
-    $r = apply_changes('full');
+    $r = apply_changes('full', ['start_old_if_stopped' => true]);
     shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
     if ($r['ok']) {
         sleep(2);
