@@ -37,6 +37,7 @@ require_once __DIR__ . '/lib/system.php';
 require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/servers.php';
 require_once __DIR__ . '/lib/apply.php';
+require_once __DIR__ . '/lib/rules.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -225,12 +226,15 @@ function set_features_patch($patch) {
             shell_run('ip link set wg0 down 2>/dev/null; ip link delete wg0 2>/dev/null');
         }
     }
-    // Side effects: toggle logs — regenerate config and restart Xray if running
+    // Side effects: toggle logs — regenerate config and restart Xray if running, through
+    // the locked, config-tested apply path (never a raw `kill -HUP`: an invalid config
+    // must not be able to take Xray down just because the logs toggle flipped).
+    $apply = null;
     if (isset($patch['logs_enabled'])) {
         // A stopped Xray picks the new setting up from `start`, which regenerates anyway.
-        if (xray_running()) apply_changes('routing');
+        if (xray_running()) $apply = apply_changes('routing');
     }
-    return $cur;
+    return ['features' => $cur, 'apply' => $apply];
 }
 
 function get_onboarding_status() {
@@ -508,13 +512,7 @@ function generate_xray_config(?string $outFile = null) {
     return ['ok' => true, 'state' => $effectiveState, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
 }
 
-// Strip Xray domain match-type prefixes -> bare hostname.
-function bare_domain($token) {
-    foreach (['domain:', 'full:', 'keyword:', 'regexp:'] as $p) {
-        if (strncmp($token, $p, strlen($p)) === 0) return substr($token, strlen($p));
-    }
-    return $token;
-}
+// bare_domain() now lives in lib/rules.php (required above).
 
 // All routed domains as bare hostnames (manual + enabled v2fly lists), deduped.
 function all_domains() {
@@ -1073,7 +1071,12 @@ case 'toggle_key':
     $id = $_POST['id'] ?? '';
     foreach ($keys as &$k) { if (($k['id'] ?? '') === $id) $k['enabled'] = !$k['enabled']; }
     json_write($KEYS_FILE, $keys);
-    echo json_encode(['ok' => true]);
+    // Enabling/disabling a key only changes which outbounds exist, not the domain/ip
+    // ipset membership, so a routing-only restart is enough — and it applies immediately
+    // instead of waiting for some later action to trigger a config regen.
+    $result = gen_and_restart_xray();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $result['xray_running']]);
     break;
 
 case 'subscriptions': echo json_encode(json_read($SUBS_FILE)); break;
@@ -1146,7 +1149,12 @@ case 'update_subscriptions':
         // fallback_missing rather than silently landing on some other server.
     }
 
-    echo json_encode(['ok' => true, 'count' => count($all_servers)]);
+    // Refreshing a subscription only changes which outbounds exist, not domain/ip
+    // ipset membership, so a routing-only restart is enough — and it applies the new
+    // server list immediately instead of leaving Xray on the stale one.
+    $result = gen_and_restart_xray();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'count' => count($all_servers), 'xray_running' => $result['xray_running']]);
     break;
 
 case 'subscription_servers': echo json_encode(json_read($CACHED_FILE)); break;
@@ -1238,6 +1246,31 @@ case 'set_rule_targets_bulk':
     if ($touchedDirect) { update_adguard_ipset(); quick_apply(); }
     else { gen_and_restart_xray(); }
     echo json_encode(['ok' => true, 'count' => $n]);
+    break;
+
+case 'rules_batch':
+    // Batch rule editor: many delete/target/match edits committed as one write + one
+    // Xray restart, instead of one apply per row (what repeating the single-row
+    // endpoints would cost).
+    $ops = json_decode($_POST['ops'] ?? '', true);
+    if (!is_array($ops)) { echo json_encode(['error' => 'Bad ops']); break; }
+    $result = apply_rule_ops($ops, lines_read($DOMAINS_FILE), lines_read($IPS_FILE), rule_targets());
+    lines_write($DOMAINS_FILE, $result['domains']);
+    lines_write($IPS_FILE, $result['ips']);
+    json_write($RULE_TARGETS_FILE, $result['targets']);
+    // Batch IP deletes also drop ipset membership immediately, same as delete_ip
+    // (setup_firewall no longer flushes the ipset, so this has to be explicit).
+    foreach ($ops as $op) {
+        if (!is_array($op) || ($op['op'] ?? '') !== 'delete' || ($op['kind'] ?? '') !== 'ip') continue;
+        $ip = is_string($op['value'] ?? null) ? trim($op['value']) : '';
+        if ($ip === '') continue;
+        $set = strpos($ip, ':') !== false ? 'vpn6' : 'vpn1';
+        shell_run("ipset del $set " . escapeshellarg($ip) . ' 2>/dev/null');
+    }
+    update_adguard_ipset();
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'changed' => $result['changed'], 'xray_running' => $apply['xray_running']]);
     break;
 
 case 'set_domain_match':
@@ -1464,7 +1497,12 @@ case 'toggle_github_list':
     $id = $_POST['id'] ?? '';
     foreach ($lists as &$l) { if (($l['id'] ?? '') === $id) $l['enabled'] = !$l['enabled']; }
     json_write($GITHUB_LISTS_FILE, $lists);
-    echo json_encode(['ok' => true]);
+    // A list's domains enter/leave the ipset when it's enabled/disabled (same as
+    // delete_github_list), so this needs the full apply, applied immediately.
+    update_adguard_ipset();
+    $result = quick_apply();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $result['xray_running']]);
     break;
 
 case 'update_github_lists':
@@ -1824,7 +1862,15 @@ case 'set_features':
         if (isset($_POST[$k])) $patch[$k] = in_array($_POST[$k], $truthy, true);
     }
     if (isset($_POST['theme'])) $patch['theme'] = $_POST['theme'];
-    echo json_encode(set_features_patch($patch));
+    $result = set_features_patch($patch);
+    if ($result['apply'] !== null && !$result['apply']['ok']) {
+        echo json_encode(['error' => $result['apply']['error']]);
+        break;
+    }
+    $out = $result['features'];
+    $out['ok'] = true;
+    if ($result['apply'] !== null) $out['xray_running'] = $result['apply']['xray_running'];
+    echo json_encode($out);
     break;
 
 case 'get_version':
