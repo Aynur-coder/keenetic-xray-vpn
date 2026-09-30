@@ -1,0 +1,5 @@
+{
+ "ok": true,
+ "config": "[Interface]\nPrivateKey = kL9t1XWm3oq0bR8e+YV4oPq7x8d2Zx1c2Y8pD0hQ6Eo=\nAddress = 10.50.0.3/24\nDNS = 192.168.1.1\nMTU = 1400\n\n[Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nEndpoint = 203.0.113.7:500\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n",
+ "name": "Ноутбук"
+}

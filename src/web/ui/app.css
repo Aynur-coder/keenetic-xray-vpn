@@ -439,7 +439,7 @@ body.has-sheet { overflow: hidden; }
 .sheet__title { font-size: 16px; font-weight: 650; }
 .sheet__body { padding: var(--sp-1) var(--sp-2) var(--sp-2); }
 .sheet__foot {
-  display: flex; justify-content: flex-end; gap: var(--sp-1);
+  display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-1);
   padding: 0 var(--sp-2) var(--sp-2);
 }
 .confirm__text { color: var(--text-2); }
@@ -1173,4 +1173,91 @@ body.has-sheet { overflow: hidden; }
   .logs__actions { margin-left: 0; flex: 1 1 100%; }
   .logs__actions > .btn { flex: 1; }
   .logs__box { max-height: 65vh; }
+}
+
+/* ---------- Устройства ---------- */
+
+.devices { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-2); }
+@media (min-width: 900px) { .devices { gap: var(--sp-3); } }
+.lan-card .card__body, .wg-card .card__body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.lan__intro, .lan__warn, .lan__meta { font-size: 14px; }
+.lan-list, .wg-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.lan {
+  display: grid; align-items: center; gap: 2px 12px;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  grid-template-areas: "dot name ip" ". mac mac" ". mode mode" ". err err";
+  padding: 12px 0; border-top: 1px solid var(--border);
+}
+.lan:first-child { border-top: 0; }
+.lan__dot {
+  grid-area: dot; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text-3); opacity: 0.6;
+}
+.lan__dot.is-on { background: var(--green); opacity: 1; box-shadow: 0 0 0 3px var(--green-soft); }
+.lan__name {
+  grid-area: name; min-width: 0; font-weight: 550;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lan__off { margin-left: 8px; color: var(--orange); font-size: 13px; font-weight: 400; }
+.lan__ip { grid-area: ip; font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.lan__mac { grid-area: mac; font-size: 12px; color: var(--text-3); }
+.lan__mode { grid-area: mode; margin-top: 6px; min-width: 0; }
+.lan__error { grid-area: err; color: var(--red); font-size: 13px; }
+.dev-mode { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+.dev-mode .segmented__item {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.dev-mode .segmented__item:disabled { cursor: default; }
+.dev-mode .segmented__item .spinner { width: 14px; height: 14px; }
+.lan.is-full .dev-mode .segmented__item[aria-checked="true"] {
+  background: var(--accent-soft); color: var(--accent);
+}
+@media (min-width: 900px) {
+  .lan {
+    grid-template-columns: 10px minmax(0, 1.4fr) minmax(110px, 0.7fr) minmax(150px, 0.9fr) auto;
+    grid-template-areas: "dot name ip mac mode" ". err err err err";
+    padding: 8px 0;
+  }
+  .lan__mode { margin-top: 0; }
+  .dev-mode { display: inline-flex; width: auto; }
+}
+
+.lan-add { display: grid; gap: 6px; padding-top: var(--sp-1); border-top: 1px solid var(--border); }
+.lan-add__row { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.lan-add__row .input { flex: 1 1 220px; min-width: 0; width: auto; }
+@media (max-width: 899px) { .lan-add__row > .btn { flex: 1 1 100%; } }
+
+.wg-card .card__title { display: flex; align-items: center; gap: var(--sp-1); }
+.wg-card .card__head { flex-wrap: wrap; gap: var(--sp-1); }
+.wg-card .card__title .badge { font-size: 12px; font-weight: 550; }
+.wg-peer {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 0; border-top: 1px solid var(--border);
+}
+.wg-peer:first-child { border-top: 0; }
+.wg-peer__text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.wg-peer__name {
+  display: flex; align-items: baseline; gap: var(--sp-1); min-width: 0; font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.wg-peer__ip { color: var(--text-3); font-size: 12px; font-weight: 400; white-space: nowrap; }
+.wg-peer__meta {
+  display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--text-2); font-size: 13px;
+}
+
+.wg-conf { display: grid; gap: 12px; }
+.wg-conf__hint { font-size: 14px; }
+.wg-conf__qr { display: flex; justify-content: center; }
+.wg-conf__img {
+  width: min(280px, 100%); height: auto; aspect-ratio: 1;
+  padding: 12px; background: #fff; border-radius: var(--radius-sm);
+}
+.wg-conf__qrtext {
+  margin: 0; padding: 8px; background: #fff; color: #000;
+  font-family: var(--mono); font-size: 6px; line-height: 1; overflow: auto; max-width: 100%;
+}
+.wg-conf__text {
+  margin: 0; padding: 10px 12px; max-height: 240px; overflow: auto;
+  font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }

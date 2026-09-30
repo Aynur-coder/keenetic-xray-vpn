@@ -44,6 +44,9 @@ const PATHS = {
     cx="12" cy="18.5" r="1.3" />`,
   plus: html`<path d="M12 5v14M5 12h14" />`,
   filter: html`<path d="M4 6h16" /><path d="M7 12h10" /><path d="M10 18h4" />`,
+  copy: html`<rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1
+    2-2h9" />`,
+  download: html`<path d="M12 4v11" /><path d="M7 10.5l5 5 5-5" /><path d="M5 20h14" />`,
   lock: html`<rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8
     0v4" />`,
 };

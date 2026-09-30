@@ -11,6 +11,7 @@ import { EmptyState } from './components/empty.js';
 import { OverviewScreen } from './screens/overview.js';
 import { ServersScreen } from './screens/servers.js';
 import { RoutesScreen } from './screens/routes.js';
+import { DevicesScreen } from './screens/devices.js';
 import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { SettingsScreen } from './screens/settings.js';
 import { LoginScreen } from './screens/login.js';
@@ -24,7 +25,7 @@ const SECTIONS = [
   { id: '', label: 'Обзор', icon: 'overview', screen: OverviewScreen },
   { id: 'servers', label: 'Серверы', icon: 'servers', screen: ServersScreen },
   { id: 'routes', label: 'Маршруты', icon: 'routes', screen: RoutesScreen },
-  { id: 'devices', label: 'Устройства', icon: 'devices', legacy: 'devices' },
+  { id: 'devices', label: 'Устройства', icon: 'devices', screen: DevicesScreen },
   { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostics', screen: DiagnosticsScreen },
 ];
 const PAGES = [

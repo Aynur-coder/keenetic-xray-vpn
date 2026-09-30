@@ -1,0 +1,41 @@
+[
+ {
+  "name": "iPhone_Vadim",
+  "pubkey": "Ab3kFq0tP9s2Qm7Lx4Yw8Zr1Vn6Hc5Ju2Ei9Do3GpK0=",
+  "allowed_ips": "10.50.0.2/32",
+  "ip": "10.50.0.2",
+  "last_handshake": "1 minute, 35 seconds ago",
+  "rx": "12.40 MiB",
+  "tx": "1.20 MiB",
+  "has_config": true,
+  "handshake_ago": 95,
+  "rx_bytes": 13002342,
+  "tx_bytes": 1258291
+ },
+ {
+  "name": "Ноутбук",
+  "pubkey": "Qw5eRt7yUi9oPa1sDf3gHj5kLz7xCv9bNm1QwErTy0U=",
+  "allowed_ips": "10.50.0.3/32",
+  "ip": "10.50.0.3",
+  "last_handshake": "2 hours ago",
+  "rx": "340.00 KiB",
+  "tx": "95.00 KiB",
+  "has_config": true,
+  "handshake_ago": 7200,
+  "rx_bytes": 348160,
+  "tx_bytes": 97280
+ },
+ {
+  "name": "",
+  "pubkey": "Zx9cVb7nMa5sDf3gHj1kLq2wEr4tYu6iOp8aSd0fGh4=",
+  "allowed_ips": "10.50.0.4/32",
+  "ip": "10.50.0.4",
+  "last_handshake": "",
+  "rx": "",
+  "tx": "",
+  "has_config": false,
+  "handshake_ago": null,
+  "rx_bytes": null,
+  "tx_bytes": null
+ }
+]

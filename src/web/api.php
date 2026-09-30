@@ -49,6 +49,7 @@ require_once __DIR__ . '/lib/probe.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/connections.php';
 require_once __DIR__ . '/lib/sitecheck.php';
+require_once __DIR__ . '/lib/wireguard.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -1086,7 +1087,9 @@ function wg_list_peers() {
         }
     }
 
-    $status = shell_run("/opt/bin/wg show wg0 2>/dev/null");
+    // One machine-readable snapshot: numbers for the new UI, `wg show`-style text for legacy.
+    $live = wg_parse_dump((string)shell_run("/opt/bin/wg show wg0 dump 2>/dev/null"));
+    $now = time();
     $peers = [];
     if (preg_match_all('/\[Peer\]\s*\n((?:[^\[]+?)(?=\[|$))/s', $content, $pm)) {
         foreach ($pm[1] as $block) {
@@ -1095,17 +1098,22 @@ function wg_list_peers() {
             if (preg_match('/AllowedIPs\s*=\s*(.+)/', $block, $m)) $allowed_ips = trim($m[1]);
             $name = $client_map[$pubkey] ?? '';
             $ip = preg_replace('/\/\d+$/', '', $allowed_ips);
-            $last_handshake = ''; $rx = ''; $tx = '';
-            if ($pubkey && preg_match('/peer:\s*' . preg_quote($pubkey, '/') . '\s+(.*?)(?=peer:|$)/s', $status, $sm)) {
-                if (preg_match('/latest handshake:\s*(.+)/', $sm[1], $hm)) $last_handshake = trim($hm[1]);
-                if (preg_match('/transfer:\s*([\d.]+\s+\w+)\s+received,\s*([\d.]+\s+\w+)\s+sent/', $sm[1], $tm)) {
-                    $rx = $tm[1]; $tx = $tm[2];
-                }
-            }
+            $st = $live[$pubkey] ?? null;
+            $ago = ($st && $st['handshake'] > 0) ? max(0, $now - $st['handshake']) : null;
+            $moved = $st && ($st['rx'] > 0 || $st['tx'] > 0);
             $peers[] = [
                 'name' => $name, 'pubkey' => $pubkey, 'allowed_ips' => $allowed_ips,
-                'ip' => $ip, 'last_handshake' => $last_handshake,
-                'rx' => $rx, 'tx' => $tx, 'has_config' => !empty($name),
+                'ip' => $ip,
+                'last_handshake' => $ago === null ? '' : wg_human_ago($ago),
+                // Like `wg show`, which omits the transfer line until there is traffic.
+                'rx' => $moved ? wg_human_bytes($st['rx']) : '',
+                'tx' => $moved ? wg_human_bytes($st['tx']) : '',
+                'has_config' => !empty($name),
+                // Optional numeric fields (new UI): seconds since the last handshake
+                // (null = never), transfer in bytes (null = interface down / unknown).
+                'handshake_ago' => $ago,
+                'rx_bytes' => $st ? $st['rx'] : null,
+                'tx_bytes' => $st ? $st['tx'] : null,
             ];
         }
     }
@@ -1138,16 +1146,19 @@ function wg_get_endpoint() {
     return ($ip ?: '95.105.78.232') . ':' . $port;
 }
 
+const WG_NAME_ERROR = 'Имя клиента: латиница, кириллица, цифры, _ и -, от 1 до 32 символов';
+
 function wg_add_peer($name) {
     global $WG_DIR, $WG_CONF;
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    if (!$name) return ['error' => 'Invalid name'];
+    $name = (string)$name;
+    if (!wg_peer_name_valid($name)) return ['error' => WG_NAME_ERROR];
     $conf_file = "$WG_DIR/$name.conf";
-    if (file_exists($conf_file)) return ['error' => 'Client already exists'];
+    if (file_exists($conf_file)) return ['error' => 'Клиент с таким именем уже есть'];
+    if (!file_exists($WG_CONF)) return ['error' => 'WireGuard не настроен на роутере'];
 
     $privkey = trim(shell_run("/opt/bin/wg genkey"));
     $pubkey = trim(shell_run("echo " . escapeshellarg($privkey) . " | /opt/bin/wg pubkey"));
-    if (!$privkey || !$pubkey) return ['error' => 'Failed to generate keys'];
+    if (!$privkey || !wg_pubkey_valid($pubkey)) return ['error' => 'Не удалось создать ключи'];
 
     $client_ip = wg_get_next_ip();
     $server_pubkey = wg_get_server_pubkey();
@@ -1156,28 +1167,42 @@ function wg_add_peer($name) {
     file_put_contents($WG_CONF, file_get_contents($WG_CONF) . "\n[Peer]\nPublicKey = $pubkey\nAllowedIPs = $client_ip/32\n");
     $client_conf = "[Interface]\nPrivateKey = $privkey\nAddress = $client_ip/24\nDNS = 192.168.1.1\nMTU = 1400\n\n[Peer]\nPublicKey = $server_pubkey\nEndpoint = $endpoint\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n";
     file_put_contents($conf_file, $client_conf);
-    shell_run("/opt/bin/wg set wg0 peer $pubkey allowed-ips $client_ip/32 2>/dev/null");
+    shell_run('/opt/bin/wg set wg0 peer ' . escapeshellarg($pubkey)
+        . ' allowed-ips ' . escapeshellarg("$client_ip/32") . ' 2>/dev/null');
 
     return ['ok' => true, 'name' => $name, 'ip' => $client_ip];
 }
 
-function wg_delete_peer($name) {
-    global $WG_DIR, $WG_CONF;
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    $conf_file = "$WG_DIR/$name.conf";
-    if (file_exists($conf_file)) {
-        $cc = file_get_contents($conf_file);
-        if (preg_match('/PrivateKey\s*=\s*(.+)/', $cc, $m)) {
-            $pubkey = trim(shell_run("echo " . escapeshellarg(trim($m[1])) . " | /opt/bin/wg pubkey 2>/dev/null"));
-            if ($pubkey) {
-                $wg = file_get_contents($WG_CONF);
-                $wg = preg_replace('/\n\[Peer\]\s*\nPublicKey\s*=\s*' . preg_quote($pubkey, '/') . '\s*\n[^\[]*/', '', $wg);
-                file_put_contents($WG_CONF, $wg);
-                shell_run("/opt/bin/wg set wg0 peer $pubkey remove 2>/dev/null");
-            }
-        }
-        unlink($conf_file);
+// Removes a peer from wg0.conf and the live interface.
+function wg_remove_server_peer(string $pubkey): void {
+    global $WG_CONF;
+    if (!wg_pubkey_valid($pubkey) || !file_exists($WG_CONF)) return;
+    $wg = file_get_contents($WG_CONF);
+    $wg = preg_replace('/\n\[Peer\]\s*\nPublicKey\s*=\s*' . preg_quote($pubkey, '/') . '\s*\n[^\[]*/', '', $wg);
+    file_put_contents($WG_CONF, $wg);
+    shell_run('/opt/bin/wg set wg0 peer ' . escapeshellarg($pubkey) . ' remove 2>/dev/null');
+}
+
+// By client name (its <name>.conf goes too) or, for a peer without a client config,
+// by public key.
+function wg_delete_peer($name, $pubkey = '') {
+    global $WG_DIR;
+    $name = (string)$name;
+    $pubkey = (string)$pubkey;
+    if ($name === '') {
+        if (!wg_pubkey_valid($pubkey)) return ['error' => 'Некорректный ключ клиента'];
+        wg_remove_server_peer($pubkey);
+        return ['ok' => true];
     }
+    $conf_file = wg_client_conf_path($WG_DIR, $name);
+    if ($conf_file === null && wg_pubkey_valid($name)) return wg_delete_peer('', $name); // legacy UI
+    if ($conf_file === null) return ['error' => 'Клиент не найден'];
+    $cc = file_get_contents($conf_file);
+    if (preg_match('/PrivateKey\s*=\s*(.+)/', $cc, $m)) {
+        $pk = trim(shell_run("echo " . escapeshellarg(trim($m[1])) . " | /opt/bin/wg pubkey 2>/dev/null"));
+        if ($pk) wg_remove_server_peer($pk);
+    }
+    unlink($conf_file);
     foreach (["$WG_DIR/{$name}_private.key", "$WG_DIR/{$name}_public.key"] as $kf) {
         if (file_exists($kf)) unlink($kf);
     }
@@ -1186,9 +1211,9 @@ function wg_delete_peer($name) {
 
 function wg_get_client_config($name) {
     global $WG_DIR;
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    $conf_file = "$WG_DIR/$name.conf";
-    if (!file_exists($conf_file)) return ['error' => 'Config not found'];
+    $name = (string)$name;
+    $conf_file = wg_client_conf_path($WG_DIR, $name);
+    if ($conf_file === null) return ['error' => 'Config not found'];
     return ['ok' => true, 'config' => file_get_contents($conf_file), 'name' => $name];
 }
 
@@ -1972,22 +1997,25 @@ case 'devices':
     break;
 
 case 'add_device':
-    $macs = lines_read($FULLVPN_FILE);
-    $mac = strtoupper(trim($_POST['mac'] ?? ''));
-    if (!preg_match('/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/', $mac)) { echo json_encode(['error' => 'Invalid MAC']); break; }
-    if (!in_array($mac, $macs)) $macs[] = $mac;
-    lines_write($FULLVPN_FILE, $macs);
-    quick_apply(); // rebuild the MAC redirect rules — nothing changes until then
-    echo json_encode(['ok' => true]);
-    break;
-
 case 'delete_device':
-    $macs = lines_read($FULLVPN_FILE);
+    // The MAC redirect only changes with an apply; if that fails, nothing changed on the
+    // router, so the list goes back to what it was.
+    $before = lines_read($FULLVPN_FILE);
     $mac = strtoupper(trim($_POST['mac'] ?? ''));
-    $macs = array_values(array_filter($macs, fn($m) => strtoupper($m) !== $mac));
+    if ($action === 'add_device' ? !preg_match('/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/', $mac) : $mac === '') {
+        echo json_encode(['error' => 'Invalid MAC']);
+        break;
+    }
+    $macs = array_values(array_filter($before, fn($m) => strtoupper($m) !== $mac));
+    if ($action === 'add_device') $macs[] = $mac;
     lines_write($FULLVPN_FILE, $macs);
-    quick_apply(); // rebuild the MAC redirect rules — nothing changes until then
-    echo json_encode(['ok' => true]);
+    $apply = quick_apply(); // rebuild the MAC redirect rules — nothing changes until then
+    if (!$apply['ok']) {
+        lines_write($FULLVPN_FILE, $before);
+        echo json_encode(['error' => $apply['error']]);
+        break;
+    }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
     break;
 
 case 'lan_devices':
@@ -2235,8 +2263,9 @@ case 'wg_add_peer':
 
 case 'wg_delete_peer':
     $name = trim($_POST['name'] ?? '');
-    if (!$name) { echo json_encode(['error' => 'No name']); break; }
-    echo json_encode(wg_delete_peer($name));
+    $pubkey = trim($_POST['pubkey'] ?? '');
+    if (!$name && !$pubkey) { echo json_encode(['error' => 'No name']); break; }
+    echo json_encode(wg_delete_peer($name, $pubkey));
     break;
 
 case 'wg_get_config':
@@ -2246,11 +2275,20 @@ case 'wg_get_config':
     break;
 
 case 'wg_qrcode':
+    // format=svg → {ok, svg, name}: an SVG image from `qrencode -t SVG`. Old qrencode
+    // builds without SVG (and the default format) → {ok, qr, name}: UTF-8 block text.
     $name = trim($_GET['name'] ?? '');
     if (!$name) { echo json_encode(['error' => 'No name']); break; }
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    $conf_file = "$WG_DIR/$name.conf";
-    if (!file_exists($conf_file)) { echo json_encode(['error' => 'Not found']); break; }
+    $conf_file = wg_client_conf_path($WG_DIR, $name);
+    if ($conf_file === null) { echo json_encode(['error' => 'Not found']); break; }
+    if (($_GET['format'] ?? '') === 'svg') {
+        $svg = wg_qr_svg_extract((string)shell_run('/opt/bin/qrencode -t SVG -o - < '
+            . escapeshellarg($conf_file) . ' 2>/dev/null'));
+        if ($svg !== null) {
+            echo json_encode(['ok' => true, 'svg' => $svg, 'name' => $name]);
+            break;
+        }
+    }
     $qr = shell_run("/opt/bin/qrencode -t UTF8 < " . escapeshellarg($conf_file));
     echo json_encode(['ok' => true, 'qr' => $qr, 'name' => $name]);
     break;
