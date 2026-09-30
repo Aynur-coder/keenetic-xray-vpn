@@ -125,6 +125,26 @@ function test_rematch_skips_disabled(): void {
     eq(rematch_server($hint, $servers), null, 'a disabled server is never a rematch target');
 }
 
+function test_enable_on_select(): void {
+    // select_server always makes the chosen server usable, even if it had been left
+    // enabled:false (from before per-server switches were removed from the UI, or via
+    // a subscription refresh that carried the flag over) — only subscriptions can be
+    // turned off now, so a server the user explicitly picked must run.
+    $list = [
+        ['id' => 'a', 'name' => 'A', 'enabled' => false],
+        ['id' => 'b', 'name' => 'B', 'enabled' => false],
+    ];
+    $out = enable_server($list, 'a');
+    eq($out[0]['enabled'], true, 'target id flipped to enabled');
+    eq($out[1]['enabled'], false, 'other entries left untouched');
+    eq($out[0]['name'], 'A', 'other fields untouched');
+
+    eq(enable_server($list, 'missing'), $list, 'unknown id leaves the list unchanged');
+
+    $already = [['id' => 'a', 'enabled' => true]];
+    eq(enable_server($already, 'a'), $already, 'already-enabled entry is left as is');
+}
+
 function test_resolve_selected(): void {
     $state = ['active_outbound' => 'k1'];
     $keys = [['id' => 'k1', 'name' => 'Key 1', 'enabled' => true, 'link' => 'vless://u@h:1']];

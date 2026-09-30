@@ -65,6 +65,19 @@ function rematch_server(array $hint, array $servers): ?string {
     return null;
 }
 
+// Flips 'enabled' to true for the entry with this id in $list (keys.json or
+// cached_servers.json contents), leaving every other entry and field untouched.
+// Only subscriptions can be turned off in the UI now, so select_server calls this
+// to make sure the server the user just picked is actually usable, even if it had
+// been left enabled:false (e.g. from before per-server switches were removed).
+function enable_server(array $list, string $id): array {
+    foreach ($list as &$item) {
+        if (($item['id'] ?? '') === $id) $item['enabled'] = true;
+    }
+    unset($item);
+    return $list;
+}
+
 // Whether a server can carry traffic: its own 'enabled' flag, and for a cached
 // subscription server (one with a 'sub' field) also its subscription's flag —
 // a disabled subscription disables all of its servers. $subs is list.json

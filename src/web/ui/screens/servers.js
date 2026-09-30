@@ -1,12 +1,12 @@
 // Серверы: subscriptions, keys and servers in one place. A sticky toolbar (search, filters,
 // «Проверить все», «Добавить»), then one collapsible card per source with its servers.
-// Tapping a row selects the server; star, switch and «⋮» menu act on the row itself.
+// Tapping a row selects the server; star and «⋮» menu act on the row itself. Only
+// subscriptions can be turned off (source menu) — a server has no on/off of its own.
 import { html, useState, useEffect } from '../vendor/preact-htm.js';
 import { api, errorText, refreshServers, refreshOverview } from '../api.js';
 import { store, useStore } from '../store.js';
 import { Button } from '../components/button.js';
 import { Badge } from '../components/badge.js';
-import { Toggle } from '../components/toggle.js';
 import { Menu } from '../components/menu.js';
 import { Sheet } from '../components/sheet.js';
 import { SearchInput } from '../components/search.js';
@@ -190,8 +190,6 @@ function ServerRow({ server, usable, isKey, busy, locked, pinging, handlers }) {
           <${PingCell} server=${server} pinging=${pinging} />
         </span>
       </button>
-      <${Toggle} checked=${!!server.enabled} label=${`Включён: ${name}`}
-        disabled=${busy === 'enable'} onChange=${(v) => handlers.enable(server, v)} />
       <${Menu} label=${`Действия: ${name}`} items=${[
         { label: 'Проверить страну', onSelect: () => handlers.probe(server, 'country') },
         { label: 'Реальная задержка', onSelect: () => handlers.probe(server, 'delay') },
@@ -242,7 +240,7 @@ function SourceCard({ source, servers, open, onToggle, busy, rowProps }) {
             <ul class="srv-list" aria-label=${title}>
               ${servers.map((s) => html`
                 <${ServerRow} key=${s.id} server=${s} isKey=${isKeys}
-                  usable=${s.enabled && source.enabled} busy=${rowProps.busy[s.id]}
+                  usable=${source.enabled} busy=${rowProps.busy[s.id]}
                   locked=${rowProps.locked} pinging=${rowProps.pinging}
                   handlers=${rowProps.handlers} />
               `)}
@@ -326,7 +324,7 @@ export function ServersScreen() {
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState(null);
   const [pinging, setPinging] = useState(false);
-  const [busy, setBusy] = useState({}); // server id → 'select' | 'enable' | 'probe'
+  const [busy, setBusy] = useState({}); // server id → 'select' | 'probe'
   const [sourceBusy, setSourceBusy] = useState(null); // {id, text} of a source being changed
   const [selecting, setSelecting] = useState(false);
 
@@ -345,7 +343,7 @@ export function ServersScreen() {
     async select(server, usable) {
       if (selecting || server.active) return;
       if (!usable) {
-        toast('Сервер выключен — включите его, чтобы выбрать', 'info');
+        toast('Подписка выключена — включите её, чтобы выбрать сервер', 'info');
         return;
       }
       setSelecting(true);
@@ -361,17 +359,6 @@ export function ServersScreen() {
       patchServer(server.id, { favorite: value });
       const res = await api('set_server_flags', { id: server.id, favorite: value });
       if (res.error) patchServer(server.id, { favorite: !value });
-    },
-
-    async enable(server, value) {
-      setRowBusy(server.id, 'enable');
-      const res = await api('set_server_flags', { id: server.id, enabled: value },
-        { quiet: true, timeout: APPLY_TIMEOUT_MS });
-      setRowBusy(server.id, null);
-      if (!applied(res, value ? 'Не удалось включить сервер' : 'Не удалось выключить сервер')) {
-        return;
-      }
-      patchServer(server.id, { enabled: value });
     },
 
     async probe(server, what) {

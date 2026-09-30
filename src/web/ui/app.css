@@ -763,7 +763,6 @@ body.has-sheet { overflow: hidden; }
 .srv:first-child { border-top-color: transparent; }
 .srv.is-active { background: var(--accent-soft); border-top-color: transparent; }
 .srv.is-active + .srv { border-top-color: transparent; }
-.srv > .toggle { margin: 0 6px; }
 .star {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 40px; height: var(--touch);

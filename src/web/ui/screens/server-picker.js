@@ -16,7 +16,8 @@ import { toast } from '../components/toast.js';
 const APPLY_TIMEOUT_MS = 70000;
 
 // [{key, title, servers}] — favourites group first, then sources in the backend's order.
-// Disabled servers and servers of disabled sources are left out: they can't carry traffic.
+// Servers of a disabled subscription are left out: they can't carry traffic. A server's
+// own 'enabled' flag no longer matters here — only subscriptions can be turned off.
 export function groupServers(data, query) {
   const sources = (data && data.sources) || [];
   const enabledSource = new Set(sources.filter((s) => s.enabled).map((s) => s.id));
@@ -24,7 +25,7 @@ export function groupServers(data, query) {
   const matches = (s) => !q || [s.name, s.host, s.proto]
     .some((v) => String(v || '').toLowerCase().includes(q));
   const usable = ((data && data.servers) || [])
-    .filter((s) => s.enabled && enabledSource.has(s.source) && matches(s));
+    .filter((s) => enabledSource.has(s.source) && matches(s));
 
   const groups = [];
   const favorites = usable.filter((s) => s.favorite);

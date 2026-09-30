@@ -1542,12 +1542,25 @@ case 'select_server':
     $name = $id;
     $found = null;
     $source = null;
-    foreach (json_read($CACHED_FILE) as $s) {
+    $cached = json_read($CACHED_FILE);
+    foreach ($cached as $s) {
         if (($s['id'] ?? '') === $id) { $found = $s; $source = 'sub'; break; }
     }
-    if (!$found) {
-        foreach (json_read($KEYS_FILE) as $s) {
+    if ($found) {
+        // Only subscriptions can be disabled in the UI now; a server the user just
+        // picked must run even if it had been left enabled:false.
+        if (empty($found['enabled'])) {
+            json_write($CACHED_FILE, enable_server($cached, $id));
+            $found['enabled'] = true;
+        }
+    } else {
+        $keys = json_read($KEYS_FILE);
+        foreach ($keys as $s) {
             if (($s['id'] ?? '') === $id) { $found = $s; $source = 'key'; break; }
+        }
+        if ($found && empty($found['enabled'])) {
+            json_write($KEYS_FILE, enable_server($keys, $id));
+            $found['enabled'] = true;
         }
     }
     if ($found) {
