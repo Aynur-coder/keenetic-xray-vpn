@@ -405,14 +405,26 @@ _resume_firewall() {
     _event info watchdog "Сервер снова доступен"
 }
 
+# Periodic leak sweep for the watchdog: every 4th tick (4 x WATCHDOG_INTERVAL = 2 min),
+# only while the redirect is active (not paused) and xray runs — otherwise "leaked"
+# flows are expected and resetting them would only cause reconnect churn.
+# Args: tick number, is_paused (0/1).
+_watchdog_kick_tick() {
+    [ $(($1 % 4)) -eq 0 ] || return 0
+    [ "$2" = "0" ] || return 0
+    pidof xray >/dev/null 2>&1 || return 0
+    _kick_leaked_flows
+}
+
 # Background watchdog loop: when VPN server is unreachable for WATCHDOG_MAX_FAILS consecutive
 # checks, removes the iptables redirect to prevent conntrack table saturation (which otherwise
 # kills all new TCP connections, including access to 192.168.1.1).
 _watchdog_loop() {
-    local fail_count=0 is_paused=0
+    local fail_count=0 is_paused=0 tick=0
     echo "ok" > "$WATCHDOG_STATE"
     while true; do
         sleep "$WATCHDOG_INTERVAL"
+        tick=$((tick + 1))
         if _check_vpn_reachable; then
             fail_count=0
             if [ "$is_paused" = "1" ]; then
@@ -428,6 +440,7 @@ _watchdog_loop() {
                 is_paused=1
             fi
         fi
+        _watchdog_kick_tick "$tick" "$is_paused"
     done
 }
 
@@ -700,5 +713,6 @@ case "$1" in
     update-subs) update_subscriptions ;;
     start_watchdog) start_watchdog ;;
     stop_watchdog) stop_watchdog ;;
-    *) echo "Usage: $0 {start|stop|restart|status|generate|firewall|update-subs|start_watchdog|stop_watchdog}" ;;
+    kick_leaks) _kick_leaked_flows ;;
+    *) echo "Usage: $0 {start|stop|restart|status|generate|firewall|update-subs|start_watchdog|stop_watchdog|kick_leaks}" ;;
 esac

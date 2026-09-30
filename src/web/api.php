@@ -793,6 +793,8 @@ function warmup_ipset() {
         // wait for AdGuard to answer again (up to ~12s) instead of a blind sleep
         . 'i=0; while [ $i -lt 12 ]; do dig @127.0.0.1 cloudflare.com +short +timeout=1 +tries=1 >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; '
         . "while read d; do nice -n 19 dig @127.0.0.1 \"\$d\" +short A +timeout=2 +tries=1 >/dev/null 2>&1; done < $tmpfile; "
+        // Domains are resolved into the ipset now: reset already-open direct flows to them
+        . "nice -n 19 $GLOBALS[MANAGER] kick_leaks >/dev/null 2>&1; "
         . "rm -f $tmpfile $pidfile";
     shell_exec("nohup nice -n 19 sh -c '$script' >/dev/null 2>&1 &");
 }
