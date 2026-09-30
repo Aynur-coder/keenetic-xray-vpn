@@ -72,6 +72,36 @@ function test_rotation_at_256k(): void {
     @unlink($file . '.1');
 }
 
+// emit_event() always stamps "now", so timestamp-filter fixtures write lines with
+// explicit, known 'ts' values directly instead.
+function _events_line(string $ts, string $msg): string {
+    $ev = ['ts' => $ts, 'level' => 'info', 'type' => 'server', 'msg' => $msg, 'data' => []];
+    return json_encode($ev) . "\n";
+}
+
+function test_filter_since(): void {
+    $file = _events_tmp_file();
+    @unlink($file);
+    file_put_contents(
+        $file,
+        _events_line('2020-01-01T00:00:00+00:00', 'past event')
+        . _events_line('2025-06-01T00:00:00+00:00', 'boundary event')
+        . _events_line('2026-01-01T00:00:00+00:00', 'new event')
+    );
+
+    $recent = read_events(100, null, null, $file, '2025-06-01T00:00:00+00:00');
+    eq(count($recent), 2, 'events at or after since are kept, the older one dropped');
+    eq(array_column($recent, 'msg'), ['new event', 'boundary event'], 'newest-first, boundary inclusive');
+
+    $all = read_events(100, null, null, $file, null);
+    eq(count($all), 3, 'no since -> unfiltered');
+
+    $unparsable = read_events(100, null, null, $file, 'not-a-real-date');
+    eq(count($unparsable), 3, 'an unparsable since is ignored, not treated as excluding everything');
+
+    @unlink($file);
+}
+
 function test_disabled_feature_no_write(): void {
     $file = _events_tmp_file();
     @unlink($file);

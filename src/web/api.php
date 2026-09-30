@@ -48,6 +48,7 @@ require_once __DIR__ . '/lib/overview.php';
 require_once __DIR__ . '/lib/probe.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/connections.php';
+require_once __DIR__ . '/lib/sitecheck.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -207,8 +208,9 @@ function get_features() {
         'auto_update'  => $d['auto_update']  ?? false,
         'logs_enabled' => $d['logs_enabled'] ?? true,
         'theme'        => $d['theme']        ?? 'auto',
-        'diag_events'  => $d['diag_events']  ?? true,
+        'diag_events'      => $d['diag_events']      ?? true,
         'diag_connections' => $d['diag_connections'] ?? true,
+        'diag_site_check'  => $d['diag_site_check']  ?? true,
     ];
 }
 
@@ -221,7 +223,10 @@ function log_event(string $level, string $type, string $msg, array $data = []): 
 function set_features_patch($patch) {
     global $FEATURES_FILE;
     $cur = get_features();
-    foreach (['wireguard', 'adguard', 'auto_update', 'logs_enabled'] as $k) {
+    foreach ([
+        'wireguard', 'adguard', 'auto_update', 'logs_enabled',
+        'diag_events', 'diag_connections', 'diag_site_check',
+    ] as $k) {
         if (isset($patch[$k])) $cur[$k] = (bool)$patch[$k];
     }
     if (isset($patch['theme']) && in_array($patch['theme'], ['auto', 'dark', 'light'], true)) {
@@ -829,6 +834,39 @@ function route_in_vpn_set(string $kind, string $input): ?bool {
     return null; // ipset missing/unreachable/unexpected output — unknown, not "not in set"
 }
 
+// route_explain()'s API entry point: builds the SAME domain/ip buckets
+// generate_xray_config() uses (same order, same targets) and asks route_explain()
+// which rule/outbound $q would take. Shared by the `route_explain` action and
+// `site_check` (below) so the two can never disagree about where a domain routes.
+function route_explain_for(string $q): array {
+    global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR, $IPS_FILE, $KEYS_FILE, $CACHED_FILE;
+
+    $built = build_outbound_tags();
+    $id_to_tag = $built['id_to_tag'];
+    $active_tag = $built['active_tag'];
+    $targets = rule_targets();
+
+    // Same rule ORDER generate_xray_config() emits (ksort by outbound tag) before
+    // relabeling tags to targets, so first-match here means what it does in the
+    // generated config.
+    $domainEntries = domain_rule_entries(
+        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
+        $targets, $id_to_tag, $active_tag
+    );
+    ksort($domainEntries);
+    $domainBuckets = regroup_rule_entries_by_target($domainEntries, $id_to_tag, $active_tag);
+
+    $ipEntries = ip_rule_entries(lines_read($IPS_FILE), $targets, $id_to_tag, $active_tag);
+    ksort($ipEntries);
+    $ipBuckets = regroup_rule_entries_by_target($ipEntries, $id_to_tag, $active_tag);
+
+    $result = route_explain($q, $domainBuckets, $ipBuckets, 'route_in_vpn_set');
+    $result['target_name'] = $result['target'] !== null
+        ? route_target_name((string)$result['target'], json_read($KEYS_FILE), json_read($CACHED_FILE))
+        : null;
+    return $result;
+}
+
 // `connections` action: wires connections_collect() (lib/connections.php) to the router —
 // one `conntrack -L`, one batched ipset lookup, the tails of Xray's access.log (512 KB) and
 // AdGuard's querylog (2 MB), device names from the lan_devices cache — under one 2.8 s
@@ -847,6 +885,59 @@ function connections_snapshot(int $limit): array {
         'device_names' => connections_device_names(is_array($lan) ? $lan : []),
     ];
     return connections_collect($limit, $io, fn(): float => microtime(true));
+}
+
+// Runs the two `site_check` probe fetches — Google's country marker and Cloudflare's
+// trace — through Xray's main socks inbound (127.0.0.1:1081, so the real routing rules
+// apply, unlike server_probe_run()'s throwaway instance) in parallel: both curls are
+// backgrounded in one shell script, each writing its body to its own tmp file, so total
+// wait time is max(8s, 8s) rather than their sum. A curl that fails/times out just leaves
+// its tmp file empty, reported as null — never fatal to the other fetch.
+function site_check_fetch_probes(): array {
+    $pid = getmypid();
+    $ytFile = "/opt/tmp/xray-sitecheck-yt-$pid";
+    $tfFile = "/opt/tmp/xray-sitecheck-tf-$pid";
+    @unlink($ytFile);
+    @unlink($tfFile);
+    $proxy = escapeshellarg('socks5h://127.0.0.1:1081');
+    $script =
+        '(/opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 -A '
+        . escapeshellarg(SITE_CHECK_DESKTOP_UA) . ' ' . escapeshellarg('https://www.youtube.com/')
+        . ' -o ' . escapeshellarg($ytFile) . ' 2>/dev/null) &' . "\n"
+        . '(/opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 '
+        . escapeshellarg('https://www.cloudflare.com/cdn-cgi/trace')
+        . ' -o ' . escapeshellarg($tfFile) . ' 2>/dev/null) &' . "\n"
+        . "wait\n";
+    shell_run_timeout($script, 10.0);
+
+    $yt = is_file($ytFile) ? (string)(@file_get_contents($ytFile) ?: '') : '';
+    $tf = is_file($tfFile) ? (string)(@file_get_contents($tfFile) ?: '') : '';
+    @unlink($ytFile);
+    @unlink($tfFile);
+    return ['youtube' => $yt !== '' ? $yt : null, 'trace' => $tf !== '' ? $tf : null];
+}
+
+// `site_check` action: wires site_check_run() (lib/sitecheck.php) to the router — resolves
+// the domain via nslookup (an IP literal resolves to itself, no lookup needed), reuses
+// route_explain_for() for the routing verdict, fetches through Xray's real socks inbound,
+// and reuses one connections_snapshot() to count recent direct/leaked flows to the domain's
+// IPs. $limit is generous (the ipset ceiling) since this runs on demand, not polled.
+function site_check_snapshot(string $domain): array {
+    $io = [
+        'resolve_ips' => function (string $d): array {
+            if (filter_var($d, FILTER_VALIDATE_IP) !== false) return [$d];
+            $out = shell_run_timeout('exec nslookup ' . escapeshellarg($d) . ' 127.0.0.1', 1.5);
+            return $out !== null ? parse_nslookup_ips($out) : [];
+        },
+        'in_vpn_set'  => 'route_in_vpn_set',
+        'explain'     => 'route_explain_for',
+        'fetch'       => 'site_check_fetch_probes',
+        'connections' => function (): array {
+            $snap = connections_snapshot(CONNECTIONS_MAX_LIMIT);
+            return $snap['connections'] ?? [];
+        },
+    ];
+    return site_check_run($domain, $io);
 }
 
 // Saves a lan_devices result for `connections` atomically (tmp + rename), keeping a cache
@@ -1121,7 +1212,7 @@ $PUBLIC_READ_ACTIONS = [
     'keys', 'subscriptions', 'subscription_servers', 'servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search', 'rule_targets', 'route_explain',
-    'wg_peers', 'logs', 'raw_config', 'events', 'overview', 'connections',
+    'wg_peers', 'logs', 'raw_config', 'events', 'overview', 'connections', 'site_check',
 ];
 if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
     require_auth();
@@ -1638,31 +1729,7 @@ case 'route_explain':
     // otherwise be option-injected past escapeshellarg (which only stops
     // shell metacharacters, not a leading "-").
     if (!route_query_is_valid($q)) { echo json_encode(['error' => 'Введите домен или IP']); break; }
-
-    $built = build_outbound_tags();
-    $id_to_tag = $built['id_to_tag'];
-    $active_tag = $built['active_tag'];
-    $targets = rule_targets();
-
-    // Same rule ORDER generate_xray_config() emits (ksort by outbound tag) before
-    // relabeling tags to targets, so first-match here means what it does in the
-    // generated config.
-    $domainEntries = domain_rule_entries(
-        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
-        $targets, $id_to_tag, $active_tag
-    );
-    ksort($domainEntries);
-    $domainBuckets = regroup_rule_entries_by_target($domainEntries, $id_to_tag, $active_tag);
-
-    $ipEntries = ip_rule_entries(lines_read($IPS_FILE), $targets, $id_to_tag, $active_tag);
-    ksort($ipEntries);
-    $ipBuckets = regroup_rule_entries_by_target($ipEntries, $id_to_tag, $active_tag);
-
-    $result = route_explain($q, $domainBuckets, $ipBuckets, 'route_in_vpn_set');
-    $result['target_name'] = $result['target'] !== null
-        ? route_target_name((string)$result['target'], json_read($KEYS_FILE), json_read($CACHED_FILE))
-        : null;
-    echo json_encode($result);
+    echo json_encode(route_explain_for($q));
     break;
 
 case 'set_rule_target':
@@ -2202,8 +2269,17 @@ case 'wg_restart':
     break;
 
 case 'logs':
-    $type = $_GET['type'] ?? 'error';
     $lines = min((int)($_GET['lines'] ?? 50), 500);
+    $source = $_GET['source'] ?? '';
+    if ($source !== '') {
+        $cmd = log_source_command((string)$source, $lines);
+        if ($cmd === null) { echo json_encode(['error' => 'Неизвестный источник логов']); break; }
+        $content = shell_run($cmd);
+        echo json_encode(explode("\n", $content));
+        break;
+    }
+    // Legacy path: type=error|access straight from the Xray log files.
+    $type = $_GET['type'] ?? 'error';
     $file = $type === 'access' ? $LOG_ACCESS : $LOG_ERROR;
     if (!file_exists($file)) { echo json_encode([]); break; }
     $content = shell_run("tail -n " . escapeshellarg($lines) . " " . escapeshellarg($file));
@@ -2226,12 +2302,27 @@ case 'connections':
     echo json_encode(connections_snapshot(connections_limit($_GET['limit'] ?? null)));
     break;
 
+case 'site_check':
+    if ((get_features()['diag_site_check'] ?? true) === false) {
+        echo json_encode(['error' => 'Инструмент выключен в настройках']);
+        break;
+    }
+    $domain = trim($_GET['domain'] ?? '');
+    if (!route_query_is_valid($domain)) { echo json_encode(['error' => 'Введите домен']); break; }
+    echo json_encode(site_check_snapshot($domain));
+    break;
+
 case 'events':
+    if ((get_features()['diag_events'] ?? true) === false) {
+        echo json_encode(['error' => 'Инструмент выключен в настройках']);
+        break;
+    }
     $limit = min((int)($_GET['limit'] ?? 100), 500);
     if ($limit <= 0) $limit = 100;
     $level = $_GET['level'] ?? null;
     $type = $_GET['type'] ?? null;
-    echo json_encode(['events' => read_events($limit, $level ?: null, $type ?: null)]);
+    $since = $_GET['since'] ?? null;
+    echo json_encode(['events' => read_events($limit, $level ?: null, $type ?: null, null, $since ?: null)]);
     break;
 
 case 'test_connection':
@@ -2367,7 +2458,10 @@ case 'get_features':
 case 'set_features':
     $patch = [];
     $truthy = ['1', 1, 'true', true, 'on', 'yes'];
-    foreach (['wireguard', 'adguard', 'auto_update', 'logs_enabled'] as $k) {
+    foreach ([
+        'wireguard', 'adguard', 'auto_update', 'logs_enabled',
+        'diag_events', 'diag_connections', 'diag_site_check',
+    ] as $k) {
         if (isset($_POST[$k])) $patch[$k] = in_array($_POST[$k], $truthy, true);
     }
     if (isset($_POST['theme'])) $patch['theme'] = $_POST['theme'];

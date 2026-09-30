@@ -48,8 +48,21 @@ function emit_event(
 // Newest first. Reads events.log.1 too once the current file is exhausted —
 // rotation guarantees every entry in $file is newer than every entry in
 // "$file.1", so the two files can simply be read in that order.
-function read_events(int $limit = 100, ?string $level = null, ?string $type = null, ?string $file = null): array {
+//
+// $since: an ISO 8601 timestamp (or anything strtotime() accepts) — only
+// events at or after it are kept. Parsed once up front; a value strtotime()
+// can't parse is ignored (no filtering), same as omitting it. An event whose
+// own 'ts' fails to parse is dropped rather than guessed at.
+function read_events(
+    int $limit = 100, ?string $level = null, ?string $type = null, ?string $file = null,
+    ?string $since = null
+): array {
     $file = $file ?? EVENTS_DEFAULT_FILE;
+    $sinceTs = null;
+    if ($since !== null && $since !== '') {
+        $t = strtotime($since);
+        if ($t !== false) $sinceTs = $t;
+    }
     $events = [];
     foreach ([$file, $file . '.1'] as $f) {
         if ($limit > 0 && count($events) >= $limit) break;
@@ -60,6 +73,10 @@ function read_events(int $limit = 100, ?string $level = null, ?string $type = nu
             if (!is_array($ev)) continue;
             if ($level !== null && ($ev['level'] ?? '') !== $level) continue;
             if ($type !== null && ($ev['type'] ?? '') !== $type) continue;
+            if ($sinceTs !== null) {
+                $evTs = isset($ev['ts']) ? strtotime((string)$ev['ts']) : false;
+                if ($evTs === false || $evTs < $sinceTs) continue;
+            }
             $events[] = $ev;
             if ($limit > 0 && count($events) >= $limit) break;
         }
