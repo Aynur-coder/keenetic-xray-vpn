@@ -185,7 +185,7 @@ function xray_access_outbounds(string $log): array {
 function xray_access_domains(string $log): array {
     $out = [];
     foreach (_xray_access_entries($log) as $key => $e) {
-        if (filter_var($e['host'], FILTER_VALIDATE_IP) !== false) continue;
+        if (ip_is_valid($e['host'])) continue;
         $out[$key] = strtolower($e['host']);
     }
     return $out;
@@ -270,7 +270,7 @@ function build_connections(
 function ipset_batch_script(array $ips): string {
     $script = '';
     foreach (array_unique($ips) as $ip) {
-        if (filter_var($ip, FILTER_VALIDATE_IP) === false) continue;
+        if (!ip_is_valid($ip)) continue;
         $set = strpos($ip, ':') === false ? 'vpn1' : 'vpn6';
         $q = escapeshellarg($ip);
         $script .= "ipset test $set $q >/dev/null 2>&1 && echo $q; ";
@@ -282,7 +282,7 @@ function ipset_batch_hits(string $out): array {
     $hits = [];
     foreach (explode("\n", $out) as $line) {
         $line = trim($line);
-        if ($line !== '' && filter_var($line, FILTER_VALIDATE_IP) !== false) $hits[$line] = true;
+        if ($line !== '' && ip_is_valid($line)) $hits[$line] = true;
     }
     return $hits;
 }

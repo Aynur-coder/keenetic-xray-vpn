@@ -104,3 +104,40 @@ function shell_run_parallel_timeout(array $cmds, float $seconds): array {
     }
     return $outputs;
 }
+
+// ============================================================================
+// IP literal validation
+//
+// The router's PHP 8.4 build has no `filter` extension, so filter_var()/
+// FILTER_VALIDATE_IP are never available — every caller that used to call
+// them now uses these instead. Built on inet_pton() (core PHP, not an
+// extension) plus the same strict format checks filter_var() itself applied
+// (no leading/trailing junk, no leading-zero octets, which PHP's own IPv4
+// validator rejects to avoid octal ambiguity). None of these accept a CIDR
+// suffix ("1.2.3.4/24") — callers that allow one strip it before calling.
+// ============================================================================
+
+// A plain IPv4 literal: four dot-separated decimal octets, 0-255, no leading
+// zeros (so "010.0.0.1" is rejected, same as filter_var() was), nothing else
+// in the string. Replaces filter_var($s, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4).
+function ip_is_v4(string $s): bool {
+    if (!preg_match('/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/', $s)) return false;
+    foreach (explode('.', $s) as $octet) {
+        if ((strlen($octet) > 1 && $octet[0] === '0') || (int)$octet > 255) return false;
+    }
+    return @inet_pton($s) !== false;
+}
+
+// A plain IPv6 literal: inet_pton() must accept it AND it must actually
+// contain ':' (inet_pton() also accepts a bare IPv4 dotted-quad, which is
+// not an IPv6 literal here). Replaces
+// filter_var($s, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6).
+function ip_is_v6(string $s): bool {
+    return strpos($s, ':') !== false && @inet_pton($s) !== false;
+}
+
+// Any IP literal, v4 or v6, no CIDR suffix. Replaces
+// filter_var($s, FILTER_VALIDATE_IP).
+function ip_is_valid(string $s): bool {
+    return ip_is_v4($s) || ip_is_v6($s);
+}

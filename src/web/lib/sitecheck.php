@@ -42,7 +42,7 @@ function parse_nslookup_ips(string $out): array {
         if (stripos($ln, 'Name:') === 0) { $seenName = true; continue; }
         if (!$seenName) continue;
         if (!preg_match('/^Address\s*\d*:\s*(\S+)/i', $ln, $m)) continue;
-        if (filter_var($m[1], FILTER_VALIDATE_IP) !== false) $ips[$m[1]] = true;
+        if (ip_is_valid($m[1])) $ips[$m[1]] = true;
     }
     return array_keys($ips);
 }
@@ -74,7 +74,7 @@ function site_check_count_flows(array $connections, array $ips): array {
 // have tested for the same nslookup output, since the vpn1 ipset holds IPv4 only.
 function site_check_first_ipv4(array $ips): ?string {
     foreach ($ips as $ip) {
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) return $ip;
+        if (ip_is_v4($ip)) return $ip;
     }
     return null;
 }

@@ -805,7 +805,7 @@ function warmup_ipset() {
 function route_in_vpn_set(string $kind, string $input): ?bool {
     $ip = null;
     if ($kind === 'ip') {
-        $ip = filter_var($input, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $input : null;
+        $ip = ip_is_v4($input) ? $input : null;
     } else {
         // `exec` replaces the shell with nslookup itself, so SIGKILL on timeout
         // (shell_run_timeout()) hits the lookup directly instead of possibly
@@ -936,7 +936,7 @@ function site_check_fetch_probes(): array {
 function site_check_snapshot(string $domain, bool $withFlows): array {
     $io = [
         'resolve_ips' => function (string $d): array {
-            if (filter_var($d, FILTER_VALIDATE_IP) !== false) return [$d];
+            if (ip_is_valid($d)) return [$d];
             $out = shell_run_timeout('exec nslookup ' . escapeshellarg($d) . ' 127.0.0.1', 1.5);
             return $out !== null ? parse_nslookup_ips($out) : [];
         },

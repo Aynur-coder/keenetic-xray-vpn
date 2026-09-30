@@ -239,7 +239,7 @@ function ip_token_matches(string $token, string $ip): bool {
 // (dot-separated labels of letters/digits/hyphens — this already covers
 // punycode, which encodes as plain ASCII with an "xn--" label prefix — each
 // label 1-63 chars, no leading/trailing hyphen, ≤253 chars total) or an IP
-// literal/CIDR (IPv4 or IPv6, via filter_var/inet_pton). Anything else
+// literal/CIDR (IPv4 or IPv6, via ip_is_valid()/inet_pton). Anything else
 // (an nslookup/ipset option like "-type=any", empty input, garbage) is
 // rejected here so it never reaches a shell command. Pure, no I/O.
 function route_query_is_valid(string $q): bool {
@@ -247,7 +247,7 @@ function route_query_is_valid(string $q): bool {
 
     $slash = strpos($q, '/');
     $addr = $slash === false ? $q : substr($q, 0, $slash);
-    if (filter_var($addr, FILTER_VALIDATE_IP) !== false) {
+    if (ip_is_valid($addr)) {
         if ($slash === false) return true;
         $bits = substr($q, $slash + 1);
         return $bits !== '' && preg_match('/^\d{1,3}$/', $bits) === 1;
@@ -279,7 +279,7 @@ function route_query_is_valid(string $q): bool {
  */
 function route_explain(string $input, array $domainBuckets, array $ipBuckets, callable $inVpnSet): array {
     $input = trim($input);
-    $isIp = filter_var($input, FILTER_VALIDATE_IP) !== false;
+    $isIp = ip_is_valid($input);
     $kind = $isIp ? 'ip' : 'domain';
 
     $rule = null;

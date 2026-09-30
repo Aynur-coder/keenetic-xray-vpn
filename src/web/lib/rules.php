@@ -5,6 +5,8 @@
 // Pure logic only: no globals, no file I/O beyond what's passed in, so this
 // file can be require_once'd standalone from tests.
 
+require_once __DIR__ . '/system.php'; // ip_is_valid()
+
 // Strip Xray domain match-type prefixes -> bare hostname.
 function bare_domain(string $token): string {
     foreach (['domain:', 'full:', 'keyword:', 'regexp:'] as $p) {
@@ -148,7 +150,7 @@ function normalize_rule_input(string $line): array {
 function normalize_ip_literal(string $s): ?array {
     $parts = explode('/', $s, 2);
     $addr = strtolower($parts[0]);
-    if (filter_var($addr, FILTER_VALIDATE_IP) === false) return null;
+    if (!ip_is_valid($addr)) return null;
     $addr = canonical_ip($addr);
     if (count($parts) === 1) return ['kind' => 'ip', 'value' => $addr, 'reason' => null];
     $max = strpos($addr, ':') !== false ? 128 : 32;
@@ -171,7 +173,7 @@ function canonical_ip(string $addr): string {
 // before canonicalisation; anything else comes back unchanged.
 function canonical_ip_rule(string $rule): string {
     $parts = explode('/', trim($rule), 2);
-    if (filter_var($parts[0], FILTER_VALIDATE_IP) === false) return $rule;
+    if (!ip_is_valid($parts[0])) return $rule;
     $addr = canonical_ip(strtolower($parts[0]));
     return count($parts) === 2 ? $addr . '/' . $parts[1] : $addr;
 }
