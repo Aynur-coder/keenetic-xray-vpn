@@ -9,6 +9,7 @@ import { ConfirmHost } from './components/confirm.js';
 import { EmptyState } from './components/empty.js';
 import { OverviewScreen } from './screens/overview.js';
 import { ServersScreen } from './screens/servers.js';
+import { RoutesScreen } from './screens/routes.js';
 import { SettingsScreen } from './screens/settings.js';
 import { LoginScreen } from './screens/login.js';
 import { LegacyScreen } from './screens/legacy.js';
@@ -20,7 +21,7 @@ const CHECK_IPS_EVERY_MS = 60000;
 const SECTIONS = [
   { id: '', label: 'Обзор', icon: 'overview', screen: OverviewScreen },
   { id: 'servers', label: 'Серверы', icon: 'servers', screen: ServersScreen },
-  { id: 'routes', label: 'Маршруты', icon: 'routes', legacy: 'rules' },
+  { id: 'routes', label: 'Маршруты', icon: 'routes', screen: RoutesScreen },
   { id: 'devices', label: 'Устройства', icon: 'devices', legacy: 'devices' },
   { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostics', legacy: 'logs' },
 ];

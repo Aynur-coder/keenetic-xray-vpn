@@ -1,0 +1,1 @@
+{"domain:exact.example.org": "direct", "domain:youtube.com": "s1", "ip:10.0.0.0/8": "direct", "list:openai": "k2"}

@@ -89,3 +89,77 @@ function test_unknown_op_ignored(): void {
     eq($r['changed'], 1, 'only the one valid delete counts');
     eq($r['domains'], [], 'the valid delete still applied');
 }
+
+// ---------- normalize_rule_input ----------
+
+function test_normalize_url_to_host(): void {
+    $r = normalize_rule_input('https://Sub.Example.com/path?q');
+    eq($r, ['kind' => 'domain', 'value' => 'sub.example.com', 'reason' => null], 'URL → lowercase host');
+}
+
+function test_normalize_url_with_port_and_user(): void {
+    $r = normalize_rule_input('http://user@example.com:8080/x');
+    eq($r['kind'], 'domain', 'URL with userinfo/port is a domain');
+    eq($r['value'], 'example.com', 'userinfo and port dropped');
+}
+
+function test_normalize_wildcard(): void {
+    eq(normalize_rule_input('*.example.com')['value'], 'example.com', '*. prefix dropped');
+    eq(normalize_rule_input('.example.com.')['value'], 'example.com', 'leading/trailing dots dropped');
+}
+
+function test_normalize_xray_prefix(): void {
+    $r = normalize_rule_input('full:Example.com');
+    eq([$r['kind'], $r['value']], ['domain', 'example.com'], 'full: prefix stripped');
+}
+
+function test_normalize_ipv4(): void {
+    eq(normalize_rule_input(' 1.2.3.4 '), ['kind' => 'ip', 'value' => '1.2.3.4', 'reason' => null], 'plain IPv4');
+}
+
+function test_normalize_cidr(): void {
+    eq(normalize_rule_input('10.0.0.0/8'), ['kind' => 'ip', 'value' => '10.0.0.0/8', 'reason' => null], 'IPv4 CIDR');
+    eq(normalize_rule_input('2001:DB8::/32'), ['kind' => 'ip', 'value' => '2001:db8::/32', 'reason' => null], 'IPv6 CIDR');
+}
+
+function test_normalize_bad_cidr(): void {
+    $r = normalize_rule_input('10.0.0.0/33');
+    eq($r['kind'], null, 'prefix > 32 rejected');
+    eq(is_string($r['reason']) && $r['reason'] !== '', true, 'bad prefix has a reason');
+}
+
+function test_normalize_url_with_ip_host(): void {
+    eq(normalize_rule_input('http://1.2.3.4:81/a')['kind'], 'ip', 'URL with an IP host is an IP');
+}
+
+function test_normalize_space_inside(): void {
+    $r = normalize_rule_input('exa mple');
+    eq($r['kind'], null, 'space inside rejected');
+    eq(is_string($r['reason']) && $r['reason'] !== '', true, 'space inside has a reason');
+}
+
+function test_normalize_garbage(): void {
+    eq(normalize_rule_input('foo_bar!.com')['kind'], null, 'bad characters rejected');
+    eq(normalize_rule_input('')['kind'], null, 'empty rejected');
+    eq(normalize_rule_input('a..b')['kind'], null, 'empty label rejected');
+}
+
+function test_normalize_idn(): void {
+    $r = normalize_rule_input('пример.рф');
+    eq($r['kind'], 'domain', 'IDN is a domain');
+    $expected = function_exists('idn_to_ascii') ? 'xn--e1afmkfd.xn--p1ai' : 'пример.рф';
+    eq($r['value'], $expected, 'IDN → punycode when idn_to_ascii exists');
+}
+
+function test_collect_rule_inputs_domains(): void {
+    $r = collect_rule_inputs("https://A.com/x\n\n*.b.com, c.com; a.com\nexa mple\n1.2.3.4", 'domain');
+    eq($r['values'], ['a.com', 'b.com', 'c.com'], 'valid domains, deduplicated, in order');
+    eq(array_column($r['invalid'], 'line'), ['exa mple', '1.2.3.4'], 'bad line and IP reported');
+    eq($r['invalid'][1]['reason'], 'это IP-адрес — добавьте его как IP', 'IP in a domain list has its own reason');
+}
+
+function test_collect_rule_inputs_ips(): void {
+    $r = collect_rule_inputs("1.2.3.4\n10.0.0.0/8, example.com", 'ip');
+    eq($r['values'], ['1.2.3.4', '10.0.0.0/8'], 'valid IPs');
+    eq(array_column($r['invalid'], 'line'), ['example.com'], 'domain in an IP list reported');
+}

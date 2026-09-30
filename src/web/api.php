@@ -1778,6 +1778,8 @@ case 'add_domains':
     $prefix = ($_POST['mode'] ?? 'suffix') === 'full' ? 'full:' : 'domain:';
     $target = trim($_POST['target'] ?? '');
     $hasTarget = ($target !== '' && $target !== 'proxy');
+    // URLs, "*.x", IDN etc. → bare lowercase hosts; unusable lines come back in 'invalid'.
+    $input = collect_rule_inputs($new, 'domain');
     // Without an explicit override, skip domains already covered by an enabled v2fly list
     // (v2fly is authoritative). With an override the manual entry is a deliberate exception.
     $v2set = $hasTarget ? [] : v2fly_domain_set();
@@ -1785,25 +1787,25 @@ case 'add_domains':
     foreach ($existing as $t) $byBare[strtolower(bare_domain($t))] = $t;  // keep existing tokens as-is
     $added = [];
     $skipped = 0;
-    foreach (preg_split('/[\s,;\n]+/', $new) as $d) {
-        $bare = strtolower(bare_domain(trim($d)));
-        if ($bare === '') continue;
+    foreach ($input['values'] as $bare) {
         if (isset($byBare[$bare])) continue;                  // already a manual entry
         if (!$hasTarget && isset($v2set[$bare])) { $skipped++; continue; } // covered by v2fly
         $byBare[$bare] = $prefix . $bare; $added[] = $bare;
     }
+    $resp = ['ok' => true, 'count' => count($byBare), 'added' => count($added),
+        'skipped' => $skipped, 'invalid' => $input['invalid']];
+    if (!$added) { echo json_encode($resp); break; }
     lines_write($DOMAINS_FILE, array_values($byBare));
-    if ($hasTarget && $added) {
+    if ($hasTarget) {
         $targets = rule_targets();
         foreach ($added as $bare) $targets['domain:' . $bare] = $target;
         json_write($RULE_TARGETS_FILE, $targets);
     }
-    if ($added) {
-        log_event('info', 'rules', 'Добавлено доменов: ' . count($added), ['domains' => $added]);
-    }
+    log_event('info', 'rules', 'Добавлено доменов: ' . count($added), ['domains' => $added]);
     update_adguard_ipset();
-    quick_apply();
-    echo json_encode(['ok' => true, 'count' => count($byBare), 'added' => count($added), 'skipped' => $skipped]);
+    $apply = quick_apply();
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode($resp + ['xray_running' => $apply['xray_running']]);
     break;
 
 case 'delete_domain':
@@ -1825,18 +1827,22 @@ case 'add_ips':
     $new = trim($_POST['ips'] ?? '');
     if (!$new) { echo json_encode(['error' => 'No IPs']); break; }
     $target = trim($_POST['target'] ?? '');
-    $newList = array_values(array_filter(array_map('trim', preg_split('/[\s,;\n]+/', $new))));
+    $input = collect_rule_inputs($new, 'ip');
     $existing = array_flip($ips);
-    $added = array_values(array_filter($newList, fn($ip) => !isset($existing[$ip])));
-    $ips = array_values(array_unique(array_merge($ips, $newList)));
+    $added = array_values(array_filter($input['values'], fn($ip) => !isset($existing[$ip])));
+    $ips = array_merge($ips, $added);
+    $resp = ['ok' => true, 'count' => count($ips), 'added' => count($added),
+        'invalid' => $input['invalid']];
+    if (!$added) { echo json_encode($resp); break; }
     lines_write($IPS_FILE, $ips);
-    if ($target !== '' && $target !== 'proxy' && $added) {
+    if ($target !== '' && $target !== 'proxy') {
         $targets = rule_targets();
         foreach ($added as $ip) $targets['ip:' . $ip] = $target;
         json_write($RULE_TARGETS_FILE, $targets);
     }
-    quick_apply();
-    echo json_encode(['ok' => true, 'count' => count($ips), 'added' => count($added)]);
+    $apply = quick_apply();
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode($resp + ['xray_running' => $apply['xray_running']]);
     break;
 
 case 'delete_ip':
@@ -1954,7 +1960,10 @@ case 'update_github_lists':
     $domains = array_values(array_unique($domains));
     lines_write($DOMAINS_FILE, $domains);
     update_adguard_ipset();
-    echo json_encode(['ok' => true, 'new_domains' => $total_new, 'total' => count($domains)]);
+    $apply = quick_apply();
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'new_domains' => $total_new, 'total' => count($domains),
+        'xray_running' => $apply['xray_running']]);
     break;
 
 case 'v2fly_search':

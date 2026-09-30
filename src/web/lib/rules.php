@@ -82,3 +82,105 @@ function apply_rule_ops(array $ops, array $domains, array $ips, array $targets):
     }
     return ['domains' => $domains, 'ips' => $ips, 'targets' => $targets, 'changed' => $changed];
 }
+
+/**
+ * One user-typed rule line → what it means, for add_domains/add_ips.
+ * Accepts what people paste: URLs (scheme, userinfo, port, path, query dropped),
+ * "*.example.com", Xray "domain:"/"full:" prefixes, IPv4/IPv6 with optional CIDR.
+ * An internationalised domain becomes punycode when idn_to_ascii() exists
+ * (it is not on every router PHP build; then it is kept as typed).
+ *
+ * @return array{kind: 'domain'|'ip'|null, value: string, reason: ?string}
+ *         kind null = not usable; reason says why (Russian, shown in the UI).
+ */
+function normalize_rule_input(string $line): array {
+    $bad = fn(string $reason): array => ['kind' => null, 'value' => trim($line), 'reason' => $reason];
+    $s = trim($line);
+    if ($s === '') return $bad('пустая строка');
+    if (preg_match('/\s/u', $s)) return $bad('пробел внутри — по одному адресу в строке');
+
+    $ip = normalize_ip_literal($s);
+    if ($ip !== null) return $ip;
+
+    foreach (['domain:', 'full:'] as $p) {
+        if (strncasecmp($s, $p, strlen($p)) === 0) { $s = substr($s, strlen($p)); break; }
+    }
+    $s = preg_replace('#^[a-z][a-z0-9+.\-]*://#i', '', $s);
+    $s = preg_split('#[/?\#]#', $s, 2)[0];
+    $at = strrpos($s, '@');
+    if ($at !== false) $s = substr($s, $at + 1);
+    if (preg_match('/^\[([0-9a-f:.]+)\](?::\d+)?$/i', $s, $m)) $s = $m[1];   // [ipv6]:port
+    elseif (substr_count($s, ':') === 1) $s = preg_replace('/:\d*$/', '', $s); // host:port
+
+    $ip = normalize_ip_literal($s);
+    if ($ip !== null) return $ip;
+
+    if (strncmp($s, '*.', 2) === 0) $s = substr($s, 2);
+    $s = trim($s, '.');
+    if ($s === '') return $bad('нет адреса');
+
+    if (preg_match('/[^\x00-\x7f]/', $s)) {
+        if (function_exists('idn_to_ascii')) {
+            $ascii = defined('INTL_IDNA_VARIANT_UTS46')
+                ? idn_to_ascii($s, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46)
+                : idn_to_ascii($s);
+            if ($ascii === false || $ascii === '') return $bad('не похоже на домен');
+            $s = $ascii;
+        } elseif (function_exists('mb_strtolower')) {
+            $s = mb_strtolower($s, 'UTF-8');
+        }
+    }
+    $s = strtolower($s);
+
+    if (strlen($s) > 253) return $bad('слишком длинный домен');
+    foreach (explode('.', $s) as $label) {
+        // Letters/digits/'_'/'-' (and non-ASCII bytes when IDN conversion is unavailable).
+        if ($label === '' || strlen($label) > 63
+            || !preg_match('/^[a-z0-9_\x80-\xff]([a-z0-9_\-\x80-\xff]*[a-z0-9_\x80-\xff])?$/', $label)) {
+            return $bad('не похоже на домен или IP');
+        }
+    }
+    return ['kind' => 'domain', 'value' => $s, 'reason' => null];
+}
+
+// IPv4/IPv6 literal with optional /prefix → normalize_rule_input() result, or null
+// when $s is not IP-shaped at all. A valid IP with a bad prefix is an error, not a domain.
+function normalize_ip_literal(string $s): ?array {
+    $parts = explode('/', $s, 2);
+    $addr = strtolower($parts[0]);
+    if (filter_var($addr, FILTER_VALIDATE_IP) === false) return null;
+    if (count($parts) === 1) return ['kind' => 'ip', 'value' => $addr, 'reason' => null];
+    $max = strpos($addr, ':') !== false ? 128 : 32;
+    if (!preg_match('/^\d{1,3}$/', $parts[1]) || (int)$parts[1] > $max) {
+        return ['kind' => null, 'value' => $s, 'reason' => "маска подсети должна быть от 0 до $max"];
+    }
+    return ['kind' => 'ip', 'value' => $addr . '/' . (int)$parts[1], 'reason' => null];
+}
+
+/**
+ * Text from the «add rules» field → normalized values of one kind plus the lines that
+ * were not usable. Lines are split on newlines, ',' and ';' (not on spaces, so a
+ * mistyped "exa mple" is reported instead of becoming two bogus one-label rules).
+ * Empty lines are skipped silently; duplicates within the text are collapsed.
+ *
+ * @param 'domain'|'ip' $want
+ * @return array{values: string[], invalid: array{line: string, reason: string}[]}
+ */
+function collect_rule_inputs(string $text, string $want): array {
+    $values = [];
+    $invalid = [];
+    foreach (preg_split('/[\r\n,;]+/', $text) as $line) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $n = normalize_rule_input($line);
+        if ($n['kind'] === $want) {
+            $values[] = $n['value'];
+        } elseif ($n['kind'] === null) {
+            $invalid[] = ['line' => $line, 'reason' => (string)$n['reason']];
+        } else {
+            $invalid[] = ['line' => $line, 'reason' => $n['kind'] === 'ip'
+                ? 'это IP-адрес — добавьте его как IP' : 'это домен — добавьте его как домен'];
+        }
+    }
+    return ['values' => array_values(array_unique($values)), 'invalid' => $invalid];
+}
