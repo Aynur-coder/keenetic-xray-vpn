@@ -149,12 +149,31 @@ function normalize_ip_literal(string $s): ?array {
     $parts = explode('/', $s, 2);
     $addr = strtolower($parts[0]);
     if (filter_var($addr, FILTER_VALIDATE_IP) === false) return null;
+    $addr = canonical_ip($addr);
     if (count($parts) === 1) return ['kind' => 'ip', 'value' => $addr, 'reason' => null];
     $max = strpos($addr, ':') !== false ? 128 : 32;
     if (!preg_match('/^\d{1,3}$/', $parts[1]) || (int)$parts[1] > $max) {
         return ['kind' => null, 'value' => $s, 'reason' => "маска подсети должна быть от 0 до $max"];
     }
     return ['kind' => 'ip', 'value' => $addr . '/' . (int)$parts[1], 'reason' => null];
+}
+
+// One spelling per IPv6 address (2001:0DB8:0::1 → 2001:db8::1), so the same address
+// typed differently doesn't become a second rule. $addr must be a valid IP.
+function canonical_ip(string $addr): string {
+    if (strpos($addr, ':') === false || !function_exists('inet_pton')) return $addr;
+    $bin = @inet_pton($addr);
+    $out = $bin === false ? false : @inet_ntop($bin);
+    return $out === false ? $addr : strtolower($out);
+}
+
+// An ips.txt entry (IP or IP/prefix) in canonical form, for comparing entries written
+// before canonicalisation; anything else comes back unchanged.
+function canonical_ip_rule(string $rule): string {
+    $parts = explode('/', trim($rule), 2);
+    if (filter_var($parts[0], FILTER_VALIDATE_IP) === false) return $rule;
+    $addr = canonical_ip(strtolower($parts[0]));
+    return count($parts) === 2 ? $addr . '/' . $parts[1] : $addr;
 }
 
 /**

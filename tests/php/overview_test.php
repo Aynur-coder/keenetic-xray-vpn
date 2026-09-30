@@ -131,3 +131,57 @@ function test_no_active_when_unset(): void {
     $r = build_overview(_ov_base(['state' => []]));
     eq($r['active'], null, 'no active_outbound recorded yet');
 }
+
+function test_warning_selected_disabled_subscription(): void {
+    // The selected server's subscription was switched off: apply fell back to a key.
+    $servers = _ov_servers();
+    $servers[1]['sub'] = 'sub1';
+    $servers[1]['enabled'] = false;
+    $r = build_overview(_ov_base([
+        'servers' => $servers,
+        'state' => ['active_outbound' => 's1', 'effective_outbound' => 'k1',
+            'effective_reason' => 'fallback_disabled'],
+    ]));
+    eq($r['effective'], ['id' => 'k1', 'name' => 'Key One', 'proto' => 'vless'],
+        'effective is the fallback server');
+    $w = array_values(array_filter($r['warnings'], fn($w) => $w['code'] === 'selected_disabled'));
+    eq(count($w), 1, 'selected_disabled warning present');
+    eq($w[0]['message'], 'Подписка выбранного сервера отключена — сейчас используется Key One',
+        'names the disabled subscription and the server used instead');
+}
+
+function test_warning_selected_disabled_key(): void {
+    // A key switched off in the old interface; resolved without a recorded effective id.
+    $servers = _ov_servers();
+    $servers[0]['sub'] = '';
+    $servers[0]['enabled'] = false;
+    $r = build_overview(_ov_base([
+        'servers' => $servers,
+        'state' => ['active_outbound' => 'k1'],
+    ]));
+    eq($r['effective_reason'], 'fallback_disabled', 'resolve_active reports fallback_disabled');
+    $w = array_values(array_filter($r['warnings'], fn($w) => $w['code'] === 'selected_disabled'));
+    eq(count($w), 1, 'selected_disabled warning present for a key');
+    eq($w[0]['message'], 'Выбранный сервер отключён — сейчас используется 🇸🇪 Стокгольм',
+        'key wording names the server used instead');
+}
+
+function test_warning_selected_disabled_nothing_left(): void {
+    $r = build_overview(_ov_base([
+        'state' => ['active_outbound' => 's1', 'effective_outbound' => null,
+            'effective_reason' => 'fallback_disabled'],
+    ]));
+    $w = array_values(array_filter($r['warnings'], fn($w) => $w['code'] === 'selected_disabled'));
+    eq($w[0]['message'], 'Выбранный сервер отключён — других включённых серверов нет',
+        'no fallback server: says so instead of an empty name');
+}
+
+function test_warning_subscription_expired_hint_and_live_keys(): void {
+    // The old UI showed the provider's own message and how many keys still work.
+    $health = ['code' => 'subscription_expired',
+        'message' => 'Подписка истекла — сервер-заглушка вместо рабочих серверов',
+        'hint' => 'Продлите на site.example', 'live_keys' => 2];
+    $r = build_overview(_ov_base(['subscription_health' => $health]));
+    eq($r['warnings'][0]['hint'], 'Продлите на site.example', 'provider hint passed on');
+    eq($r['warnings'][0]['live_keys'], 2, 'working keys count passed on');
+}

@@ -2,6 +2,7 @@
 // «Проверить все», «Добавить»), then one collapsible card per source with its servers.
 // Tapping a row selects the server; star and «⋮» menu act on the row itself. Only
 // subscriptions can be turned off (source menu) — a server has no on/off of its own.
+// «Ссылка» / «Адрес подписки» show the stored link with a copy button.
 import { html, useState, useEffect } from '../vendor/preact-htm.js';
 import { api, errorText, refreshServers, refreshOverview } from '../api.js';
 import { store, useStore } from '../store.js';
@@ -17,6 +18,7 @@ import { confirm } from '../components/confirm.js';
 import { applyServerChoice } from './server-picker.js';
 import { AddLinkSheet, plural } from './add-link.js';
 import { flagOf, eventTime } from './overview.js';
+import { copyText } from './devices-wg.js';
 
 // Apply-backed actions wait up to the backend's 60 s apply lock.
 const APPLY_TIMEOUT_MS = 70000;
@@ -193,6 +195,7 @@ function ServerRow({ server, usable, isKey, busy, locked, pinging, handlers }) {
       <${Menu} label=${`Действия: ${name}`} items=${[
         { label: 'Проверить страну', onSelect: () => handlers.probe(server, 'country') },
         { label: 'Реальная задержка', onSelect: () => handlers.probe(server, 'delay') },
+        { label: 'Ссылка', onSelect: () => handlers.showLink(server, isKey) },
         isKey && { label: 'Переименовать', onSelect: () => handlers.rename(server) },
         isKey && { label: 'Удалить', danger: true, onSelect: () => handlers.remove(server) },
       ]} />
@@ -226,6 +229,8 @@ function SourceCard({ source, servers, open, onToggle, busy, rowProps }) {
         ${busy ? html`<span class="spinner src__spin" aria-hidden="true"></span>` : null}
         ${isKeys ? null : html`<${Menu} label=${`Действия: ${title}`} disabled=${!!busy} items=${[
           { label: 'Обновить', onSelect: () => rowProps.handlers.updateSource(source) },
+          { label: 'Переименовать', onSelect: () => rowProps.handlers.renameSource(source) },
+          { label: 'Адрес подписки', onSelect: () => rowProps.handlers.showSourceLink(source) },
           { label: source.enabled ? 'Выключить' : 'Включить',
             onSelect: () => rowProps.handlers.toggleSource(source) },
           { label: 'Удалить', danger: true,
@@ -254,8 +259,10 @@ function SourceCard({ source, servers, open, onToggle, busy, rowProps }) {
 
 // ---------- dialogs ----------
 
-function RenameSheet({ server, onClose }) {
-  const [name, setName] = useState(server.name || '');
+// item: {kind: 'key'|'subscription', id, name}.
+function RenameSheet({ item, onClose }) {
+  const isSub = item.kind === 'subscription';
+  const [name, setName] = useState(item.name || '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -267,27 +274,38 @@ function RenameSheet({ server, onClose }) {
       return;
     }
     setBusy(true);
-    const res = await api('rename_key', { id: server.id, name: value }, { quiet: true });
+    const res = await api(isSub ? 'rename_subscription' : 'rename_key',
+      { id: item.id, name: value }, { quiet: true });
     setBusy(false);
     if (res.error) {
       setError(errorText(res.error));
       return;
     }
-    patchServer(server.id, { name: value });
-    refreshOverview();
-    toast('Ключ переименован', 'success');
+    if (isSub) {
+      const cur = store.get().servers;
+      if (cur) {
+        store.set({ servers: { ...cur, sources: cur.sources.map((s) => (s.id === item.id
+          ? { ...s, name: value } : s)) } });
+      }
+      toast('Подписка переименована', 'success');
+    } else {
+      patchServer(item.id, { name: value });
+      refreshOverview();
+      toast('Ключ переименован', 'success');
+    }
     onClose();
   }
 
   return html`
-    <${Sheet} open=${true} title="Переименовать ключ" onClose=${onClose}
+    <${Sheet} open=${true} title=${isSub ? 'Переименовать подписку' : 'Переименовать ключ'}
+      onClose=${onClose}
       footer=${html`
         <${Button} variant="ghost" onClick=${onClose}>Отмена</${Button}>
         <${Button} variant="primary" type="submit" form="rename-form" loading=${busy}>
           Сохранить</${Button}>`}>
       <form id="rename-form" class="form" onSubmit=${submit}>
         <p class="muted">Сейчас:
-          <strong class="rename__old">${server.name || server.id}</strong></p>
+          <strong class="rename__old">${item.name || item.id}</strong></p>
         <label class="field">
           <span class="field__label">Новое название</span>
           <input class="input" value=${name} maxlength="100" autocomplete="off"
@@ -295,6 +313,64 @@ function RenameSheet({ server, onClose }) {
         </label>
         ${error ? html`<p class="form__error" role="alert">${error}</p>` : null}
       </form>
+    </${Sheet}>
+  `;
+}
+
+// Where a link is stored: api action (a JSON list) and the field of the matching item.
+const LINK_FROM = {
+  key: ['keys', 'link'],
+  server: ['subscription_servers', 'link'],
+  subscription: ['subscriptions', 'url'],
+};
+
+// item: {kind: 'key'|'server'|'subscription', id, name}. Read on demand — the servers list
+// doesn't carry links.
+function LinkSheet({ item, onClose }) {
+  const [state, setState] = useState({ link: null, error: '' });
+  const isSub = item.kind === 'subscription';
+
+  useEffect(() => {
+    let live = true;
+    const [action, field] = LINK_FROM[item.kind];
+    api(action, null, { quiet: true }).then((res) => {
+      if (!live) return;
+      const found = Array.isArray(res) ? res.find((r) => r && r.id === item.id) : null;
+      const link = found && typeof found[field] === 'string' ? found[field] : '';
+      if (link) setState({ link, error: '' });
+      else {
+        setState({ link: null, error: res && res.error ? errorText(res.error)
+          : 'Ссылка не найдена — обновите список серверов' });
+      }
+    });
+    return () => { live = false; };
+  }, [item.kind, item.id]);
+
+  async function copy() {
+    if (await copyText(state.link)) toast('Ссылка скопирована', 'success');
+    else toast('Не удалось скопировать — выделите текст вручную', 'error');
+  }
+
+  let body;
+  if (state.error) body = html`<p class="tone-red" role="alert">${state.error}</p>`;
+  else if (state.link === null) {
+    body = html`<p class="muted srv-loading"><span class="spinner"></span> Загрузка…</p>`;
+  } else {
+    body = html`
+      <p class="muted wg-conf__hint">${isSub
+        ? 'По этому адресу роутер загружает серверы подписки.'
+        : 'В ссылке всё для подключения к серверу — не публикуйте её.'}</p>
+      <pre class="wg-conf__text mono" aria-label="Ссылка">${state.link}</pre>
+    `;
+  }
+  return html`
+    <${Sheet} open=${true} title=${`${isSub ? 'Адрес подписки' : 'Ссылка'}: ${item.name}`}
+      onClose=${onClose}
+      footer=${html`
+        <${Button} variant="ghost" onClick=${onClose}>Закрыть</${Button}>
+        <${Button} variant="primary" icon="copy" disabled=${!state.link}
+          onClick=${copy}>Копировать</${Button}>`}>
+      <div class="wg-conf">${body}</div>
     </${Sheet}>
   `;
 }
@@ -323,6 +399,7 @@ export function ServersScreen() {
   const [collapsed, setCollapsed] = useState({});
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState(null);
+  const [linkOf, setLinkOf] = useState(null); // LinkSheet item
   const [pinging, setPinging] = useState(false);
   const [busy, setBusy] = useState({}); // server id → 'select' | 'probe'
   const [sourceBusy, setSourceBusy] = useState(null); // {id, text} of a source being changed
@@ -383,7 +460,19 @@ export function ServersScreen() {
     },
 
     rename(server) {
-      setRenaming(server);
+      setRenaming({ kind: 'key', id: server.id, name: server.name });
+    },
+
+    renameSource(source) {
+      setRenaming({ kind: 'subscription', id: source.id, name: source.name });
+    },
+
+    showLink(server, isKey) {
+      setLinkOf({ kind: isKey ? 'key' : 'server', id: server.id, name: server.name || server.id });
+    },
+
+    showSourceLink(source) {
+      setLinkOf({ kind: 'subscription', id: source.id, name: sourceTitle(source) });
     },
 
     async remove(server) {
@@ -540,8 +629,9 @@ export function ServersScreen() {
         </div>` : null}
       <div class="srv-groups">${body}</div>
       ${adding ? html`<${AddLinkSheet} onClose=${() => setAdding(false)} />` : null}
-      ${renaming ? html`<${RenameSheet} server=${renaming}
+      ${renaming ? html`<${RenameSheet} item=${renaming}
         onClose=${() => setRenaming(null)} />` : null}
+      ${linkOf ? html`<${LinkSheet} item=${linkOf} onClose=${() => setLinkOf(null)} />` : null}
       <${Sheet} open=${filtersOpen && !desktop} title="Фильтры"
         onClose=${() => setFiltersOpen(false)}
         footer=${html`

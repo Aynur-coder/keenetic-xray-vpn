@@ -125,12 +125,22 @@ function AddStep({ nav }) {
   `;
 }
 
+// To the overview, replacing the wizard's history entry: «Назад» must not reopen it.
+function leaveWizard() {
+  location.replace('#/');
+}
+
+// Enter in a text field (the server search) must not submit the step.
+function keepEnterInField(e) {
+  if (e.key === 'Enter' && e.target instanceof HTMLInputElement) e.preventDefault();
+}
+
 function ServerStep({ nav }) {
   const [busy, setBusy] = useState(false);
   const empty = html`<${EmptyState} icon="servers" title="Серверов пока нет"
     text="Добавить подписку или ключ можно позже в разделе «Серверы». Пропустите шаг." />`;
   return html`
-    <form class="form wizard__form" noValidate
+    <form class="form wizard__form" noValidate onKeyDown=${keepEnterInField}
       onSubmit=${(e) => { e.preventDefault(); nav.next(); }}>
       <p class="muted">
         Нажмите на сервер — он сразу применится. Поменять его можно в любой момент
@@ -176,7 +186,7 @@ function FinishStep({ nav, wireguard }) {
       return;
     }
     toast('Готово! Можно пользоваться.', 'success');
-    location.hash = '#/';
+    leaveWizard();
   }
 
   const failed = errors.length > 0;
@@ -206,7 +216,7 @@ function FinishStep({ nav, wireguard }) {
         </div>` : null}
       ${failed ? html`
         <${Footer} nav=${nav} busy=${busy} next="Повторить" skip="На обзор"
-          onSkip=${() => { location.hash = '#/'; }} />`
+          onSkip=${leaveWizard} />`
         : html`<${Footer} nav=${nav} busy=${busy} next="Готово"
           onSkip=${() => finish(false)} />`}
     </form>

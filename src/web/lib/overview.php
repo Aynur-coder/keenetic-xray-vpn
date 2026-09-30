@@ -18,7 +18,8 @@ const OVERVIEW_MSG_GOOGLE_RU =
  *
  * $in keys: xray_running (bool), watchdog (string: '' | 'ok' | 'paused'),
  * state (array: state.json contents), servers (array of rows
- * ['id','name','proto','enabled'] built from keys + cached servers),
+ * ['id','name','proto','enabled', optional 'sub' = subscription id, '' for keys]
+ * built from keys + cached servers),
  * subscription_health (?array: subscription_health()'s return),
  * probe (?array: id => ['google_country' => ?string, ...], or null when the
  * probe cache file is absent), mem ([used, total]), wg_up (bool),
@@ -77,13 +78,27 @@ function build_overview(array $in): array {
 
     $subHealth = $in['subscription_health'] ?? null;
     if (is_array($subHealth) && isset($subHealth['code'], $subHealth['message'])) {
-        $warnings[] = ['code' => $subHealth['code'], 'message' => $subHealth['message']];
+        $w = ['code' => $subHealth['code'], 'message' => $subHealth['message']];
+        // Optional extras: the provider's own text and how many keys still work.
+        if (($subHealth['hint'] ?? '') !== '') $w['hint'] = (string)$subHealth['hint'];
+        if (($subHealth['live_keys'] ?? 0) > 0) $w['live_keys'] = (int)$subHealth['live_keys'];
+        $warnings[] = $w;
     }
 
+    // What replaces the selected server, for the fallback warnings below.
+    $usedNow = $effective !== null
+        ? 'сейчас используется ' . ($effective['name'] !== '' ? $effective['name'] : $effective['id'])
+        : 'других включённых серверов нет';
     if ($effectiveReason === 'fallback_missing') {
-        $name = $effective['name'] ?? (string)$effectiveId;
         $warnings[] = ['code' => 'selected_missing',
-            'message' => 'Выбранный сервер пропал из подписки — сейчас используется ' . $name];
+            'message' => 'Выбранный сервер пропал из подписки — ' . $usedNow];
+    } elseif ($effectiveReason === 'fallback_disabled') {
+        // The selected server is still there but off: its whole subscription (or, for a
+        // key switched off in the old interface, the key itself).
+        $row = overview_find_row($servers, $activeId);
+        $what = ($row['sub'] ?? '') !== ''
+            ? 'Подписка выбранного сервера отключена' : 'Выбранный сервер отключён';
+        $warnings[] = ['code' => 'selected_disabled', 'message' => $what . ' — ' . $usedNow];
     }
 
     if ($watchdog === 'paused') {
@@ -119,10 +134,16 @@ function build_overview(array $in): array {
 // Finds $id among $servers (rows with 'id'/'name'/'proto') and returns the
 // display object the UI needs, or null when it isn't in the list anymore.
 function overview_find_server(array $servers, $id): ?array {
+    $s = overview_find_row($servers, $id);
+    return $s === null ? null
+        : ['id' => $s['id'], 'name' => $s['name'] ?? '', 'proto' => $s['proto'] ?? ''];
+}
+
+// The raw $servers row with this id, or null.
+function overview_find_row(array $servers, $id): ?array {
+    if ($id === null || $id === '') return null;
     foreach ($servers as $s) {
-        if (($s['id'] ?? null) === $id) {
-            return ['id' => $s['id'], 'name' => $s['name'] ?? '', 'proto' => $s['proto'] ?? ''];
-        }
+        if (($s['id'] ?? null) === $id) return $s;
     }
     return null;
 }

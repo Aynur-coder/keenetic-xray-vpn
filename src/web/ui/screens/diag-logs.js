@@ -43,14 +43,17 @@ export function LogsTab({ xrayLogs = true }) {
   const box = useRef(null);
   const stick = useRef(true); // follow new lines (false once the user scrolls up)
   const seq = useRef(0);
+  const pending = useRef(null); // source|lines of the request on its way, null when none
 
   const xrayOff = !xrayLogs && XRAY_SOURCES.has(source);
 
   async function load() {
     if (xrayOff) return;
     const my = ++seq.current;
+    pending.current = `${source}|${lines}`;
     const res = await api('logs', { source, lines }, { method: 'GET', quiet: true });
     if (my !== seq.current) return;
+    pending.current = null;
     if (!Array.isArray(res)) {
       setState((s) => ({ ...s, error: errorText(res.error || 'Некорректный ответ роутера') }));
       return;
@@ -59,7 +62,9 @@ export function LogsTab({ xrayLogs = true }) {
     while (list.length && list[list.length - 1].trim() === '') list.pop();
     setState({ lines: list, error: '' });
   }
-  useVisiblePolling(load, REFRESH_MS, auto && !xrayOff, [source, lines]);
+  // Auto-refresh skips a tick while the same request is still pending (slow router).
+  const poll = () => (pending.current === `${source}|${lines}` ? undefined : load());
+  useVisiblePolling(poll, REFRESH_MS, auto && !xrayOff, [source, lines]);
   useEffect(() => {
     if (!auto) load(); // without auto-refresh: once per source / line count
   }, [source, lines]);

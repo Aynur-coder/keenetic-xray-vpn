@@ -83,7 +83,7 @@ function PeerRow({ peer, onConfig, onDelete }) {
 }
 
 // Text copy that also works over plain http (no navigator.clipboard outside secure contexts).
-async function copyText(text) {
+export async function copyText(text) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
@@ -127,6 +127,12 @@ function ConfigSheet({ name, onClose }) {
       // is an error message (e.g. no qrencode at all), not a code.
       const text = !svg && typeof qr.qr === 'string' && /[█▀▄]/.test(qr.qr) ? qr.qr : '';
       setState({ config: String(conf.config || ''), svg, qrText: text, error: '' });
+    }).catch(() => {
+      // api() itself never throws; this is an unexpected answer shape — say so inline
+      // instead of spinning forever.
+      if (live) {
+        setState({ config: null, svg: '', qrText: '', error: 'Не удалось загрузить конфиг' });
+      }
     });
     return () => { live = false; };
   }, [name]);
@@ -145,7 +151,7 @@ function ConfigSheet({ name, onClose }) {
   }
 
   let body;
-  if (state.error) body = html`<p class="tone-red">${state.error}</p>`;
+  if (state.error) body = html`<p class="tone-red" role="alert">${state.error}</p>`;
   else if (state.config === null) {
     body = html`<p class="muted srv-loading"><span class="spinner"></span> Загрузка…</p>`;
   } else {

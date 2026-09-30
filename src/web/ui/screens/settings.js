@@ -136,6 +136,15 @@ function GeneralCard({ id }) {
         </div>
         <span class="mono">${version || '—'}</span>
       </div>
+      <div class="setting">
+        <div class="setting__text">
+          <span class="setting__label">Старый интерфейс</span>
+          <span class="setting__hint">Прежняя версия панели — на случай, если здесь чего-то
+            не хватает</span>
+        </div>
+        <a class="btn btn--secondary btn--md" href="legacy.php">
+          <span>Открыть</span><${Icon} name="external" size=${16} /></a>
+      </div>
     </${Card}>
   `;
 }

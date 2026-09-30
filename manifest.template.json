@@ -26,7 +26,6 @@
     {"src": "src/web/ui/components/toast.js",      "dst": "/opt/share/www/xray/ui/components/toast.js",       "mode": "644"},
     {"src": "src/web/ui/components/toggle.js",     "dst": "/opt/share/www/xray/ui/components/toggle.js",      "mode": "644"},
     {"src": "src/web/ui/screens/add-link.js",      "dst": "/opt/share/www/xray/ui/screens/add-link.js",       "mode": "644"},
-    {"src": "src/web/ui/screens/legacy.js",        "dst": "/opt/share/www/xray/ui/screens/legacy.js",         "mode": "644"},
     {"src": "src/web/ui/screens/login.js",         "dst": "/opt/share/www/xray/ui/screens/login.js",          "mode": "644"},
     {"src": "src/web/ui/screens/overview.js",      "dst": "/opt/share/www/xray/ui/screens/overview.js",       "mode": "644"},
     {"src": "src/web/ui/screens/server-picker.js", "dst": "/opt/share/www/xray/ui/screens/server-picker.js",  "mode": "644"},

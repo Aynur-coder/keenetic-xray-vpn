@@ -78,6 +78,21 @@ function isXrayRunning(overview) {
   return overview.state !== 'stopped';
 }
 
+// Router memory and the WireGuard server (the latter only while the feature is on).
+// mem_total is 0 when `free` gave nothing usable — then memory is left out.
+function SystemLine({ overview }) {
+  const parts = [];
+  if (overview.mem_total > 0) {
+    parts.push(html`<span key="mem">
+      Память: ${overview.mem_used} из ${overview.mem_total} МБ</span>`);
+  }
+  if (overview.features && overview.features.wireguard) {
+    parts.push(html`<span key="wg">WireGuard: <span class=${overview.wg_up ? 'tone-green'
+      : 'tone-muted'}>${overview.wg_up ? 'работает' : 'не запущен'}</span></span>`);
+  }
+  return parts.length ? html`<p class="state__sys muted">${parts}</p>` : null;
+}
+
 function StateCard({ overview }) {
   const [busy, setBusy] = useState(null);
   const [tone, label] = STATE_LABEL[overview.state] || ['neutral', overview.state];
@@ -93,6 +108,7 @@ function StateCard({ overview }) {
             ${reason}</p>` : null}
         </div>
       </div>
+      <${SystemLine} overview=${overview} />
       <div class="actions">
         ${stopped
           ? html`<${Button} variant="primary" icon="play" loading=${busy === 'start'}
@@ -224,7 +240,9 @@ function IpCard({ overview }) {
   `;
 }
 
-const WARNING_TONE = { watchdog_paused: 'orange', selected_missing: 'orange' };
+const WARNING_TONE = {
+  watchdog_paused: 'orange', selected_missing: 'orange', selected_disabled: 'orange',
+};
 
 function WarningItem({ warning, onPick }) {
   const [busy, setBusy] = useState(false);
@@ -240,7 +258,7 @@ function WarningItem({ warning, onPick }) {
   }
 
   let action = null;
-  if (code === 'selected_missing' || code === 'google_ru') {
+  if (code === 'selected_missing' || code === 'selected_disabled' || code === 'google_ru') {
     action = html`<${Button} size="sm" onClick=${onPick}>Выбрать сервер</${Button}>`;
   } else if (code === 'subscription_expired') {
     action = html`<${Button} size="sm" loading=${busy} onClick=${updateSubscriptions}>
@@ -252,7 +270,13 @@ function WarningItem({ warning, onPick }) {
   return html`
     <li class=${`callout callout--${tone}`}>
       <${Icon} name="alert" />
-      <p class="callout__text">${warning.message}</p>
+      <div class="callout__text">
+        <span>${warning.message}</span>
+        ${warning.hint ? html`<span class="callout__sub">
+          Сообщение провайдера: ${warning.hint}</span>` : null}
+        ${warning.live_keys > 0 ? html`<span class="callout__sub">
+          Рабочих ключей: ${warning.live_keys} — можно переключиться на них</span>` : null}
+      </div>
       ${action ? html`<div class="callout__action">${action}</div>` : null}
     </li>
   `;

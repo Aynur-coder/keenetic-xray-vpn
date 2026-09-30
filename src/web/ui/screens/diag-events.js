@@ -105,16 +105,21 @@ export function EventsTab() {
   const [type, setType] = useState('');
   const [state, setState] = useState({ events: null, error: '' });
   const seq = useRef(0);
+  const pending = useRef(null); // filters of the request on its way, null when none
 
   async function load() {
     const my = ++seq.current;
+    pending.current = `${level}|${type}`;
     const res = await api('events', { limit: LIMIT, level: level || null, type: type || null },
       { method: 'GET', quiet: true });
     if (my !== seq.current) return; // filters changed while this one was on its way
+    pending.current = null;
     if (res.error) setState((s) => ({ ...s, error: errorText(res.error) }));
     else setState({ events: Array.isArray(res.events) ? res.events : [], error: '' });
   }
-  useVisiblePolling(load, REFRESH_MS, true, [level, type]);
+  // A slow router: skip the tick while the same request is still pending.
+  const poll = () => (pending.current === `${level}|${type}` ? undefined : load());
+  useVisiblePolling(poll, REFRESH_MS, true, [level, type]);
 
   function changeFilter(fn, value) {
     setState({ events: null, error: '' });

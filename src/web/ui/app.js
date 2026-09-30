@@ -15,13 +15,12 @@ import { DevicesScreen } from './screens/devices.js';
 import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { SettingsScreen } from './screens/settings.js';
 import { LoginScreen } from './screens/login.js';
-import { LegacyScreen } from './screens/legacy.js';
 import { WizardScreen } from './screens/wizard.js';
 
 const OVERVIEW_EVERY_MS = 10000;
 const CHECK_IPS_EVERY_MS = 60000;
 
-// Main sections, in nav order. `legacy` = tab id in legacy.php for not-yet-rebuilt sections.
+// Main sections, in nav order.
 const SECTIONS = [
   { id: '', label: 'Обзор', icon: 'overview', screen: OverviewScreen },
   { id: 'servers', label: 'Серверы', icon: 'servers', screen: ServersScreen },
@@ -122,8 +121,6 @@ function App() {
   if (!page) {
     content = html`<${EmptyState} icon="alert" title="Такой страницы нет"
       action=${html`<a class="btn btn--secondary btn--md" href="#/">На обзор</a>`} />`;
-  } else if (page.legacy) {
-    content = html`<${LegacyScreen} tab=${page.legacy} />`;
   } else {
     const Screen = page.screen;
     content = html`<${Screen} />`;

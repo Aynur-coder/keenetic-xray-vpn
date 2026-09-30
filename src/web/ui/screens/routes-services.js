@@ -194,6 +194,32 @@ export function ServicesCard({ data, choices, reload, patch }) {
     },
   };
 
+  // «Обновить все» (as in the old interface): every list in turn, then the GitHub URL lists
+  // in one update_github_lists. Each download applies on its own, as a single refresh does.
+  const [refreshingAll, setRefreshingAll] = useState(false);
+  async function refreshAll() {
+    setRefreshingAll(true);
+    const failed = [];
+    for (const list of data.lists.filter(isV2fly)) {
+      setRowBusy(list.id, 'Обновляю…');
+      const res = await api('v2fly_refresh', { name: list.name },
+        { quiet: true, timeout: FETCH_TIMEOUT_MS });
+      setRowBusy(list.id, null);
+      if (res.error) failed.push(list.name);
+    }
+    const urlLists = data.lists.filter((l) => !isV2fly(l));
+    if (urlLists.length) {
+      urlLists.forEach((l) => setRowBusy(l.id, 'Обновляю…'));
+      const res = await api('update_github_lists', {}, { quiet: true, timeout: FETCH_TIMEOUT_MS });
+      urlLists.forEach((l) => setRowBusy(l.id, null));
+      if (res.error) failed.push('списки GitHub');
+    }
+    setRefreshingAll(false);
+    if (failed.length) toast(`Не удалось обновить: ${failed.join(', ')}`, 'error');
+    else toast('Сервисы обновлены', 'success');
+    reload();
+  }
+
   const lists = data.lists;
   const addButton = html`<${Button} variant="primary" size="sm" icon="plus"
     onClick=${() => setCatalog(true)}>Добавить сервис</${Button}>`;
@@ -204,7 +230,12 @@ export function ServicesCard({ data, choices, reload, patch }) {
           ${lists.map((l) => html`
             <${ServiceRow} key=${l.id} list=${l} target=${data.targets[`list:${l.name}`]}
               busy=${busy[l.id]} choices=${choices} handlers=${handlers} />`)}
-        </ul>` : html`
+        </ul>
+        <div class="actions">
+          <${Button} variant="ghost" size="sm" icon="restart" loading=${refreshingAll}
+            disabled=${Object.keys(busy).length > 0 && !refreshingAll}
+            onClick=${refreshAll}>Обновить все</${Button}>
+        </div>` : html`
         <${EmptyState} icon="routes" title="Сервисы не подключены"
           text="Сервис — готовый список доменов (YouTube, Instagram, OpenAI…). Подключите его,
             и все его сайты пойдут через VPN."

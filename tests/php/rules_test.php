@@ -163,3 +163,24 @@ function test_collect_rule_inputs_ips(): void {
     eq($r['values'], ['1.2.3.4', '10.0.0.0/8'], 'valid IPs');
     eq(array_column($r['invalid'], 'line'), ['example.com'], 'domain in an IP list reported');
 }
+
+function test_normalize_ipv6_canonical(): void {
+    eq(normalize_rule_input('2001:0DB8:0000:0000:0000:0000:0000:0001')['value'], '2001:db8::1',
+        'IPv6 written in full becomes the compressed form');
+    eq(normalize_rule_input('2001:db8:0:0::/48')['value'], '2001:db8::/48',
+        'IPv6 CIDR address part is canonicalised too');
+    eq(normalize_rule_input('[2001:DB8:0::1]:443')['value'], '2001:db8::1',
+        'bracketed IPv6 with port canonicalised');
+    eq(normalize_rule_input('::FFFF:1.2.3.4')['value'], '::ffff:1.2.3.4', 'IPv4-mapped kept readable');
+}
+
+function test_collect_rule_inputs_ipv6_duplicates(): void {
+    $r = collect_rule_inputs("2001:db8::1\n2001:0db8:0:0:0:0:0:1, 2001:DB8::1", 'ip');
+    eq($r['values'], ['2001:db8::1'], 'spellings of one IPv6 address collapse into one rule');
+}
+
+function test_canonical_ip_rule(): void {
+    eq(canonical_ip_rule('2001:0db8::0001/64'), '2001:db8::1/64', 'existing IPv6 entry canonicalised');
+    eq(canonical_ip_rule('1.2.3.4'), '1.2.3.4', 'IPv4 unchanged');
+    eq(canonical_ip_rule('not-an-ip'), 'not-an-ip', 'anything else passed through');
+}

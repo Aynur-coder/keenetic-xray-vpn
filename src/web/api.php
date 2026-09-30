@@ -327,6 +327,7 @@ function overview_build_servers(array $keys, array $cached, array $subs = []) {
             'name'    => $s['name'] ?? '',
             'proto'   => overview_link_proto($s['link'] ?? ''),
             'enabled' => effective_enabled($s, $subs),
+            'sub'     => (string)($s['sub'] ?? ''),
         ];
     }
     return $rows;
@@ -1658,6 +1659,19 @@ case 'delete_subscription':
     if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
     echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
     break;
+case 'rename_subscription':
+    // Name only (shown in the UI) — the config doesn't change, nothing to apply.
+    $id = $_POST['id'] ?? '';
+    $name = trim($_POST['name'] ?? '');
+    if ($id === '' || $name === '') { echo json_encode(['error' => 'Bad params']); break; }
+    $subs = json_read($SUBS_FILE);
+    $found = false;
+    foreach ($subs as &$s) { if (($s['id'] ?? '') === $id) { $s['name'] = $name; $found = true; } }
+    unset($s);
+    if (!$found) { echo json_encode(['error' => 'not_found']); break; }
+    json_write($SUBS_FILE, $subs);
+    echo json_encode(['ok' => true]);
+    break;
 
 case 'toggle_subscription':
     $subs = json_read($SUBS_FILE);
@@ -1949,7 +1963,7 @@ case 'add_ips':
     if (!$new) { echo json_encode(['error' => 'No IPs']); break; }
     $target = trim($_POST['target'] ?? '');
     $input = collect_rule_inputs($new, 'ip');
-    $existing = array_flip($ips);
+    $existing = array_flip(array_map('canonical_ip_rule', $ips));
     $added = array_values(array_filter($input['values'], fn($ip) => !isset($existing[$ip])));
     $ips = array_merge($ips, $added);
     $resp = ['ok' => true, 'count' => count($ips), 'added' => count($added),
