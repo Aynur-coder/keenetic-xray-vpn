@@ -1,0 +1,1 @@
+{"ok": true, "added_subscriptions": 1, "added_keys": 2, "skipped": [{"line": "vmess://eyJhZGQiOiIxLjIuMy40In0=", "reason": "vmess не поддерживается"}, {"line": "hello world", "reason": "unrecognized"}], "xray_running": true}

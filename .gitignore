@@ -5,3 +5,6 @@ manifest.json
 node_modules/
 .idea/
 .vscode/
+tests/ui/.offline
+tests/ui/.locked
+tests/ui/.scenario

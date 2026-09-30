@@ -1,0 +1,1 @@
+{"status":"failed","updated_at":1700000000,"message":"Не удалось скачать релиз","log_tail":"[2026-09-30 10:00:00] update.sh --apply starting\nSTEP  Resolving version\nSTEP  Downloading release\nERROR: download failed"}

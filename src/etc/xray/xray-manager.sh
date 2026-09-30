@@ -18,10 +18,17 @@ FULLVPN_FILE="$RULES_DIR/fullvpn_devices.txt"
 IPSET_NAME="vpn1"
 IPSET6_NAME="vpn6"
 REDIR_PORT=1080
+# Full-VPN devices are redirected here instead: Xray routes them by inbound tag, which
+# needs no MAC->IP lookup and covers IPv6 (a device's v6 addresses are not knowable).
+FULLVPN_PORT=1083
 WATCHDOG_PID="/opt/var/run/xray-watchdog.pid"
 WATCHDOG_STATE="/opt/var/run/xray-watchdog.state"
 WATCHDOG_INTERVAL=30
 WATCHDOG_MAX_FAILS=3
+# Human-readable event journal — same JSON-lines file/format as lib/events.php's
+# emit_event()/read_events(), so PHP rotation (also at 256 KB) picks up right where this leaves off.
+EVENTS_LOG="/opt/var/log/xray-vpn/events.log"
+EVENTS_MAX_BYTES=262144
 
 log() { _logs_enabled && { logger -t xray-mgr "$1"; echo "$1"; } || true; }
 
@@ -140,37 +147,6 @@ generate_config() {
         ip_rules=$(grep -v '^#\|^$' "$IPS_FILE" | sed 's/^/"/;s/$/"/' | tr '\n' ',' | sed 's/,$//')
     fi
     
-    # Build full-vpn source IPs (MAC->IP lookup with multiple fallbacks)
-    local fullvpn_sources=""
-    if [ -s "$FULLVPN_FILE" ]; then
-        while IFS= read -r mac || [ -n "$mac" ]; do
-            [ -z "$mac" ] && continue
-            [ "${mac#\#}" != "$mac" ] && continue
-            # Method 1: ARP table (skip FAILED/INCOMPLETE entries)
-            local ip=$(ip neigh show dev br0 | grep -iv 'failed\|incomplete' | grep -i "$mac" | awk '{print $1}' | head -1)
-            # Method 2: all interfaces ARP
-            if [ -z "$ip" ]; then
-                ip=$(ip neigh | grep -iv 'failed\|incomplete' | grep -i "$mac" | awk '{print $1}' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            fi
-            # Method 3: DHCP leases file
-            if [ -z "$ip" ]; then
-                local mac_lower=$(echo "$mac" | tr '[:upper:]' '[:lower:]')
-                ip=$(awk -v m="$mac_lower" '$2==m{print $3}' /tmp/dhcp.leases 2>/dev/null | head -1)
-            fi
-            # Method 4: ndmc RCI (Keenetic API)
-            if [ -z "$ip" ] && command -v ndmc >/dev/null 2>&1; then
-                ip=$(ndmc -c "show ip hotspot" 2>/dev/null | grep -i "$mac" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            fi
-            if [ -n "$ip" ]; then
-                if [ -n "$fullvpn_sources" ]; then fullvpn_sources="$fullvpn_sources,"; fi
-                fullvpn_sources="$fullvpn_sources\"$ip\""
-                log "Full VPN device $mac → $ip"
-            else
-                log "Full VPN device $mac: IP not found (iptables MAC rule still active)"
-            fi
-        done < "$FULLVPN_FILE"
-    fi
-
     # Generate config
     cat > "$XRAY_CONF" << CONF
 {
@@ -183,6 +159,14 @@ generate_config() {
     {
       "tag": "tproxy-in",
       "port": $REDIR_PORT,
+      "protocol": "dokodemo-door",
+      "settings": {"network": "tcp,udp", "followRedirect": true},
+      "sniffing": {"enabled": true, "destOverride": ["http","tls","quic"], "routeOnly": true},
+      "streamSettings": {"sockopt": {"tproxy": "redirect"}}
+    },
+    {
+      "tag": "fullvpn-in",
+      "port": $FULLVPN_PORT,
       "protocol": "dokodemo-door",
       "settings": {"network": "tcp,udp", "followRedirect": true},
       "sniffing": {"enabled": true, "destOverride": ["http","tls","quic"], "routeOnly": true},
@@ -214,12 +198,10 @@ generate_config() {
       {"type": "field", "outboundTag": "direct", "ip": ["geoip:private"]},
 CONF
 
-    # Full VPN devices rule
-    if [ -n "$fullvpn_sources" ]; then
-        cat >> "$XRAY_CONF" << CONF
-      {"type": "field", "outboundTag": "$active_tag", "source": [$fullvpn_sources]},
+    # Full VPN devices rule (everything arriving on fullvpn-in goes through the tunnel)
+    cat >> "$XRAY_CONF" << CONF
+      {"type": "field", "outboundTag": "$active_tag", "inboundTag": ["fullvpn-in"]},
 CONF
-    fi
 
     # Domain rules
     if [ -n "$domain_rules" ]; then
@@ -263,6 +245,12 @@ _get_vpn_server() {
         addr=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.servers[0].address" 2>/dev/null)
         port=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.servers[0].port" 2>/dev/null)
     fi
+    if [ -z "$addr" ]; then
+        # Hysteria keeps the server flat in settings. It listens on UDP, but the probe is only
+        # "does the host answer at all": a TCP connect that is refused still counts as alive.
+        addr=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.address" 2>/dev/null)
+        port=$(jsonfilter -i "$XRAY_CONF" -e "@.outbounds[0].settings.port" 2>/dev/null)
+    fi
     [ -n "$addr" ] && [ -n "$port" ] && printf '%s %s\n' "$addr" "$port"
 }
 
@@ -288,12 +276,120 @@ _logs_enabled() {
     [ "$v" != "false" ]
 }
 
+# Returns 0 if diag_events is true (or unset/absent), 1 if explicitly false.
+_diag_events_enabled() {
+    local v
+    v=$(jsonfilter -i "$XRAY_DIR/features.json" -e "@.diag_events" 2>/dev/null)
+    [ "$v" != "false" ]
+}
+
+# Append one JSON-line event: {"ts","level","type","msg","data"} — same shape as the
+# PHP side's emit_event(). Escapes " and \ in msg. No-op when diag_events=false.
+# Rotates at EVENTS_MAX_BYTES so the file never grows unbounded between PHP writes
+# (PHP rotates on its own next write, so this only needs to cover the shell-only path).
+_event() {
+    local level="$1" type="$2" msg="$3" size esc_msg ts
+    _diag_events_enabled || return 0
+    mkdir -p "$(dirname "$EVENTS_LOG")" 2>/dev/null
+    if [ -f "$EVENTS_LOG" ]; then
+        size=$(wc -c < "$EVENTS_LOG" 2>/dev/null | tr -d ' ')
+        [ -n "$size" ] && [ "$size" -gt "$EVENTS_MAX_BYTES" ] 2>/dev/null && \
+            mv "$EVENTS_LOG" "$EVENTS_LOG.1"
+    fi
+    esc_msg=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    ts=$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)
+    printf '{"ts":"%s","level":"%s","type":"%s","msg":"%s","data":{}}\n' \
+        "$ts" "$level" "$type" "$esc_msg" >> "$EVENTS_LOG"
+}
+
+# QUIC guard. Only TCP is redirected into Xray, so HTTP/3 (UDP 443) to a proxied destination
+# would leave through the WAN with the real IP — geo-checked services (Gemini, etc.) then see
+# Russia. Rejecting it makes browsers fall back to TCP, which does go through the tunnel.
+_quic_block_add() {
+    iptables -N XRAY_QUIC 2>/dev/null
+    iptables -F XRAY_QUIC
+    iptables -A XRAY_QUIC -p udp --dport 443 -m set --match-set $IPSET_NAME dst -j REJECT
+    ip6tables -N XRAY_QUIC6 2>/dev/null
+    ip6tables -F XRAY_QUIC6
+    ip6tables -A XRAY_QUIC6 -p udp --dport 443 -m set --match-set $IPSET6_NAME dst -j REJECT \
+        2>/dev/null
+    if [ -s "$FULLVPN_FILE" ]; then
+        while IFS= read -r mac || [ -n "$mac" ]; do
+            [ -z "$mac" ] && continue
+            [ "${mac#\#}" != "$mac" ] && continue
+            iptables -A XRAY_QUIC -p udp --dport 443 -m mac --mac-source "$mac" -j REJECT
+            ip6tables -A XRAY_QUIC6 -p udp --dport 443 -m mac --mac-source "$mac" -j REJECT \
+                2>/dev/null
+        done < "$FULLVPN_FILE"
+    fi
+    _quic_hook_add
+}
+
+# Drop connections that already bypass Xray although their destination is now proxied.
+# NAT redirect and the QUIC reject only apply to NEW flows; Keenetic FASTNAT keeps an
+# established direct flow alive for as long as the client uses it — a browser that opened
+# chatgpt.com while the IP was not yet in the set keeps showing the real WAN IP for hours.
+# Deleting the conntrack entry forces a reconnect, which then goes through the tunnel.
+# Needs the Entware `conntrack` package; silently a no-op without it.
+_kick_leaked_flows() {
+    command -v conntrack >/dev/null 2>&1 || return 0
+    local proto src dst sport dport ip run kicked_file flows_file hits_file kicked
+    # Temp files are suffixed with $$ (this process's PID): _resume_firewall (background
+    # watchdog) and setup_firewall (foreground start/restart) can call this concurrently
+    # from separate processes, and a shared fixed path would let one invocation's
+    # truncate/remove clobber the other's. The deletions run in a pipeline subshell, so a
+    # plain counter variable would not survive past it — count them via a file instead.
+    run="/opt/var/run/xray-kick.$$"
+    kicked_file="/opt/var/run/xray-kicked.$$.count"
+    flows_file="$run.flows"
+    hits_file="$run.hits"
+    : > "$kicked_file"
+    : > "$hits_file"
+    # Candidate flows: LAN clients whose reply does not come from the router itself
+    # (redirected flows are answered by Xray on 192.168.*/10.*/127.* — those are fine).
+    # Fields: proto src dst sport dport rsrc.
+    conntrack -L 2>/dev/null | grep -E '^(tcp|udp) ' | grep ' src=192\.168\.' | \
+        sed -nE 's/^(tcp|udp) .*src=([0-9.]+) dst=([0-9.]+) sport=([0-9]+) dport=([0-9]+) .*src=([0-9.]+) dst=[0-9.]+ sport=[0-9]+.*/\1 \2 \3 \4 \5 \6/p' | \
+        awk '$6 !~ /^(192\.168\.|10\.|127\.)/' > "$flows_file"
+    # One `ipset test` per unique destination, not per flow: a busy LAN has thousands of
+    # NAT'd flows to far fewer hosts, and every fork is expensive on MIPS.
+    awk '{ print $3 }' "$flows_file" | sort -u | while read -r ip; do
+        ipset test $IPSET_NAME "$ip" >/dev/null 2>&1 && echo "$ip" >> "$hits_file"
+    done
+    if [ -s "$hits_file" ]; then
+        awk 'NR == FNR { hit[$1] = 1; next } ($3 in hit) { print $1, $2, $3, $4, $5 }' \
+            "$hits_file" "$flows_file" | \
+        while read -r proto src dst sport dport; do
+            conntrack -D -p "$proto" -s "$src" -d "$dst" --sport "$sport" --dport "$dport" \
+                >/dev/null 2>&1 && echo 1 >> "$kicked_file"
+        done
+    fi
+    kicked=$(wc -l < "$kicked_file" 2>/dev/null | tr -d ' ')
+    rm -f "$kicked_file" "$flows_file" "$hits_file"
+    [ -n "$kicked" ] && [ "$kicked" -gt 0 ] 2>/dev/null && \
+        _event info firewall "Сброшено прямых соединений: $kicked"
+}
+
+_quic_hook_add() {
+    iptables -C FORWARD -i br0 -p udp -j XRAY_QUIC 2>/dev/null || \
+    iptables -I FORWARD 1 -i br0 -p udp -j XRAY_QUIC 2>/dev/null
+    ip6tables -C FORWARD -i br0 -p udp -j XRAY_QUIC6 2>/dev/null || \
+    ip6tables -I FORWARD 1 -i br0 -p udp -j XRAY_QUIC6 2>/dev/null
+}
+
+_quic_hook_del() {
+    iptables -D FORWARD -i br0 -p udp -j XRAY_QUIC 2>/dev/null
+    ip6tables -D FORWARD -i br0 -p udp -j XRAY_QUIC6 2>/dev/null
+}
+
 # Remove the PREROUTING hook so traffic bypasses xray (XRAY chain stays intact for fast resume)
 _pause_firewall() {
     iptables -t nat -D PREROUTING -p tcp -i br0 -j XRAY 2>/dev/null
     ip6tables -t nat -D PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
+    _quic_hook_del
     echo "paused" > "$WATCHDOG_STATE"
     log "Watchdog: redirect paused — traffic goes direct"
+    _event warn watchdog "Сервер недоступен — VPN на паузе"
 }
 
 # Re-attach the PREROUTING hook
@@ -302,18 +398,33 @@ _resume_firewall() {
     iptables -t nat -I PREROUTING -p tcp -i br0 -j XRAY
     ip6tables -t nat -C PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null || \
     ip6tables -t nat -I PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
+    _quic_hook_add
+    _kick_leaked_flows
     echo "ok" > "$WATCHDOG_STATE"
     log "Watchdog: redirect resumed — VPN reachable"
+    _event info watchdog "Сервер снова доступен"
+}
+
+# Periodic leak sweep for the watchdog: every 4th tick (4 x WATCHDOG_INTERVAL = 2 min),
+# only while the redirect is active (not paused) and xray runs — otherwise "leaked"
+# flows are expected and resetting them would only cause reconnect churn.
+# Args: tick number, is_paused (0/1).
+_watchdog_kick_tick() {
+    [ $(($1 % 4)) -eq 0 ] || return 0
+    [ "$2" = "0" ] || return 0
+    pidof xray >/dev/null 2>&1 || return 0
+    _kick_leaked_flows
 }
 
 # Background watchdog loop: when VPN server is unreachable for WATCHDOG_MAX_FAILS consecutive
 # checks, removes the iptables redirect to prevent conntrack table saturation (which otherwise
 # kills all new TCP connections, including access to 192.168.1.1).
 _watchdog_loop() {
-    local fail_count=0 is_paused=0
+    local fail_count=0 is_paused=0 tick=0
     echo "ok" > "$WATCHDOG_STATE"
     while true; do
         sleep "$WATCHDOG_INTERVAL"
+        tick=$((tick + 1))
         if _check_vpn_reachable; then
             fail_count=0
             if [ "$is_paused" = "1" ]; then
@@ -329,6 +440,7 @@ _watchdog_loop() {
                 is_paused=1
             fi
         fi
+        _watchdog_kick_tick "$tick" "$is_paused"
     done
 }
 
@@ -360,10 +472,22 @@ setup_firewall() {
     ipset create $IPSET_NAME hash:net family inet 2>/dev/null
     ipset create $IPSET6_NAME hash:net family inet6 2>/dev/null
     
-    # Flush ipset
-    ipset flush $IPSET_NAME 2>/dev/null
-    ipset flush $IPSET6_NAME 2>/dev/null
-    
+    # No flush: the sets also hold every IP AdGuard resolved for proxied domains, and clients
+    # keep those IPs in their DNS caches. Emptying the set on each rule change or restart sent
+    # already-open services (Gemini etc.) straight out the WAN until they happened to re-query
+    # DNS. Stale entries are harmless — Xray still routes them by sniffed domain. Only IPs
+    # explicitly routed "direct" must leave the set.
+    if [ -s "$DIRECT_IPS_FILE" ]; then
+        while IFS= read -r ip || [ -n "$ip" ]; do
+            [ -z "$ip" ] && continue
+            if echo "$ip" | grep -q ':'; then
+                ipset del $IPSET6_NAME "$ip" 2>/dev/null
+            else
+                ipset del $IPSET_NAME "$ip" 2>/dev/null
+            fi
+        done < "$DIRECT_IPS_FILE"
+    fi
+
     # Add IPs from file (skip those routed "direct" — they must bypass the ipset/Xray)
     if [ -s "$IPS_FILE" ]; then
         while IFS= read -r ip || [ -n "$ip" ]; do
@@ -385,11 +509,11 @@ setup_firewall() {
     iptables -t nat -F XRAY
 
     # Anti-loopback: never redirect connections destined to Xray's own inbound ports
-    # (dokodemo $REDIR_PORT, socks 1081, http 1082) or to any of the router's own
+    # (dokodemo $REDIR_PORT/$FULLVPN_PORT, socks 1081, http 1082) or to any of the router's own
     # addresses. Otherwise dokodemo followRedirect reports a local Xray port as the
     # original destination and Xray ends up dialing itself, flooding the log with
     # "app/proxyman/inbound: loopback connection detected" until it crashes/restarts.
-    for _xport in $REDIR_PORT 1081 1082; do
+    for _xport in $REDIR_PORT $FULLVPN_PORT 1081 1082; do
         iptables -t nat -A XRAY -p tcp --dport "$_xport" -j RETURN 2>/dev/null
     done
     for _laddr in $(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
@@ -421,7 +545,7 @@ setup_firewall() {
         while IFS= read -r mac || [ -n "$mac" ]; do
             [ -z "$mac" ] && continue
             [ "${mac#\#}" != "$mac" ] && continue
-            iptables -t nat -A XRAY -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $REDIR_PORT
+            iptables -t nat -A XRAY -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $FULLVPN_PORT
         done < "$FULLVPN_FILE"
     fi
     
@@ -436,7 +560,7 @@ setup_firewall() {
     ip6tables -t nat -N XRAY6 2>/dev/null
     ip6tables -t nat -F XRAY6
     # Anti-loopback (same rationale as IPv4 above)
-    for _xport in $REDIR_PORT 1081 1082; do
+    for _xport in $REDIR_PORT $FULLVPN_PORT 1081 1082; do
         ip6tables -t nat -A XRAY6 -p tcp --dport "$_xport" -j RETURN 2>/dev/null
     done
     for _laddr6 in $(ip -6 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
@@ -452,7 +576,7 @@ setup_firewall() {
         while IFS= read -r mac || [ -n "$mac" ]; do
             [ -z "$mac" ] && continue
             [ "${mac#\#}" != "$mac" ] && continue
-            ip6tables -t nat -A XRAY6 -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $REDIR_PORT
+            ip6tables -t nat -A XRAY6 -p tcp -m mac --mac-source "$mac" -j REDIRECT --to-port $FULLVPN_PORT
         done < "$FULLVPN_FILE"
     fi
     
@@ -460,7 +584,10 @@ setup_firewall() {
     
     ip6tables -t nat -C PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null || \
     ip6tables -t nat -I PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
-    
+
+    _quic_block_add
+    _kick_leaked_flows
+
     log "Firewall rules applied"
 }
 
@@ -472,6 +599,11 @@ cleanup_firewall() {
     ip6tables -t nat -D PREROUTING -p tcp -i br0 -j XRAY6 2>/dev/null
     ip6tables -t nat -F XRAY6 2>/dev/null
     ip6tables -t nat -X XRAY6 2>/dev/null
+    _quic_hook_del
+    iptables -F XRAY_QUIC 2>/dev/null
+    iptables -X XRAY_QUIC 2>/dev/null
+    ip6tables -F XRAY_QUIC6 2>/dev/null
+    ip6tables -X XRAY_QUIC6 2>/dev/null
     log "Firewall rules removed"
 }
 
@@ -517,6 +649,7 @@ start() {
         log "Config missing or invalid — regenerating"
         generate_config || {
             log "ERROR: config generation failed"
+            _event error service "Ошибка старта: не удалось сгенерировать конфиг"
             return 1
         }
     fi
@@ -537,6 +670,7 @@ start() {
     else
         log "ERROR: Xray failed to start"
         cat "$LOG_DIR/error.log" 2>/dev/null
+        _event error service "Ошибка старта: Xray не запустился"
         return 1
     fi
 }
@@ -579,5 +713,6 @@ case "$1" in
     update-subs) update_subscriptions ;;
     start_watchdog) start_watchdog ;;
     stop_watchdog) stop_watchdog ;;
-    *) echo "Usage: $0 {start|stop|restart|status|generate|firewall|update-subs|start_watchdog|stop_watchdog}" ;;
+    kick_leaks) _kick_leaked_flows ;;
+    *) echo "Usage: $0 {start|stop|restart|status|generate|firewall|update-subs|start_watchdog|stop_watchdog|kick_leaks}" ;;
 esac

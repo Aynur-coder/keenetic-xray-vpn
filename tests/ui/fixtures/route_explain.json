@@ -1,0 +1,1 @@
+{"input": "www.youtube.com", "kind": "domain", "rule": "list:youtube", "source": "list", "target": "proxy", "target_name": "VPN (активный сервер)", "in_vpn_set": true}

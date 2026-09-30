@@ -7,6 +7,7 @@ $RULES_DIR = "$XRAY_DIR/rules";
 $SUBS_FILE = "$XRAY_DIR/subscriptions/list.json";
 $KEYS_FILE = "$XRAY_DIR/subscriptions/keys.json";
 $CACHED_FILE = "$XRAY_DIR/subscriptions/cached_servers.json";
+$SERVER_FLAGS_FILE = "$XRAY_DIR/subscriptions/server_flags.json";
 $DOMAINS_FILE = "$RULES_DIR/domains.txt";
 $IPS_FILE = "$RULES_DIR/ips.txt";
 $FULLVPN_FILE = "$RULES_DIR/fullvpn_devices.txt";
@@ -31,6 +32,24 @@ $KN_PASS_FILE = "$XRAY_DIR/.kn_pass";
 $LOGIN_ATTEMPTS_FILE = '/opt/tmp/xray-login-attempts.json';
 $VERSION_FILE = "$XRAY_DIR/.version";
 $WATCHDOG_STATE = '/opt/var/run/xray-watchdog.state';
+$AGH_QUERYLOG = '/opt/etc/AdGuardHome/data/querylog.json';
+// Last successful lan_devices result: lets `connections` name devices without a
+// Keenetic auth round-trip per request.
+$LAN_DEVICES_CACHE = '/opt/tmp/xray-lan-devices.json';
+
+require_once __DIR__ . '/lib/links.php';
+require_once __DIR__ . '/lib/system.php';
+require_once __DIR__ . '/lib/events.php';
+require_once __DIR__ . '/lib/servers.php';
+require_once __DIR__ . '/lib/apply.php';
+require_once __DIR__ . '/lib/rules.php';
+require_once __DIR__ . '/lib/routing.php';
+require_once __DIR__ . '/lib/overview.php';
+require_once __DIR__ . '/lib/probe.php';
+require_once __DIR__ . '/lib/auth.php';
+require_once __DIR__ . '/lib/connections.php';
+require_once __DIR__ . '/lib/sitecheck.php';
+require_once __DIR__ . '/lib/wireguard.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -51,10 +70,6 @@ function lines_read($f) {
 
 function lines_write($f, $lines) {
     file_put_contents($f, implode("\n", $lines) . "\n");
-}
-
-function shell_run($cmd) {
-    return trim(shell_exec($cmd . ' 2>&1') ?? '');
 }
 
 // ============================================================================
@@ -194,13 +209,25 @@ function get_features() {
         'auto_update'  => $d['auto_update']  ?? false,
         'logs_enabled' => $d['logs_enabled'] ?? true,
         'theme'        => $d['theme']        ?? 'auto',
+        'diag_events'      => $d['diag_events']      ?? true,
+        'diag_connections' => $d['diag_connections'] ?? true,
+        'diag_site_check'  => $d['diag_site_check']  ?? true,
     ];
+}
+
+// Wraps emit_event() with this install's features reader and default log path,
+// so call sites don't repeat the plumbing.
+function log_event(string $level, string $type, string $msg, array $data = []): void {
+    emit_event($level, $type, $msg, $data, null, 'get_features');
 }
 
 function set_features_patch($patch) {
     global $FEATURES_FILE;
     $cur = get_features();
-    foreach (['wireguard', 'adguard', 'auto_update', 'logs_enabled'] as $k) {
+    foreach ([
+        'wireguard', 'adguard', 'auto_update', 'logs_enabled',
+        'diag_events', 'diag_connections', 'diag_site_check',
+    ] as $k) {
         if (isset($patch[$k])) $cur[$k] = (bool)$patch[$k];
     }
     if (isset($patch['theme']) && in_array($patch['theme'], ['auto', 'dark', 'light'], true)) {
@@ -216,17 +243,15 @@ function set_features_patch($patch) {
             shell_run('ip link set wg0 down 2>/dev/null; ip link delete wg0 2>/dev/null');
         }
     }
-    // Side effects: toggle logs — regenerate config and restart Xray if running
+    // Side effects: toggle logs — regenerate config and restart Xray if running, through
+    // the locked, config-tested apply path (never a raw `kill -HUP`: an invalid config
+    // must not be able to take Xray down just because the logs toggle flipped).
+    $apply = null;
     if (isset($patch['logs_enabled'])) {
-        $r = generate_xray_config();
-        if (!isset($r['error'])) {
-            $pid = trim(shell_run('cat /opt/var/run/xray.pid 2>/dev/null'));
-            if ($pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0') {
-                shell_run("kill -HUP $pid 2>/dev/null || (killall xray 2>/dev/null; sleep 1; /opt/sbin/xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo \$! > /opt/var/run/xray.pid)");
-            }
-        }
+        // A stopped Xray picks the new setting up from `start`, which regenerates anyway.
+        if (xray_running()) $apply = apply_changes('routing');
     }
-    return $cur;
+    return ['features' => $cur, 'apply' => $apply];
 }
 
 function get_onboarding_status() {
@@ -280,43 +305,32 @@ function get_installed_version() {
     return file_exists($VERSION_FILE) ? trim(@file_get_contents($VERSION_FILE)) : 'dev';
 }
 
-function parse_vless_link($link) {
-    $name = 'VLESS';
-    if (preg_match('/#(.+)$/', $link, $nm)) {
-        $name = urldecode($nm[1]);
-        $link = preg_replace('/#.*$/', '', $link);
+// --- overview action helpers -------------------------------------------------
+// build_overview() (lib/overview.php) is pure logic; these turn keys.json +
+// cached_servers.json into the flattened rows it expects.
+
+// Scheme of a key/subscription link, normalised (hy2 -> hysteria2).
+function overview_link_proto($link) {
+    if (preg_match('#^([a-z0-9]+)://#i', (string)$link, $m)) {
+        $scheme = strtolower($m[1]);
+        return $scheme === 'hy2' ? 'hysteria2' : $scheme;
     }
-    $link = urldecode($link);
-    if (!preg_match('/^vless:\/\/([^@]+)@([^:]+):(\d+)\??(.*)$/', $link, $m)) return null;
-    $params = [];
-    parse_str($m[4] ?? '', $params);
-    return [
-        'uuid' => $m[1], 'address' => $m[2], 'port' => (int)$m[3],
-        'security' => $params['security'] ?? 'none',
-        'type' => $params['type'] ?? 'tcp',
-        'sni' => $params['sni'] ?? '',
-        'fp' => $params['fp'] ?? 'chrome',
-        'pbk' => $params['pbk'] ?? '',
-        'sid' => $params['sid'] ?? '',
-        'flow' => $params['flow'] ?? '',
-        'host' => $params['host'] ?? '',
-        'path' => $params['path'] ?? '',
-        'mode' => $params['mode'] ?? '',
-        'name' => $name
-    ];
+    return '';
 }
 
-function parse_ss_link($link) {
-    $link = preg_replace('/#.*$/', '', $link);
-    $link = preg_replace('/\?.*@/', '@', $link);
-    if (preg_match('/^ss:\/\/([^@]+)@(.+):(\d+)/', $link, $m)) {
-        $decoded = base64_decode($m[1]);
-        if (!$decoded && strpos($m[1], '%') !== false) $decoded = base64_decode(urldecode($m[1]));
-        if ($decoded && preg_match('/^([^:]+):(.+)$/', $decoded, $dm)) {
-            return ['address' => $m[2], 'port' => (int)$m[3], 'method' => $dm[1], 'password' => $dm[2]];
-        }
+function overview_build_servers(array $keys, array $cached, array $subs = []) {
+    $rows = [];
+    foreach (array_merge($keys, $cached) as $s) {
+        if (empty($s['id'])) continue;
+        $rows[] = [
+            'id'      => $s['id'],
+            'name'    => $s['name'] ?? '',
+            'proto'   => overview_link_proto($s['link'] ?? ''),
+            'enabled' => effective_enabled($s, $subs),
+            'sub'     => (string)($s['sub'] ?? ''),
+        ];
     }
-    return null;
+    return $rows;
 }
 
 // --- Expired-subscription detection -----------------------------------------
@@ -384,44 +398,6 @@ function subscription_health() {
     return null;
 }
 
-function build_outbound_from_link($link, $tag) {
-    if (strpos($link, 'vless://') === 0) {
-        $v = parse_vless_link($link);
-        if (!$v) return null;
-        $out = [
-            'tag' => $tag, 'protocol' => 'vless',
-            'settings' => ['vnext' => [['address' => $v['address'], 'port' => $v['port'],
-                'users' => [['id' => $v['uuid'], 'encryption' => 'none', 'flow' => $v['flow'] ?: '']]
-            ]]],
-            'streamSettings' => ['network' => $v['type'] ?: 'tcp', 'security' => $v['security'] ?: 'none']
-        ];
-        if ($v['security'] === 'reality') {
-            $out['streamSettings']['realitySettings'] = [
-                'serverName' => $v['sni'], 'fingerprint' => $v['fp'] ?: 'chrome',
-                'publicKey' => $v['pbk'], 'shortId' => $v['sid'] ?: '', 'spiderX' => ''
-            ];
-        } elseif ($v['security'] === 'tls') {
-            $out['streamSettings']['tlsSettings'] = [
-                'serverName' => $v['sni'], 'fingerprint' => $v['fp'] ?: 'chrome'
-            ];
-        }
-        if ($v['type'] === 'xhttp') {
-            $out['streamSettings']['xhttpSettings'] = [];
-            // Xray expects xhttpSettings.host as a plain string, not an array
-            if (!empty($v['host'])) $out['streamSettings']['xhttpSettings']['host'] = $v['host'];
-            if (!empty($v['path'])) $out['streamSettings']['xhttpSettings']['path'] = $v['path'];
-            if (!empty($v['mode'])) $out['streamSettings']['xhttpSettings']['mode'] = $v['mode'];
-        }
-        return $out;
-    }
-    if (strpos($link, 'ss://') === 0) {
-        $s = parse_ss_link($link);
-        if (!$s) return null;
-        return ['tag' => $tag, 'protocol' => 'shadowsocks', 'settings' => ['servers' => [$s]]];
-    }
-    return null;
-}
-
 function fetch_subscription($url) {
     $content = shell_run("/opt/bin/curl -s --max-time 20 " . escapeshellarg($url));
     if (!$content) return [];
@@ -430,21 +406,103 @@ function fetch_subscription($url) {
     return array_values(array_filter(explode("\n", $content), function($l) {
         $l = trim($l);
         return strpos($l, 'vless://') === 0 || strpos($l, 'ss://') === 0 ||
-               strpos($l, 'trojan://') === 0 || strpos($l, 'vmess://') === 0;
+               strpos($l, 'trojan://') === 0 || strpos($l, 'vmess://') === 0 ||
+               is_hysteria2_link($l);
     }));
 }
 
-function generate_xray_config() {
-    global $XRAY_DIR, $XRAY_CONF, $KEYS_FILE, $CACHED_FILE, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE, $STATE_FILE;
+// Refetches every enabled subscription and rebuilds cached_servers.json
+// (merge_refreshed_servers: user 'enabled' flags survive, disabled or failed
+// subscriptions keep their previous servers), updates each subscription's
+// 'updated' timestamp (and 'last_error' when its fetch came back empty), rematches the active selection if its id
+// went away, and logs one event. Shared by 'update_subscriptions' (which then
+// does its own routing-only restart) and 'add_link' (which folds this into
+// one 'full' apply alongside any newly-added keys).
+function refresh_subscriptions(): array {
+    global $SUBS_FILE, $CACHED_FILE, $STATE_FILE, $KEYS_FILE;
+
+    $subs = json_read($SUBS_FILE);
+    $old_servers = json_read($CACHED_FILE);
+    $before_ids = array_column($old_servers, 'id');
+    $fetched = [];
+    foreach ($subs as &$sub) {
+        if (empty($sub['enabled']) || empty($sub['url'])) continue;
+        $links = fetch_subscription($sub['url']);
+        if (empty($links)) {
+            $sub['last_error'] = 'Подписка не вернула серверов';
+        } else {
+            unset($sub['last_error']);
+        }
+        foreach ($links as $l) {
+            $l = trim($l);
+            $name = '';
+            if (preg_match('/#(.+)$/', $l, $nm)) $name = urldecode($nm[1]);
+            $fetched[(string)($sub['id'] ?? '')][] = ['id' => md5($l), 'name' => $name ?: 'Server', 'link' => preg_replace('/#.*$/', '', $l), 'enabled' => true, 'sub' => $sub['id'] ?? ''];
+        }
+        $sub['updated'] = date('Y-m-d H:i:s');
+    }
+    unset($sub);
+    // Keeps per-server 'enabled' flags, and the old servers of subscriptions that
+    // are disabled or whose fetch failed (lib/servers.php).
+    $all_servers = merge_refreshed_servers($old_servers, $fetched, $subs);
+    json_write($SUBS_FILE, $subs);
+    json_write($CACHED_FILE, $all_servers);
+    $after_ids = array_column($all_servers, 'id');
+    $added = count(array_diff($after_ids, $before_ids));
+    $removed = count(array_diff($before_ids, $after_ids));
+    $updated_names = array_filter(array_map(fn($s) => $s['name'] ?? '', $subs), fn($n) => $n !== '');
+    $name = reset($updated_names) ?: 'Подписка';
+    log_event('info', 'subscription',
+        "Подписка $name обновлена: " . count($all_servers) . " сервер(ов) (+$added, \u{2212}$removed)",
+        ['count' => count($all_servers), 'added' => $added, 'removed' => $removed]);
+
+    // The selected server's cached id is md5(link): if the subscription reissued its
+    // link, the id vanished from $all_servers and the old selection is now orphaned.
+    // Use the hint recorded by select_server to find it again by name+proto/host+port.
+    $state = json_read($STATE_FILE);
+    $active_id = $state['active_outbound'] ?? '';
+    $still_present = $active_id !== '' && (
+        in_array($active_id, $after_ids, true) ||
+        in_array($active_id, array_column(json_read($KEYS_FILE), 'id'), true)
+    );
+    if ($active_id !== '' && !$still_present && !empty($state['active_hint'])) {
+        $matched_id = rematch_server($state['active_hint'], $all_servers);
+        if ($matched_id !== null) {
+            $matched = null;
+            foreach ($all_servers as $s) { if (($s['id'] ?? '') === $matched_id) { $matched = $s; break; } }
+            $state['active_outbound'] = $matched_id;
+            if ($matched) $state['active_hint'] = server_hint($matched) + ['source' => 'sub'];
+            json_write($STATE_FILE, $state);
+            log_event('info', 'server', 'Выбранный сервер найден заново: ' . ($matched['name'] ?? $matched_id),
+                ['id' => $matched_id]);
+        }
+        // No match: leave active_outbound as-is. resolve_active() will report
+        // fallback_missing rather than silently landing on some other server.
+    }
+
+    return ['count' => count($all_servers), 'added' => $added, 'removed' => $removed];
+}
+
+// Builds the outbound list, id->tag map and active tag exactly as
+// generate_xray_config() needs them, without emitting a full Xray config —
+// shared with route_explain() (case 'route_explain' in the API router) so
+// "which server" answers can never drift from what actually gets applied.
+function build_outbound_tags(): array {
+    global $KEYS_FILE, $CACHED_FILE, $STATE_FILE, $SUBS_FILE;
 
     $outbounds = [];
     $server_ips = [];
     $id_to_tag = [];
     $active_tag = '';
     $state = json_read($STATE_FILE);
-    $active_id = $state['active_outbound'] ?? '';
-
     $keys = json_read($KEYS_FILE);
+    $cached_for_resolve = json_read($CACHED_FILE);
+    // A disabled subscription disables its servers: no outbound, and a selected one
+    // falls back ('fallback_disabled') instead of staying active.
+    $subs = json_read($SUBS_FILE);
+    $resolved = resolve_active($state, $keys, $cached_for_resolve, $subs);
+    $active_id = $resolved['id'] ?? '';
+
     foreach ($keys as $k) {
         if (empty($k['enabled'])) continue;
         $tag = 'key-' . ($k['id'] ?? uniqid());
@@ -452,32 +510,66 @@ function generate_xray_config() {
         if ($ob) {
             $outbounds[] = $ob;
             if (!empty($k['id'])) $id_to_tag[$k['id']] = $tag;
-            $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
+            $addr = outbound_address($ob);
             if ($addr) $server_ips[] = $addr;
-            if ($active_id === $k['id'] || (!$active_tag && $active_id === '')) $active_tag = $tag;
+            if ($active_id !== '' && $active_id === $k['id']) $active_tag = $tag;
         }
     }
 
-    $cached = json_read($CACHED_FILE);
+    $cached = $cached_for_resolve;
     foreach ($cached as $srv) {
-        if (empty($srv['enabled'])) continue;
+        if (!effective_enabled($srv, $subs)) continue;
         $tag = 'sub-' . ($srv['id'] ?? uniqid());
         $ob = build_outbound_from_link($srv['link'], $tag);
         if ($ob) {
             $outbounds[] = $ob;
             if (!empty($srv['id'])) $id_to_tag[$srv['id']] = $tag;
-            $addr = $ob['settings']['servers'][0]['address'] ?? $ob['settings']['vnext'][0]['address'] ?? '';
+            $addr = outbound_address($ob);
             if ($addr) $server_ips[] = $addr;
-            if ($active_id === $srv['id']) $active_tag = $tag;
+            if ($active_id !== '' && $active_id === $srv['id']) $active_tag = $tag;
         }
     }
 
-    if (empty($outbounds)) return ['error' => 'No active outbounds'];
     if (!$active_tag) {
         foreach ($outbounds as $ob) {
             if ($ob['tag'] !== 'direct' && $ob['tag'] !== 'block') { $active_tag = $ob['tag']; break; }
         }
     }
+
+    // Record what actually ended up active (which can differ from $resolved['id'] when
+    // its link failed to build a usable outbound) so the UI can show why.
+    $effective_id = array_search($active_tag, $id_to_tag, true);
+    $effective_id = $effective_id !== false ? $effective_id : null;
+    $effectiveState = [
+        'effective_outbound' => $effective_id,
+        'effective_reason'   => ($effective_id !== null && $effective_id === $active_id)
+            ? $resolved['reason'] : 'fallback_missing',
+    ];
+
+    return [
+        'outbounds' => $outbounds,
+        'server_ips' => $server_ips,
+        'id_to_tag' => $id_to_tag,
+        'active_tag' => $active_tag,
+        'effective_state' => $effectiveState,
+    ];
+}
+
+// Writes to $outFile (default: the live config). apply_changes() passes config.new.json
+// so a config Xray rejects never replaces the working one.
+function generate_xray_config(?string $outFile = null) {
+    global $XRAY_DIR, $XRAY_CONF, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE;
+    global $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
+
+    $built = build_outbound_tags();
+    $outbounds = $built['outbounds'];
+    $server_ips = $built['server_ips'];
+    $id_to_tag = $built['id_to_tag'];
+    $active_tag = $built['active_tag'];
+    // Returned, not written: apply_changes() persists it only once Xray accepted this config.
+    $effectiveState = $built['effective_state'];
+
+    if (empty($outbounds)) return ['error' => 'No active outbounds'];
 
     usort($outbounds, function($a, $b) use ($active_tag) {
         if ($a['tag'] === $active_tag) return -1;
@@ -486,13 +578,11 @@ function generate_xray_config() {
     });
 
     $targets = rule_targets();
-    $domain_buckets = all_domains_with_target($targets, $id_to_tag, $active_tag);
-    $ip_buckets = [];
-    foreach (lines_read($IPS_FILE) as $ipv) {
-        $btag = resolve_target('ip:' . $ipv, $targets, $id_to_tag, $active_tag);
-        $ip_buckets[$btag][] = $ipv;
-    }
-    $fullvpn_macs = lines_read($FULLVPN_FILE);
+    $domain_buckets = all_domains_with_target(
+        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
+        $targets, $id_to_tag, $active_tag
+    );
+    $ip_buckets = ip_buckets_with_target(lines_read($IPS_FILE), $targets, $id_to_tag, $active_tag);
 
     // Use explicit private ranges instead of geoip:private — geoip.dat may not exist on MIPS Entware
     $private_ranges = ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16',
@@ -501,44 +591,20 @@ function generate_xray_config() {
     $rules = [];
     $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => $private_ranges];
     foreach ($server_ips as $sip) {
+        // gethostbyname() hands back the hostname unchanged when resolution fails.
+        // A bare hostname in an "ip" rule makes Xray reject the whole config, so a
+        // server that stops resolving must fall back to a domain rule instead of
+        // taking every other server down with it.
         $resolved = gethostbyname($sip);
-        $rules[] = ['type' => 'field', 'outboundTag' => 'direct', 'ip' => [$resolved !== $sip ? $resolved : $sip]];
+        $is_ip = _is_ipv4($resolved) || strpos($resolved, ':') !== false;
+        $rules[] = $is_ip
+            ? ['type' => 'field', 'outboundTag' => 'direct', 'ip' => [$resolved]]
+            : ['type' => 'field', 'outboundTag' => 'direct', 'domain' => ['full:' . $sip]];
     }
 
-    if (!empty($fullvpn_macs)) {
-        // Exclude FAILED/INCOMPLETE ARP entries (no IP yet)
-        $arp_lines = array_filter(
-            explode("\n", shell_run('ip neigh show dev br0')),
-            fn($l) => !preg_match('/\b(FAILED|INCOMPLETE)\b/i', $l)
-        );
-        $arp = implode("\n", $arp_lines);
-
-        $dhcp_leases = @file_get_contents('/tmp/dhcp.leases') ?: '';
-
-        $fullvpn_ips = [];
-        foreach ($fullvpn_macs as $mac) {
-            $ip = '';
-            // Method 1: ARP table (REACHABLE / STALE)
-            if (preg_match('/^(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/im', $arp, $am)) {
-                $ip = $am[1];
-            }
-            // Method 2: DHCP leases file (mac is field 2, ip is field 3)
-            if (!$ip && preg_match('/^\S+\s+' . preg_quote(strtolower($mac), '/') . '\s+(\d+\.\d+\.\d+\.\d+)/im', $dhcp_leases, $dm)) {
-                $ip = $dm[1];
-            }
-            // Method 3: ndmc show ip hotspot
-            if (!$ip) {
-                $hotspot = shell_run('ndmc -c "show ip hotspot" 2>/dev/null');
-                if (preg_match('/(\d+\.\d+\.\d+\.\d+).*' . preg_quote($mac, '/') . '/i', $hotspot, $hm)) {
-                    $ip = $hm[1];
-                }
-            }
-            if ($ip) $fullvpn_ips[] = $ip;
-        }
-        if (!empty($fullvpn_ips)) {
-            $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'source' => $fullvpn_ips];
-        }
-    }
+    // Full-VPN devices are redirected by MAC to the fullvpn-in inbound (see setup_firewall),
+    // so routing by inbound tag covers them on IPv4 and IPv6 without any MAC->IP lookup.
+    $rules[] = ['type' => 'field', 'outboundTag' => $active_tag, 'inboundTag' => ['fullvpn-in']];
 
     // One routing rule per target outbound. Each domain/IP lands in exactly one bucket,
     // so first-match (domainStrategy IPIfNonMatch) is unambiguous. ksort = deterministic config.
@@ -566,6 +632,10 @@ function generate_xray_config() {
              'settings' => ['network' => 'tcp,udp', 'followRedirect' => true],
              'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true],
              'streamSettings' => ['sockopt' => ['tproxy' => 'redirect']]],
+            ['tag' => 'fullvpn-in', 'port' => 1083, 'protocol' => 'dokodemo-door',
+             'settings' => ['network' => 'tcp,udp', 'followRedirect' => true],
+             'sniffing' => ['enabled' => true, 'destOverride' => ['http','tls','quic'], 'routeOnly' => true],
+             'streamSettings' => ['sockopt' => ['tproxy' => 'redirect']]],
             // socks/http inbounds bind to loopback only: they are used solely by the router
             // itself (status probes, update.sh) via 127.0.0.1. Listening on 0.0.0.0 exposed an
             // OPEN proxy to the LAN/WAN — on a public-IP router that drew abuse that looped back
@@ -579,17 +649,14 @@ function generate_xray_config() {
         'routing' => ['domainStrategy' => 'IPIfNonMatch', 'rules' => $rules]
     ];
 
-    file_put_contents($XRAY_CONF, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    return ['ok' => true, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
+    $json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if (@file_put_contents($outFile ?? $XRAY_CONF, $json) === false) {
+        return ['error' => 'Cannot write ' . ($outFile ?? $XRAY_CONF)];
+    }
+    return ['ok' => true, 'state' => $effectiveState, 'active' => $active_tag, 'outbounds' => count($outbounds) - 2];
 }
 
-// Strip Xray domain match-type prefixes -> bare hostname.
-function bare_domain($token) {
-    foreach (['domain:', 'full:', 'keyword:', 'regexp:'] as $p) {
-        if (strncmp($token, $p, strlen($p)) === 0) return substr($token, strlen($p));
-    }
-    return $token;
-}
+// bare_domain() now lives in lib/rules.php (required above).
 
 // All routed domains as bare hostnames (manual + enabled v2fly lists), deduped.
 function all_domains() {
@@ -647,61 +714,8 @@ function rule_targets() {
     return is_array($t) ? $t : [];
 }
 
-// Resolve a rule key to an outbound tag. proxy/missing -> active; direct -> 'direct';
-// pinned server present -> its tag; pinned server missing/disabled -> fall back to active.
-function resolve_target($key, $targets, $id_to_tag, $active_tag) {
-    $t = $targets[$key] ?? 'proxy';
-    if ($t === 'proxy' || $t === '') return $active_tag;
-    if ($t === 'direct') return 'direct';
-    if (isset($id_to_tag[$t])) return $id_to_tag[$t];
-    return $active_tag;
-}
-
-// Bucket all domains (manual tokens kept WITH match-prefix; v2fly as domain:<bare>)
-// by their effective outbound tag.
-// Precedence: v2fly lists are authoritative. A manual domain only overrides a v2fly list
-// when it carries an explicit override (specific server or "direct"); a plain "proxy" manual
-// domain that duplicates a v2fly list is treated as redundant and the v2fly list wins.
-function all_domains_with_target($targets, $id_to_tag, $active_tag) {
-    global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
-    // 1) v2fly domains -> their list's target tag (bare host => tag)
-    $v2flyMap = [];
-    foreach (json_read($GITHUB_LISTS_FILE) as $l) {
-        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
-        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
-        if (!file_exists($f)) continue;
-        $tag = resolve_target('list:' . $l['name'], $targets, $id_to_tag, $active_tag);
-        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
-            $d = trim($d);
-            if ($d === '' || $d[0] === '#') continue;
-            $bare = strtolower(bare_domain($d));
-            if ($bare === '' || isset($v2flyMap[$bare])) continue;
-            $v2flyMap[$bare] = $tag;
-        }
-    }
-    $buckets = [];
-    $seen = [];
-    // 2) Manual domains: kept only if NOT redundant with v2fly, or if they carry an override
-    foreach (lines_read($DOMAINS_FILE) as $token) {
-        $bare = strtolower(bare_domain($token));
-        if ($bare === '' || isset($seen[$bare])) continue;
-        $ov = $targets['domain:' . $bare] ?? 'proxy';
-        $isOverride = ($ov !== 'proxy' && $ov !== '');
-        if (!$isOverride && isset($v2flyMap[$bare])) continue; // v2fly wins; skip (do not mark seen)
-        $seen[$bare] = true;
-        $tag = resolve_target('domain:' . $bare, $targets, $id_to_tag, $active_tag);
-        $buckets[$tag][$token] = true;
-    }
-    // 3) v2fly domains not overridden by a manual entry
-    foreach ($v2flyMap as $bare => $tag) {
-        if (isset($seen[$bare])) continue;
-        $seen[$bare] = true;
-        $buckets[$tag]['domain:' . $bare] = true;
-    }
-    $out = [];
-    foreach ($buckets as $tag => $set) $out[$tag] = array_keys($set);
-    return $out;
-}
+// resolve_target() / all_domains_with_target() now live in lib/routing.php
+// (shared with route_explain(); see build_outbound_tags()/generate_xray_config()).
 
 // Write derived plain-text files consumed by the shell firewall (busybox has no JSON parser).
 // direct_ips.txt = static IP tokens whose effective target is "direct" (must bypass the ipset).
@@ -715,29 +729,17 @@ function write_derived_files() {
     lines_write($DIRECT_IPS_FILE, $direct);
 }
 
-function quick_apply() {
-    global $MANAGER;
-    $r = generate_xray_config();
-    if (isset($r['error'])) return;
-    write_derived_files();
-    shell_run('killall xray 2>/dev/null; sleep 1');
-    shell_run("$MANAGER firewall 2>/dev/null");
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
-    reload_adguard();
-    warmup_ipset();
+// Full apply (config + firewall + Xray + AdGuard + warmup), locked and config-tested.
+function quick_apply(): array {
+    return apply_changes('full');
 }
 
 // Routing-only apply: regenerate config and restart Xray, WITHOUT flushing the ipset,
 // restarting AdGuard, or re-warming DNS. Use this when only the outbound (server) of an
 // already-redirected rule changes — the domain's IP is already in the vpn1 ipset, so the
 // route switches the instant Xray reloads. ~1s vs ~12s, and other domains aren't disrupted.
-function gen_and_restart_xray() {
-    $r = generate_xray_config();
-    if (isset($r['error'])) return $r;
-    write_derived_files();
-    shell_run('killall xray 2>/dev/null; sleep 1');
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
-    return $r;
+function gen_and_restart_xray(): array {
+    return apply_changes('routing');
 }
 
 function reload_adguard() {
@@ -756,7 +758,8 @@ define('WARMUP_PID_FILE', '/tmp/vpn_warmup.pid');
 function warmup_stop() {
     $pidfile = WARMUP_PID_FILE;
     $pid = trim(@file_get_contents($pidfile) ?: '');
-    if ($pid !== '' && ctype_digit($pid)) {
+    // preg_match, not ctype_digit: Entware's PHP ships without the ctype extension
+    if (preg_match('/^\d+$/', $pid)) {
         // Children first (else the loop forks a fresh dig as we kill the parent), then parent
         shell_exec("ps -o pid,ppid 2>/dev/null | awk '\$2==$pid {print \$1}' | xargs -r kill -9 2>/dev/null");
         shell_exec("kill -9 $pid 2>/dev/null");
@@ -790,18 +793,264 @@ function warmup_ipset() {
         // wait for AdGuard to answer again (up to ~12s) instead of a blind sleep
         . 'i=0; while [ $i -lt 12 ]; do dig @127.0.0.1 cloudflare.com +short +timeout=1 +tries=1 >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; '
         . "while read d; do nice -n 19 dig @127.0.0.1 \"\$d\" +short A +timeout=2 +tries=1 >/dev/null 2>&1; done < $tmpfile; "
+        // Domains are resolved into the ipset now: reset already-open direct flows to them
+        . "nice -n 19 $GLOBALS[MANAGER] kick_leaks >/dev/null 2>&1; "
         . "rm -f $tmpfile $pidfile";
     shell_exec("nohup nice -n 19 sh -c '$script' >/dev/null 2>&1 &");
 }
 
+// route_explain()'s in_vpn_set callable: for an IP literal, tests it directly;
+// for a domain, resolves it via `nslookup <d> 127.0.0.1` first and tests the
+// first IPv4 answer. Both steps run under a hard timeout so the whole
+// route_explain request stays well under the API's 3s budget even when DNS
+// or the ipset lookup hangs.
+function route_in_vpn_set(string $kind, string $input): ?bool {
+    $ip = null;
+    if ($kind === 'ip') {
+        $ip = ip_is_v4($input) ? $input : null;
+    } else {
+        // `exec` replaces the shell with nslookup itself, so SIGKILL on timeout
+        // (shell_run_timeout()) hits the lookup directly instead of possibly
+        // leaving it running as an orphan under BusyBox ash.
+        $out = shell_run_timeout('exec nslookup ' . escapeshellarg($input) . ' 127.0.0.1', 1.5);
+        if ($out !== null) {
+            // BusyBox nslookup prints "Server:"/"Address 1:" for the resolver itself
+            // first, then a "Name:"/"Address N:" pair per answer — only match
+            // addresses that come after a "Name:" line so the resolver's own IP
+            // (127.0.0.1) is never mistaken for the domain's.
+            $seenName = false;
+            foreach (explode("\n", $out) as $ln) {
+                $ln = trim($ln);
+                if (stripos($ln, 'Name:') === 0) { $seenName = true; continue; }
+                if ($seenName && preg_match('/^Address\s*\d*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b/i', $ln, $m)) {
+                    $ip = $m[1];
+                    break;
+                }
+            }
+        }
+    }
+    return route_ip_in_vpn_set($ip);
+}
+
+// Is this IPv4 in the AdGuard-filled `vpn1` ipset? null = unknown (no IP, ipset missing,
+// timeout or unexpected output), never a guessed "not in set".
+function route_ip_in_vpn_set(?string $ip): ?bool {
+    if ($ip === null) return null;
+
+    $out = shell_run_timeout('exec ipset test vpn1 ' . escapeshellarg($ip), 0.8);
+    if ($out === null) return null;
+    if (stripos($out, 'is in set') !== false) return true;
+    if (stripos($out, 'is NOT in set') !== false) return false;
+    return null; // ipset missing/unreachable/unexpected output — unknown, not "not in set"
+}
+
+// route_explain()'s API entry point: builds the SAME domain/ip buckets
+// generate_xray_config() uses (same order, same targets) and asks route_explain()
+// which rule/outbound $q would take. Shared by the `route_explain` action and
+// `site_check` (below) so the two can never disagree about where a domain routes.
+//
+// $inVpnSet replaces route_in_vpn_set() as route_explain()'s ipset probe, for a caller that
+// already knows the answer (site_check resolves the domain once and reuses it).
+function route_explain_for(string $q, ?callable $inVpnSet = null): array {
+    global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR, $IPS_FILE, $KEYS_FILE, $CACHED_FILE;
+
+    $built = build_outbound_tags();
+    $id_to_tag = $built['id_to_tag'];
+    $active_tag = $built['active_tag'];
+    $targets = rule_targets();
+
+    // Same rule ORDER generate_xray_config() emits (ksort by outbound tag) before
+    // relabeling tags to targets, so first-match here means what it does in the
+    // generated config.
+    $domainEntries = domain_rule_entries(
+        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
+        $targets, $id_to_tag, $active_tag
+    );
+    ksort($domainEntries);
+    $domainBuckets = regroup_rule_entries_by_target($domainEntries, $id_to_tag, $active_tag);
+
+    $ipEntries = ip_rule_entries(lines_read($IPS_FILE), $targets, $id_to_tag, $active_tag);
+    ksort($ipEntries);
+    $ipBuckets = regroup_rule_entries_by_target($ipEntries, $id_to_tag, $active_tag);
+
+    $result = route_explain($q, $domainBuckets, $ipBuckets, $inVpnSet ?? 'route_in_vpn_set');
+    $result['target_name'] = $result['target'] !== null
+        ? route_target_name((string)$result['target'], json_read($KEYS_FILE), json_read($CACHED_FILE))
+        : null;
+    return $result;
+}
+
+// `connections` and `site_check` each run under their own non-blocking lock
+// (run_exclusive(), lib/apply.php): a second call while one is running answers at once
+// instead of stacking conntrack/curl work across php-cgi workers.
+const DIAG_LOCK_DIR = '/opt/var/run';
+const DIAG_BUSY_ERROR = 'Проверка уже выполняется, подождите';
+
+// `connections` action: wires connections_collect() (lib/connections.php) to the router —
+// one `conntrack -L`, one batched ipset lookup, the tails of Xray's access.log and AdGuard's
+// querylog (512 KB each), device names from the lan_devices cache — under one 2.8 s
+// deadline; whatever doesn't fit is skipped and the result is flagged partial. Every source
+// is streamed line by line (shell_lines_timeout(), file_tail_lines()) so the request fits
+// the router's 8M PHP memory_limit.
+function connections_snapshot(int $limit): array {
+    global $AGH_QUERYLOG, $LOG_ACCESS, $KEYS_FILE, $CACHED_FILE, $LAN_DEVICES_CACHE;
+    $lan = json_decode((string)@file_get_contents($LAN_DEVICES_CACHE), true);
+    $io = [
+        // `exec` so the timeout's SIGKILL hits conntrack itself, not just the shell. stderr
+        // is kept: "N flow entries have been shown." tells an empty table from a missing binary.
+        'conntrack'  => fn(float $t): ?iterable => shell_lines_timeout('exec conntrack -L', $t),
+        'ipset'      => fn(string $script, float $t): ?string => shell_run_timeout($script, $t),
+        'access_log' => fn(): iterable => file_tail_lines($LOG_ACCESS, CONNECTIONS_ACCESS_TAIL),
+        'querylog'   => fn(): iterable => file_tail_lines($AGH_QUERYLOG, CONNECTIONS_QUERYLOG_TAIL),
+        'server_names' => connections_server_names(json_read($KEYS_FILE), json_read($CACHED_FILE)),
+        'device_names' => connections_device_names(is_array($lan) ? $lan : []),
+    ];
+    return connections_collect($limit, $io, fn(): float => microtime(true));
+}
+
+// `server_probe` (Task 9), shared with `site_check`: $id's exit identity through a
+// temporary Xray running only that server's outbound (server_probe_run(), lib/probe.php).
+// Cached 3600s per id in xray-probe.json; while another probe holds the probe lock the
+// answer is an immediate {error} instead of queueing (a second temporary Xray would race
+// on the same loopback port and process bookkeeping). The caller sets
+// ignore_user_abort(true) first — a dropped client mid-probe (~22 s worst case) must not
+// abort the script with the lock held and a temp Xray running.
+function server_probe_cached(string $id): array {
+    global $KEYS_FILE, $CACHED_FILE;
+    $srv = null;
+    foreach (array_merge(json_read($KEYS_FILE), json_read($CACHED_FILE)) as $s) {
+        if (($s['id'] ?? '') === $id) { $srv = $s; break; }
+    }
+    if (!$srv) return ['error' => 'Сервер не найден'];
+
+    $probeCacheFile = '/opt/tmp/xray-probe.json';
+    $probeCache = json_read($probeCacheFile);
+    $cachedRow = $probeCache[$id] ?? null;
+    if (is_array($cachedRow) && isset($cachedRow['ts']) && (time() - (int)$cachedRow['ts']) < 3600) {
+        return [
+            'ok'             => empty($cachedRow['error']),
+            'delay_ms'       => $cachedRow['delay_ms'] ?? null,
+            'exit_ip'        => $cachedRow['exit_ip'] ?? null,
+            'google_country' => $cachedRow['google_country'] ?? null,
+            'exit_country'   => $cachedRow['exit_country'] ?? null,
+            'error'          => $cachedRow['error'] ?? null,
+        ];
+    }
+
+    // Non-blocking: apply_acquire_lock() with a 0s timeout returns immediately
+    // (success if free, null if another probe already holds it).
+    $probeLock = apply_acquire_lock('/opt/var/run/xray-probe.lock', 0);
+    if ($probeLock === null) return ['error' => 'Проверка уже идёт'];
+    try {
+        $row = server_probe_run($srv['link'] ?? '');
+    } finally {
+        flock($probeLock, LOCK_UN);
+        fclose($probeLock);
+    }
+
+    $probeCache[$id] = [
+        'ts'             => time(),
+        'delay_ms'       => $row['delay_ms'],
+        'exit_ip'        => $row['exit_ip'],
+        'google_country' => $row['google_country'],
+        'exit_country'   => $row['exit_country'],
+        'error'          => $row['error'],
+    ];
+    json_write($probeCacheFile, $probeCache);
+    return $row;
+}
+
+// The server a 'proxy' rule sends traffic to right now: what the last config build
+// recorded as effective (state.json), else what resolve_active() picks — the same
+// answer `list_servers` marks as active.
+function site_check_active_id(): ?string {
+    global $STATE_FILE, $KEYS_FILE, $CACHED_FILE, $SUBS_FILE;
+    $state = json_read($STATE_FILE);
+    if (array_key_exists('effective_outbound', $state)) {
+        $id = $state['effective_outbound'];
+    } else {
+        $id = resolve_active($state, json_read($KEYS_FILE), json_read($CACHED_FILE),
+            json_read($SUBS_FILE))['id'];
+    }
+    return is_string($id) && $id !== '' ? $id : null;
+}
+
+// `site_check`'s direct-exit fetches — Google's country marker and Cloudflare's trace —
+// with NO proxy, so they leave the router the way a direct-routed domain does (the
+// router's own traffic isn't redirected into Xray). Run in parallel via
+// shell_run_parallel_timeout() (lib/system.php): each curl is its own direct child
+// process, so a shared 8.5s deadline that's ever hit terminates both curls themselves
+// (not just a wrapping shell that backgrounded them, which would leave them as
+// orphans — see that function's own comment). Each curl already self-bounds at -m 8;
+// the PHP-level deadline is only a backstop for one that ignores it. A curl that
+// fails/times out reports null for its half — never fatal to the other fetch.
+function site_check_fetch_direct(): array {
+    $ytCmd = 'exec /opt/bin/curl -s --connect-timeout 8 -m 8 -A '
+        . escapeshellarg(SITE_CHECK_DESKTOP_UA) . ' ' . escapeshellarg('https://www.youtube.com/');
+    $tfCmd = 'exec /opt/bin/curl -s --connect-timeout 8 -m 8 '
+        . escapeshellarg('https://www.cloudflare.com/cdn-cgi/trace');
+    [$yt, $tf] = shell_run_parallel_timeout([$ytCmd, $tfCmd], 8.5);
+    return [
+        'youtube' => ($yt !== null && $yt !== '') ? $yt : null,
+        'trace'   => ($tf !== null && $tf !== '') ? $tf : null,
+    ];
+}
+
+// `site_check` action: wires site_check_run() (lib/sitecheck.php) to the router — resolves
+// the domain once via nslookup (an IP literal resolves to itself, no lookup needed) and
+// reuses those IPs for the vpn1 ipset probe and flow matching, reuses route_explain_for()
+// for the routing verdict, and measures the exit country through THAT route's own
+// outbound: server_probe_cached() for a server (or the active one for 'proxy'), a
+// proxy-less fetch for 'direct' (≤ ~25 s worst case, the probe's own). With $withFlows
+// (the «Соединения» tool is on) one connections_snapshot() counts recent direct/leaked flows
+// to the domain's IPs — $limit is generous (the ipset ceiling) since this runs on demand,
+// not polled; with it off, no conntrack work is done and the counts are null.
+function site_check_snapshot(string $domain, bool $withFlows): array {
+    $io = [
+        'resolve_ips' => function (string $d): array {
+            if (ip_is_valid($d)) return [$d];
+            $out = shell_run_timeout('exec nslookup ' . escapeshellarg($d) . ' 127.0.0.1', 1.5);
+            return $out !== null ? parse_nslookup_ips($out) : [];
+        },
+        'ip_in_vpn_set' => 'route_ip_in_vpn_set',
+        'explain'     => 'route_explain_for',
+        'active_id'   => 'site_check_active_id',
+        'server_name' => function (string $id): ?string {
+            global $KEYS_FILE, $CACHED_FILE;
+            return route_target_name($id, json_read($KEYS_FILE), json_read($CACHED_FILE));
+        },
+        'probe_server' => 'server_probe_cached',
+        'fetch_direct' => 'site_check_fetch_direct',
+        'connections' => $withFlows ? function (): array {
+            $snap = connections_snapshot(CONNECTIONS_MAX_LIMIT);
+            return $snap['connections'] ?? [];
+        } : null,
+    ];
+    return site_check_run($domain, $io);
+}
+
+// Saves a lan_devices result for `connections` atomically (tmp + rename), keeping a cache
+// that has hostnames when the new result (e.g. the ARP fallback) has none.
+function lan_devices_cache_save(array $devices): void {
+    global $LAN_DEVICES_CACHE;
+    $old = json_decode((string)@file_get_contents($LAN_DEVICES_CACHE), true);
+    if (!lan_devices_cache_should_write($devices, is_array($old) ? $old : null)) return;
+    $tmp = $LAN_DEVICES_CACHE . '.' . getmypid() . '.tmp';
+    if (@file_put_contents($tmp, json_encode($devices)) === false) return;
+    if (!@rename($tmp, $LAN_DEVICES_CACHE)) @unlink($tmp);
+}
+
 function update_adguard_ipset() {
-    global $AGH_CONF;
+    global $AGH_CONF, $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
     if (!file_exists($AGH_CONF)) return;
     // Reuse the routing bucketization (same v2fly-authoritative + override precedence).
     // Domains routed "direct" must NOT enter the vpn1 ipset (they bypass Xray entirely);
     // everything else (proxy + pinned servers) must, so it reaches Xray. id_to_tag is empty
     // here so server pins collapse to the non-"direct" bucket — exactly what we need.
-    $buckets = all_domains_with_target(rule_targets(), [], 'proxy');
+    $buckets = all_domains_with_target(
+        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
+        rule_targets(), [], 'proxy'
+    );
     $entries = [];
     foreach ($buckets as $tag => $tokens) {
         if ($tag === 'direct') continue;
@@ -934,7 +1183,9 @@ function wg_list_peers() {
         }
     }
 
-    $status = shell_run("/opt/bin/wg show wg0 2>/dev/null");
+    // One machine-readable snapshot: numbers for the new UI, `wg show`-style text for legacy.
+    $live = wg_parse_dump((string)shell_run("/opt/bin/wg show wg0 dump 2>/dev/null"));
+    $now = time();
     $peers = [];
     if (preg_match_all('/\[Peer\]\s*\n((?:[^\[]+?)(?=\[|$))/s', $content, $pm)) {
         foreach ($pm[1] as $block) {
@@ -943,17 +1194,22 @@ function wg_list_peers() {
             if (preg_match('/AllowedIPs\s*=\s*(.+)/', $block, $m)) $allowed_ips = trim($m[1]);
             $name = $client_map[$pubkey] ?? '';
             $ip = preg_replace('/\/\d+$/', '', $allowed_ips);
-            $last_handshake = ''; $rx = ''; $tx = '';
-            if ($pubkey && preg_match('/peer:\s*' . preg_quote($pubkey, '/') . '\s+(.*?)(?=peer:|$)/s', $status, $sm)) {
-                if (preg_match('/latest handshake:\s*(.+)/', $sm[1], $hm)) $last_handshake = trim($hm[1]);
-                if (preg_match('/transfer:\s*([\d.]+\s+\w+)\s+received,\s*([\d.]+\s+\w+)\s+sent/', $sm[1], $tm)) {
-                    $rx = $tm[1]; $tx = $tm[2];
-                }
-            }
+            $st = $live[$pubkey] ?? null;
+            $ago = ($st && $st['handshake'] > 0) ? max(0, $now - $st['handshake']) : null;
+            $moved = $st && ($st['rx'] > 0 || $st['tx'] > 0);
             $peers[] = [
                 'name' => $name, 'pubkey' => $pubkey, 'allowed_ips' => $allowed_ips,
-                'ip' => $ip, 'last_handshake' => $last_handshake,
-                'rx' => $rx, 'tx' => $tx, 'has_config' => !empty($name),
+                'ip' => $ip,
+                'last_handshake' => $ago === null ? '' : wg_human_ago($ago),
+                // Like `wg show`, which omits the transfer line until there is traffic.
+                'rx' => $moved ? wg_human_bytes($st['rx']) : '',
+                'tx' => $moved ? wg_human_bytes($st['tx']) : '',
+                'has_config' => !empty($name),
+                // Optional numeric fields (new UI): seconds since the last handshake
+                // (null = never), transfer in bytes (null = interface down / unknown).
+                'handshake_ago' => $ago,
+                'rx_bytes' => $st ? $st['rx'] : null,
+                'tx_bytes' => $st ? $st['tx'] : null,
             ];
         }
     }
@@ -986,16 +1242,19 @@ function wg_get_endpoint() {
     return ($ip ?: '95.105.78.232') . ':' . $port;
 }
 
+const WG_NAME_ERROR = 'Имя клиента: латиница, кириллица, цифры, _ и -, от 1 до 32 символов';
+
 function wg_add_peer($name) {
     global $WG_DIR, $WG_CONF;
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    if (!$name) return ['error' => 'Invalid name'];
+    $name = (string)$name;
+    if (!wg_peer_name_valid($name)) return ['error' => WG_NAME_ERROR];
     $conf_file = "$WG_DIR/$name.conf";
-    if (file_exists($conf_file)) return ['error' => 'Client already exists'];
+    if (file_exists($conf_file)) return ['error' => 'Клиент с таким именем уже есть'];
+    if (!file_exists($WG_CONF)) return ['error' => 'WireGuard не настроен на роутере'];
 
     $privkey = trim(shell_run("/opt/bin/wg genkey"));
     $pubkey = trim(shell_run("echo " . escapeshellarg($privkey) . " | /opt/bin/wg pubkey"));
-    if (!$privkey || !$pubkey) return ['error' => 'Failed to generate keys'];
+    if (!$privkey || !wg_pubkey_valid($pubkey)) return ['error' => 'Не удалось создать ключи'];
 
     $client_ip = wg_get_next_ip();
     $server_pubkey = wg_get_server_pubkey();
@@ -1004,28 +1263,42 @@ function wg_add_peer($name) {
     file_put_contents($WG_CONF, file_get_contents($WG_CONF) . "\n[Peer]\nPublicKey = $pubkey\nAllowedIPs = $client_ip/32\n");
     $client_conf = "[Interface]\nPrivateKey = $privkey\nAddress = $client_ip/24\nDNS = 192.168.1.1\nMTU = 1400\n\n[Peer]\nPublicKey = $server_pubkey\nEndpoint = $endpoint\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n";
     file_put_contents($conf_file, $client_conf);
-    shell_run("/opt/bin/wg set wg0 peer $pubkey allowed-ips $client_ip/32 2>/dev/null");
+    shell_run('/opt/bin/wg set wg0 peer ' . escapeshellarg($pubkey)
+        . ' allowed-ips ' . escapeshellarg("$client_ip/32") . ' 2>/dev/null');
 
     return ['ok' => true, 'name' => $name, 'ip' => $client_ip];
 }
 
-function wg_delete_peer($name) {
-    global $WG_DIR, $WG_CONF;
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    $conf_file = "$WG_DIR/$name.conf";
-    if (file_exists($conf_file)) {
-        $cc = file_get_contents($conf_file);
-        if (preg_match('/PrivateKey\s*=\s*(.+)/', $cc, $m)) {
-            $pubkey = trim(shell_run("echo " . escapeshellarg(trim($m[1])) . " | /opt/bin/wg pubkey 2>/dev/null"));
-            if ($pubkey) {
-                $wg = file_get_contents($WG_CONF);
-                $wg = preg_replace('/\n\[Peer\]\s*\nPublicKey\s*=\s*' . preg_quote($pubkey, '/') . '\s*\n[^\[]*/', '', $wg);
-                file_put_contents($WG_CONF, $wg);
-                shell_run("/opt/bin/wg set wg0 peer $pubkey remove 2>/dev/null");
-            }
-        }
-        unlink($conf_file);
+// Removes a peer from wg0.conf and the live interface.
+function wg_remove_server_peer(string $pubkey): void {
+    global $WG_CONF;
+    if (!wg_pubkey_valid($pubkey) || !file_exists($WG_CONF)) return;
+    $wg = file_get_contents($WG_CONF);
+    $wg = preg_replace('/\n\[Peer\]\s*\nPublicKey\s*=\s*' . preg_quote($pubkey, '/') . '\s*\n[^\[]*/', '', $wg);
+    file_put_contents($WG_CONF, $wg);
+    shell_run('/opt/bin/wg set wg0 peer ' . escapeshellarg($pubkey) . ' remove 2>/dev/null');
+}
+
+// By client name (its <name>.conf goes too) or, for a peer without a client config,
+// by public key.
+function wg_delete_peer($name, $pubkey = '') {
+    global $WG_DIR;
+    $name = (string)$name;
+    $pubkey = (string)$pubkey;
+    if ($name === '') {
+        if (!wg_pubkey_valid($pubkey)) return ['error' => 'Некорректный ключ клиента'];
+        wg_remove_server_peer($pubkey);
+        return ['ok' => true];
     }
+    $conf_file = wg_client_conf_path($WG_DIR, $name);
+    if ($conf_file === null && wg_pubkey_valid($name)) return wg_delete_peer('', $name); // legacy UI
+    if ($conf_file === null) return ['error' => 'Клиент не найден'];
+    $cc = file_get_contents($conf_file);
+    if (preg_match('/PrivateKey\s*=\s*(.+)/', $cc, $m)) {
+        $pk = trim(shell_run("echo " . escapeshellarg(trim($m[1])) . " | /opt/bin/wg pubkey 2>/dev/null"));
+        if ($pk) wg_remove_server_peer($pk);
+    }
+    unlink($conf_file);
     foreach (["$WG_DIR/{$name}_private.key", "$WG_DIR/{$name}_public.key"] as $kf) {
         if (file_exists($kf)) unlink($kf);
     }
@@ -1034,37 +1307,37 @@ function wg_delete_peer($name) {
 
 function wg_get_client_config($name) {
     global $WG_DIR;
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    $conf_file = "$WG_DIR/$name.conf";
-    if (!file_exists($conf_file)) return ['error' => 'Config not found'];
+    $name = (string)$name;
+    $conf_file = wg_client_conf_path($WG_DIR, $name);
+    if ($conf_file === null) return ['error' => 'Config not found'];
     return ['ok' => true, 'config' => file_get_contents($conf_file), 'name' => $name];
 }
 
 // ===== API Router =====
 $action = $_GET['action'] ?? $_POST['action'] ?? '';
 
-// Read-only actions are public on local network (always require auth from outside).
+// Read-only actions are public on the trusted LAN; from outside, every action except
+// login/logout/auth_status needs a session (auth_required_for(), lib/auth.php).
 // Mutating actions go through require_auth() which short-circuits with 401 if no session.
 $PUBLIC_READ_ACTIONS = [
     'status', 'login', 'logout', 'auth_status',
     'get_onboarding_status', 'get_features', 'get_version',
     'check_update', 'status_update', 'check_ips', 'changelog_full',
-    'keys', 'subscriptions', 'subscription_servers',
+    'keys', 'subscriptions', 'subscription_servers', 'servers',
     'domains', 'ips', 'devices', 'lan_devices',
-    'github_lists', 'v2fly_search', 'rule_targets',
-    'wg_peers', 'logs', 'raw_config',
+    'github_lists', 'v2fly_search', 'rule_targets', 'route_explain',
+    'wg_peers', 'logs', 'raw_config', 'events', 'overview', 'connections', 'site_check',
 ];
-if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
+if (!in_array($action, $PUBLIC_READ_ACTIONS, true)
+    || auth_required_for($action, is_local_request(), is_authenticated())) {
     require_auth();
 }
 
 switch ($action) {
 
 case 'status':
-    $pid = trim(shell_run('cat /opt/var/run/xray.pid 2>/dev/null') ?? '');
-    $running = $pid && trim(shell_run("kill -0 $pid 2>/dev/null; echo \$?") ?? '') === '0';
-    // Fallback: pgrep in case PID file is stale or missing
-    if (!$running) $running = trim(shell_run('pgrep -x xray 2>/dev/null') ?? '') !== '';
+    $pid = xray_pid();
+    $running = $pid !== null;
     $state = json_read($STATE_FILE);
     $mem = shell_run("free -m | awk '/Mem:/{print \$2,\$3,\$4}'");
     $mp = explode(' ', $mem);
@@ -1091,50 +1364,221 @@ case 'status':
     ]);
     break;
 
+case 'overview':
+    // Single consistent status for the UI (Task 7): one call replacing the
+    // several ad-hoc reads (status, subscription health, probe/update caches)
+    // the UI used to stitch together itself. No network requests: the update
+    // check and probe results are whatever is already cached on disk.
+    $pid = xray_pid();
+    $running = $pid !== null;
+    $state = json_read($STATE_FILE);
+    $watchdog = $running && file_exists($WATCHDOG_STATE) ? trim(@file_get_contents($WATCHDOG_STATE)) : '';
+    $mem = shell_run("free -m | awk '/Mem:/{print \$2,\$3,\$4}'");
+    $mp = explode(' ', $mem);
+    $mem_total = (int)(($mp[0] ?? 0) / 1024);
+    $mem_used = (int)(($mp[1] ?? 0) / 1024);
+    $wg_up = shell_run("/opt/bin/wg show wg0 2>/dev/null | head -1") !== '';
+    $servers = overview_build_servers(json_read($KEYS_FILE), json_read($CACHED_FILE),
+        json_read($SUBS_FILE));
+
+    $probe_cache = '/opt/tmp/xray-probe.json';
+    $probe = null;
+    if (file_exists($probe_cache)) {
+        $decoded = json_decode((string)@file_get_contents($probe_cache), true);
+        if (is_array($decoded)) $probe = $decoded;
+    }
+
+    // check_update caches for 6h; overview never triggers the network check itself,
+    // it only reuses whatever that cache already holds.
+    $update_cache = '/opt/tmp/xray-vpn-update-check.json';
+    $update_available = false;
+    if (file_exists($update_cache)) {
+        $decoded = json_decode((string)@file_get_contents($update_cache), true);
+        if (is_array($decoded)) $update_available = !empty($decoded['available']);
+    }
+
+    echo json_encode(build_overview([
+        'xray_running'        => $running,
+        'watchdog'            => $watchdog,
+        'state'               => $state,
+        'servers'             => $servers,
+        'subscription_health' => subscription_health(),
+        'probe'               => $probe,
+        'mem'                 => [$mem_used, $mem_total],
+        'wg_up'               => $wg_up,
+        'version'             => get_installed_version(),
+        'update_available'    => $update_available,
+        'features'            => get_features(),
+    ]));
+    break;
+
 case 'start':
     update_adguard_ipset();
-    $r = generate_xray_config();
-    if (isset($r['error'])) { echo json_encode($r); break; }
-    write_derived_files();
-    shell_run("$MANAGER stop_watchdog 2>/dev/null");
-    shell_run('killall xray 2>/dev/null; sleep 1');
-    shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log; : > /opt/var/log/xray/error.log');
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
-    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
-    reload_adguard();
-    warmup_ipset();
-    sleep(2);
-    echo json_encode(['ok' => true]);
+    // apply_changes() restarts the watchdog around the full apply itself.
+    $r = apply_changes('full', ['start' => true, 'start_old_if_stopped' => true]);
+    if ($r['ok']) {
+        sleep(2);
+        log_event('info', 'service', 'Xray запущен');
+    }
+    echo json_encode($r);
     break;
 
 case 'stop':
-    shell_run("$MANAGER stop_watchdog 2>/dev/null");
-    shell_run('killall xray 2>/dev/null; rm -f /opt/var/run/xray.pid');
-    shell_run("$MANAGER cleanup_firewall 2>/dev/null");
-    echo json_encode(['ok' => true]);
+    $r = apply_stop();
+    if ($r['ok']) log_event('info', 'service', 'Xray остановлен');
+    echo json_encode($r);
     break;
 
 case 'restart':
-    shell_run("$MANAGER stop_watchdog 2>/dev/null");
-    shell_run('killall xray 2>/dev/null; sleep 1');
     update_adguard_ipset();
-    $r = generate_xray_config();
-    if (isset($r['error'])) { echo json_encode($r); break; }
-    write_derived_files();
-    shell_run("$MANAGER firewall 2>/dev/null");
     shell_run(': > /opt/var/log/xray/access.log');
-    shell_run('xray run -config /opt/etc/xray/config.json > /dev/null 2>&1 & echo $! > /opt/var/run/xray.pid');
-    shell_exec("nohup $MANAGER start_watchdog >/dev/null 2>&1 &");
-    reload_adguard();
-    warmup_ipset();
-    sleep(2);
-    echo json_encode(['ok' => true]);
+    $r = apply_changes('full', ['start' => true, 'start_old_if_stopped' => true]);
+    if ($r['ok']) {
+        sleep(2);
+        log_event('info', 'service', 'Xray перезапущен');
+    }
+    echo json_encode($r);
     break;
 
 case 'warmup_ipset':
     warmup_ipset();
     echo json_encode(['ok' => true, 'domains' => count(all_domains())]);
+    break;
+
+case 'servers':
+    // Unified list (Task 8): every source (each subscription + one 'keys'
+    // group) and every server, decorated with favorites and whatever
+    // ping/probe results are already cached. No network requests here.
+    $keys = json_read($KEYS_FILE);
+    $cached = json_read($CACHED_FILE);
+    $subs = json_read($SUBS_FILE);
+    $flags = json_read($SERVER_FLAGS_FILE);
+
+    $pingCache = [];
+    if (file_exists('/opt/tmp/xray-ping.json')) {
+        $decoded = json_decode((string)@file_get_contents('/opt/tmp/xray-ping.json'), true);
+        if (is_array($decoded) && is_array($decoded['results'] ?? null)) $pingCache = $decoded['results'];
+    }
+    $probeCache = [];
+    if (file_exists('/opt/tmp/xray-probe.json')) {
+        $decoded = json_decode((string)@file_get_contents('/opt/tmp/xray-probe.json'), true);
+        if (is_array($decoded)) $probeCache = $decoded;
+    }
+
+    $state = json_read($STATE_FILE);
+    if (array_key_exists('effective_outbound', $state)) {
+        $activeId = $state['effective_outbound'];
+    } else {
+        $activeId = resolve_active($state, $keys, $cached, $subs)['id'];
+    }
+
+    echo json_encode(list_servers($keys, $cached, $subs, $flags, $pingCache, $probeCache, $activeId));
+    break;
+
+case 'ping_servers':
+    // TCP-connect ping for every server (or just $ids, JSON-encoded array of
+    // ids, if given), cached 300s in xray-ping.json. Reuses the cache
+    // wholesale while it's fresh; otherwise only the ids actually needed are
+    // re-pinged and merged over whatever else the cache already knew, so a
+    // request for one server never throws away everyone else's last result.
+    $all = array_merge(json_read($KEYS_FILE), json_read($CACHED_FILE));
+    $byId = [];
+    foreach ($all as $s) { if (!empty($s['id'])) $byId[$s['id']] = $s; }
+
+    $requested = null;
+    $idsParam = $_POST['ids'] ?? null;
+    if (is_string($idsParam) && $idsParam !== '') {
+        $decoded = json_decode($idsParam, true);
+        if (is_array($decoded)) $requested = array_values(array_map('strval', $decoded));
+    }
+    $wantIds = $requested ?? array_keys($byId);
+
+    $pingCacheFile = '/opt/tmp/xray-ping.json';
+    $pingCache = json_read($pingCacheFile);
+    $cachedResults = is_array($pingCache['results'] ?? null) ? $pingCache['results'] : [];
+    $isFresh = isset($pingCache['ts']) && (time() - (int)$pingCache['ts']) < 300;
+
+    if ($isFresh) {
+        $out = [];
+        foreach ($wantIds as $id) $out[$id] = $cachedResults[$id] ?? null;
+        echo json_encode(['results' => $out]);
+        break;
+    }
+
+    $targets = [];
+    foreach ($wantIds as $id) {
+        if (!isset($byId[$id])) continue;
+        $link = $byId[$id]['link'] ?? '';
+        $hp = link_host_port($link);
+        $targets[] = ['id' => $id, 'host' => $hp['host'], 'port' => $hp['port'],
+                      'skip' => link_proto($link) === 'hysteria2'];
+    }
+    $fresh = ping_servers_run($targets);
+
+    $merged = $cachedResults;
+    foreach ($fresh as $id => $ms) $merged[$id] = $ms;
+    json_write($pingCacheFile, ['ts' => time(), 'results' => $merged]);
+
+    $out = [];
+    foreach ($wantIds as $id) $out[$id] = $merged[$id] ?? null;
+    echo json_encode(['results' => $out]);
+    break;
+
+case 'server_probe':
+    // On-demand country probe through a temporary Xray instance (Task 9).
+    // Cached 3600s in xray-probe.json; a fresh request while another probe
+    // is already running gets a Russian error instead of queueing (spinning
+    // up a second temporary Xray while one is mid-probe would race on the
+    // same loopback port and process bookkeeping).
+    //
+    // Same hazard apply_changes() guards against (apply.php:42,109): a dropped
+    // client connection during the ~22s probe window must not abort the script
+    // while it holds the probe lock / has a temp Xray running — that would leak
+    // the process, leave port 10899 bound, and hold the lock until the worker
+    // recycles. Set before anything else, unconditionally, exactly like apply.php.
+    ignore_user_abort(true);
+
+    $id = $_POST['id'] ?? '';
+    if ($id === '') { echo json_encode(['error' => 'Не указан id']); break; }
+    echo json_encode(server_probe_cached($id));
+    break;
+
+case 'set_server_flags':
+    $id = $_POST['id'] ?? '';
+    if ($id === '') { echo json_encode(['error' => 'No id']); break; }
+
+    $enabledChanged = false;
+    if (isset($_POST['enabled'])) {
+        $value = (bool)(int)$_POST['enabled'];
+        $found = false;
+        $keys = json_read($KEYS_FILE);
+        foreach ($keys as &$k) { if (($k['id'] ?? '') === $id) { $k['enabled'] = $value; $found = true; } }
+        unset($k);
+        if ($found) {
+            json_write($KEYS_FILE, $keys);
+        } else {
+            $cached = json_read($CACHED_FILE);
+            foreach ($cached as &$s) { if (($s['id'] ?? '') === $id) { $s['enabled'] = $value; $found = true; } }
+            unset($s);
+            if ($found) json_write($CACHED_FILE, $cached);
+        }
+        if (!$found) { echo json_encode(['error' => 'not_found']); break; }
+        $enabledChanged = true;
+    }
+
+    if (isset($_POST['favorite'])) {
+        $flags = json_read($SERVER_FLAGS_FILE);
+        $flags[$id] = ['favorite' => (bool)(int)$_POST['favorite']];
+        json_write($SERVER_FLAGS_FILE, $flags);
+    }
+
+    if (!$enabledChanged) { echo json_encode(['ok' => true]); break; }
+    // Enabling/disabling only changes which outbounds exist, not domain/ip ipset
+    // membership, so a routing-only restart is enough (same as toggle_key/toggle_server).
+    $result = gen_and_restart_xray();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $result['xray_running']]);
     break;
 
 case 'keys': echo json_encode(json_read($KEYS_FILE)); break;
@@ -1148,6 +1592,7 @@ case 'add_key':
     if (strpos($link, 'vless://') === 0) $type = 'vless';
     elseif (strpos($link, 'ss://') === 0) $type = 'shadowsocks';
     elseif (strpos($link, 'trojan://') === 0) $type = 'trojan';
+    elseif (is_hysteria2_link($link)) $type = 'hysteria2';
     $keys[] = ['id' => uniqid(), 'name' => $name, 'link' => $link, 'enabled' => true, 'type' => $type];
     json_write($KEYS_FILE, $keys);
     echo json_encode(['ok' => true]);
@@ -1161,7 +1606,11 @@ case 'delete_key':
     // Drop rule pins to this server (they would otherwise silently fall back to active).
     $targets = array_filter(rule_targets(), fn($v) => $v !== $id);
     json_write($RULE_TARGETS_FILE, $targets);
-    echo json_encode(['ok' => true]);
+    // The key is gone from the config right away. If it was the active server,
+    // active_outbound is left as is so resolve_active reports the fallback.
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
     break;
 
 case 'toggle_key':
@@ -1169,7 +1618,75 @@ case 'toggle_key':
     $id = $_POST['id'] ?? '';
     foreach ($keys as &$k) { if (($k['id'] ?? '') === $id) $k['enabled'] = !$k['enabled']; }
     json_write($KEYS_FILE, $keys);
+    // Enabling/disabling a key only changes which outbounds exist, not the domain/ip
+    // ipset membership, so a routing-only restart is enough — and it applies immediately
+    // instead of waiting for some later action to trigger a config regen.
+    $result = gen_and_restart_xray();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $result['xray_running']]);
+    break;
+
+case 'rename_key':
+    $id = $_POST['id'] ?? '';
+    $name = trim($_POST['name'] ?? '');
+    if ($id === '' || $name === '') { echo json_encode(['error' => 'Bad params']); break; }
+    $keys = json_read($KEYS_FILE);
+    $found = false;
+    foreach ($keys as &$k) { if (($k['id'] ?? '') === $id) { $k['name'] = $name; $found = true; } }
+    unset($k);
+    if (!$found) { echo json_encode(['error' => 'not_found']); break; }
+    json_write($KEYS_FILE, $keys);
     echo json_encode(['ok' => true]);
+    break;
+
+case 'add_link':
+    // One-field "add" (Task 8): pasted text may hold subscription URLs, single-
+    // server keys, or a mix of both, one per line. Reuses add_subscription's and
+    // add_key's own storage shape, then fetches any new subscriptions and applies
+    // the config ONCE at the end (never once per line).
+    $split = classify_lines($_POST['text'] ?? '');
+
+    $subs = json_read($SUBS_FILE);
+    $added_subscriptions = 0;
+    foreach ($split['subscriptions'] as $url) {
+        $subs[] = ['id' => uniqid(), 'name' => 'Sub ' . (count($subs) + 1), 'url' => $url, 'enabled' => true, 'updated' => ''];
+        $added_subscriptions++;
+    }
+    if ($added_subscriptions > 0) json_write($SUBS_FILE, $subs);
+
+    $keys = json_read($KEYS_FILE);
+    $added_keys = 0;
+    foreach ($split['keys'] as $link) {
+        $type = 'unknown';
+        if (strpos($link, 'vless://') === 0) $type = 'vless';
+        elseif (strpos($link, 'ss://') === 0) $type = 'shadowsocks';
+        elseif (strpos($link, 'trojan://') === 0) $type = 'trojan';
+        elseif (is_hysteria2_link($link)) $type = 'hysteria2';
+        $name = '';
+        if (preg_match('/#(.+)$/', $link, $nm)) $name = urldecode($nm[1]);
+        $keys[] = ['id' => uniqid(), 'name' => $name !== '' ? $name : ('Key ' . (count($keys) + 1)),
+            'link' => $link, 'enabled' => true, 'type' => $type];
+        $added_keys++;
+    }
+    if ($added_keys > 0) json_write($KEYS_FILE, $keys);
+
+    if ($added_subscriptions === 0 && $added_keys === 0) {
+        echo json_encode(['ok' => true, 'added_subscriptions' => 0, 'added_keys' => 0, 'skipped' => $split['skipped']]);
+        break;
+    }
+
+    if ($added_subscriptions > 0) refresh_subscriptions();
+
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+
+    echo json_encode([
+        'ok' => true,
+        'added_subscriptions' => $added_subscriptions,
+        'added_keys' => $added_keys,
+        'skipped' => $split['skipped'],
+        'xray_running' => $apply['xray_running'],
+    ]);
     break;
 
 case 'subscriptions': echo json_encode(json_read($SUBS_FILE)); break;
@@ -1189,26 +1706,48 @@ case 'delete_subscription':
     $id = $_POST['id'] ?? '';
     $subs = array_values(array_filter($subs, fn($s) => ($s['id'] ?? '') !== $id));
     json_write($SUBS_FILE, $subs);
+    // Its servers go too, so they stop being outbounds. If the active server was one
+    // of them, active_outbound is left as is so resolve_active reports the fallback.
+    json_write($CACHED_FILE, purge_cached_for_sub(json_read($CACHED_FILE), $id));
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
+    break;
+case 'rename_subscription':
+    // Name only (shown in the UI) — the config doesn't change, nothing to apply.
+    $id = $_POST['id'] ?? '';
+    $name = trim($_POST['name'] ?? '');
+    if ($id === '' || $name === '') { echo json_encode(['error' => 'Bad params']); break; }
+    $subs = json_read($SUBS_FILE);
+    $found = false;
+    foreach ($subs as &$s) { if (($s['id'] ?? '') === $id) { $s['name'] = $name; $found = true; } }
+    unset($s);
+    if (!$found) { echo json_encode(['error' => 'not_found']); break; }
+    json_write($SUBS_FILE, $subs);
     echo json_encode(['ok' => true]);
     break;
 
-case 'update_subscriptions':
+case 'toggle_subscription':
     $subs = json_read($SUBS_FILE);
-    $all_servers = [];
-    foreach ($subs as &$sub) {
-        if (empty($sub['enabled']) || empty($sub['url'])) continue;
-        $links = fetch_subscription($sub['url']);
-        foreach ($links as $l) {
-            $l = trim($l);
-            $name = '';
-            if (preg_match('/#(.+)$/', $l, $nm)) $name = urldecode($nm[1]);
-            $all_servers[] = ['id' => md5($l), 'name' => $name ?: 'Server', 'link' => preg_replace('/#.*$/', '', $l), 'enabled' => true, 'sub' => $sub['id'] ?? ''];
-        }
-        $sub['updated'] = date('Y-m-d H:i:s');
-    }
+    $id = $_POST['id'] ?? '';
+    $found = false;
+    foreach ($subs as &$s) { if (($s['id'] ?? '') === $id) { $s['enabled'] = !$s['enabled']; $found = true; } }
+    unset($s);
+    if (!$found) { echo json_encode(['error' => 'not_found']); break; }
     json_write($SUBS_FILE, $subs);
-    json_write($CACHED_FILE, $all_servers);
-    echo json_encode(['ok' => true, 'count' => count($all_servers)]);
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
+    break;
+
+case 'update_subscriptions':
+    $refreshed = refresh_subscriptions();
+    // Refreshing a subscription only changes which outbounds exist, not domain/ip
+    // ipset membership, so a routing-only restart is enough — and it applies the new
+    // server list immediately instead of leaving Xray on the stale one.
+    $result = gen_and_restart_xray();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'count' => $refreshed['count'], 'xray_running' => $result['xray_running']]);
     break;
 
 case 'subscription_servers': echo json_encode(json_read($CACHED_FILE)); break;
@@ -1223,13 +1762,60 @@ case 'toggle_server':
 
 case 'select_server':
     $id = $_POST['id'] ?? '';
+    if ($id === '') { echo json_encode(['error' => 'Не указан id']); break; }
     $state = json_read($STATE_FILE);
     $state['active_outbound'] = $id;
+    $name = $id;
+    $found = null;
+    $source = null;
+    $cached = json_read($CACHED_FILE);
+    foreach ($cached as $s) {
+        if (($s['id'] ?? '') === $id) { $found = $s; $source = 'sub'; break; }
+    }
+    if ($found) {
+        // Only subscriptions can be disabled in the UI now; a server the user just
+        // picked must run even if it had been left enabled:false.
+        if (empty($found['enabled'])) {
+            json_write($CACHED_FILE, enable_server($cached, $id));
+            $found['enabled'] = true;
+        }
+    } else {
+        $keys = json_read($KEYS_FILE);
+        foreach ($keys as $s) {
+            if (($s['id'] ?? '') === $id) { $found = $s; $source = 'key'; break; }
+        }
+        if ($found && empty($found['enabled'])) {
+            json_write($KEYS_FILE, enable_server($keys, $id));
+            $found['enabled'] = true;
+        }
+    }
+    if ($found) {
+        // Remembered (with its source) so update_subscriptions can find this server
+        // again after its id/link changes — but only when it came from a subscription;
+        // rematch_server() refuses to rematch a 'key' hint onto a subscription server.
+        $state['active_hint'] = server_hint($found) + ['source' => $source];
+        if (!empty($found['name'])) $name = $found['name'];
+    }
     json_write($STATE_FILE, $state);
-    echo json_encode(['ok' => true]);
+    log_event('info', 'server', "Сервер: $name", ['id' => $id]);
+    // Applied right here (like `restart`; apply_changes() restarts the watchdog around
+    // it so the switch isn't counted as an outage) — the UI gets the real outcome in
+    // one call. Choosing a server is an explicit intent to run it.
+    $r = apply_changes('full', ['start' => true]);
+    echo json_encode($r);
     break;
 
 case 'rule_targets': echo json_encode((object)rule_targets()); break;
+
+case 'route_explain':
+    $q = trim($_GET['q'] ?? '');
+    // Rejects anything that isn't a bare hostname or an IP/CIDR before it can
+    // reach nslookup/ipset — an nslookup "option" like "-type=any" would
+    // otherwise be option-injected past escapeshellarg (which only stops
+    // shell metacharacters, not a leading "-").
+    if (!route_query_is_valid($q)) { echo json_encode(['error' => 'Введите домен или IP']); break; }
+    echo json_encode(route_explain_for($q));
+    break;
 
 case 'set_rule_target':
     $key = trim($_POST['key'] ?? '');
@@ -1281,6 +1867,31 @@ case 'set_rule_targets_bulk':
     if ($touchedDirect) { update_adguard_ipset(); quick_apply(); }
     else { gen_and_restart_xray(); }
     echo json_encode(['ok' => true, 'count' => $n]);
+    break;
+
+case 'rules_batch':
+    // Batch rule editor: many delete/target/match edits committed as one write + one
+    // Xray restart, instead of one apply per row (what repeating the single-row
+    // endpoints would cost).
+    $ops = json_decode($_POST['ops'] ?? '', true);
+    if (!is_array($ops)) { echo json_encode(['error' => 'Bad ops']); break; }
+    $result = apply_rule_ops($ops, lines_read($DOMAINS_FILE), lines_read($IPS_FILE), rule_targets());
+    lines_write($DOMAINS_FILE, $result['domains']);
+    lines_write($IPS_FILE, $result['ips']);
+    json_write($RULE_TARGETS_FILE, $result['targets']);
+    // Batch IP deletes also drop ipset membership immediately, same as delete_ip
+    // (setup_firewall no longer flushes the ipset, so this has to be explicit).
+    foreach ($ops as $op) {
+        if (!is_array($op) || ($op['op'] ?? '') !== 'delete' || ($op['kind'] ?? '') !== 'ip') continue;
+        $ip = is_string($op['value'] ?? null) ? trim($op['value']) : '';
+        if ($ip === '') continue;
+        $set = strpos($ip, ':') !== false ? 'vpn6' : 'vpn1';
+        shell_run("ipset del $set " . escapeshellarg($ip) . ' 2>/dev/null');
+    }
+    update_adguard_ipset();
+    $apply = apply_changes('full');
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'changed' => $result['changed'], 'xray_running' => $apply['xray_running']]);
     break;
 
 case 'set_domain_match':
@@ -1356,6 +1967,8 @@ case 'add_domains':
     $prefix = ($_POST['mode'] ?? 'suffix') === 'full' ? 'full:' : 'domain:';
     $target = trim($_POST['target'] ?? '');
     $hasTarget = ($target !== '' && $target !== 'proxy');
+    // URLs, "*.x", IDN etc. → bare lowercase hosts; unusable lines come back in 'invalid'.
+    $input = collect_rule_inputs($new, 'domain');
     // Without an explicit override, skip domains already covered by an enabled v2fly list
     // (v2fly is authoritative). With an override the manual entry is a deliberate exception.
     $v2set = $hasTarget ? [] : v2fly_domain_set();
@@ -1363,22 +1976,25 @@ case 'add_domains':
     foreach ($existing as $t) $byBare[strtolower(bare_domain($t))] = $t;  // keep existing tokens as-is
     $added = [];
     $skipped = 0;
-    foreach (preg_split('/[\s,;\n]+/', $new) as $d) {
-        $bare = strtolower(bare_domain(trim($d)));
-        if ($bare === '') continue;
+    foreach ($input['values'] as $bare) {
         if (isset($byBare[$bare])) continue;                  // already a manual entry
         if (!$hasTarget && isset($v2set[$bare])) { $skipped++; continue; } // covered by v2fly
         $byBare[$bare] = $prefix . $bare; $added[] = $bare;
     }
+    $resp = ['ok' => true, 'count' => count($byBare), 'added' => count($added),
+        'skipped' => $skipped, 'invalid' => $input['invalid']];
+    if (!$added) { echo json_encode($resp); break; }
     lines_write($DOMAINS_FILE, array_values($byBare));
-    if ($hasTarget && $added) {
+    if ($hasTarget) {
         $targets = rule_targets();
         foreach ($added as $bare) $targets['domain:' . $bare] = $target;
         json_write($RULE_TARGETS_FILE, $targets);
     }
+    log_event('info', 'rules', 'Добавлено доменов: ' . count($added), ['domains' => $added]);
     update_adguard_ipset();
-    quick_apply();
-    echo json_encode(['ok' => true, 'count' => count($byBare), 'added' => count($added), 'skipped' => $skipped]);
+    $apply = quick_apply();
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode($resp + ['xray_running' => $apply['xray_running']]);
     break;
 
 case 'delete_domain':
@@ -1400,18 +2016,22 @@ case 'add_ips':
     $new = trim($_POST['ips'] ?? '');
     if (!$new) { echo json_encode(['error' => 'No IPs']); break; }
     $target = trim($_POST['target'] ?? '');
-    $newList = array_values(array_filter(array_map('trim', preg_split('/[\s,;\n]+/', $new))));
-    $existing = array_flip($ips);
-    $added = array_values(array_filter($newList, fn($ip) => !isset($existing[$ip])));
-    $ips = array_values(array_unique(array_merge($ips, $newList)));
+    $input = collect_rule_inputs($new, 'ip');
+    $existing = array_flip(array_map('canonical_ip_rule', $ips));
+    $added = array_values(array_filter($input['values'], fn($ip) => !isset($existing[$ip])));
+    $ips = array_merge($ips, $added);
+    $resp = ['ok' => true, 'count' => count($ips), 'added' => count($added),
+        'invalid' => $input['invalid']];
+    if (!$added) { echo json_encode($resp); break; }
     lines_write($IPS_FILE, $ips);
-    if ($target !== '' && $target !== 'proxy' && $added) {
+    if ($target !== '' && $target !== 'proxy') {
         $targets = rule_targets();
         foreach ($added as $ip) $targets['ip:' . $ip] = $target;
         json_write($RULE_TARGETS_FILE, $targets);
     }
-    quick_apply();
-    echo json_encode(['ok' => true, 'count' => count($ips), 'added' => count($added)]);
+    $apply = quick_apply();
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode($resp + ['xray_running' => $apply['xray_running']]);
     break;
 
 case 'delete_ip':
@@ -1421,6 +2041,11 @@ case 'delete_ip':
     $targets = rule_targets();
     unset($targets['ip:' . $ip]);
     json_write($RULE_TARGETS_FILE, $targets);
+    // setup_firewall no longer flushes the ipset, so drop the entry explicitly
+    if ($ip !== '') {
+        $set = strpos($ip, ':') !== false ? 'vpn6' : 'vpn1';
+        shell_run("ipset del $set " . escapeshellarg($ip) . ' 2>/dev/null');
+    }
     quick_apply();
     echo json_encode(['ok' => true]);
     break;
@@ -1440,23 +2065,32 @@ case 'devices':
     break;
 
 case 'add_device':
-    $macs = lines_read($FULLVPN_FILE);
-    $mac = strtoupper(trim($_POST['mac'] ?? ''));
-    if (!preg_match('/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/', $mac)) { echo json_encode(['error' => 'Invalid MAC']); break; }
-    if (!in_array($mac, $macs)) $macs[] = $mac;
-    lines_write($FULLVPN_FILE, $macs);
-    echo json_encode(['ok' => true]);
-    break;
-
 case 'delete_device':
-    $macs = lines_read($FULLVPN_FILE);
+    // The MAC redirect only changes with an apply; if that fails, nothing changed on the
+    // router, so the list goes back to what it was.
+    $before = lines_read($FULLVPN_FILE);
     $mac = strtoupper(trim($_POST['mac'] ?? ''));
-    $macs = array_values(array_filter($macs, fn($m) => strtoupper($m) !== $mac));
+    if ($action === 'add_device' ? !preg_match('/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/', $mac) : $mac === '') {
+        echo json_encode(['error' => 'Invalid MAC']);
+        break;
+    }
+    $macs = array_values(array_filter($before, fn($m) => strtoupper($m) !== $mac));
+    if ($action === 'add_device') $macs[] = $mac;
     lines_write($FULLVPN_FILE, $macs);
-    echo json_encode(['ok' => true]);
+    $apply = quick_apply(); // rebuild the MAC redirect rules — nothing changes until then
+    if (!$apply['ok']) {
+        lines_write($FULLVPN_FILE, $before);
+        echo json_encode(['error' => $apply['error']]);
+        break;
+    }
+    echo json_encode(['ok' => true, 'xray_running' => $apply['xray_running']]);
     break;
 
-case 'lan_devices': echo json_encode(keenetic_get_devices()); break;
+case 'lan_devices':
+    $lan = keenetic_get_devices();
+    lan_devices_cache_save($lan);
+    echo json_encode($lan);
+    break;
 
 case 'github_lists': echo json_encode(json_read($GITHUB_LISTS_FILE)); break;
 
@@ -1497,7 +2131,12 @@ case 'toggle_github_list':
     $id = $_POST['id'] ?? '';
     foreach ($lists as &$l) { if (($l['id'] ?? '') === $id) $l['enabled'] = !$l['enabled']; }
     json_write($GITHUB_LISTS_FILE, $lists);
-    echo json_encode(['ok' => true]);
+    // A list's domains enter/leave the ipset when it's enabled/disabled (same as
+    // delete_github_list), so this needs the full apply, applied immediately.
+    update_adguard_ipset();
+    $result = quick_apply();
+    if (!$result['ok']) { echo json_encode(['error' => $result['error']]); break; }
+    echo json_encode(['ok' => true, 'xray_running' => $result['xray_running']]);
     break;
 
 case 'update_github_lists':
@@ -1517,7 +2156,10 @@ case 'update_github_lists':
     $domains = array_values(array_unique($domains));
     lines_write($DOMAINS_FILE, $domains);
     update_adguard_ipset();
-    echo json_encode(['ok' => true, 'new_domains' => $total_new, 'total' => count($domains)]);
+    $apply = quick_apply();
+    if (!$apply['ok']) { echo json_encode(['error' => $apply['error']]); break; }
+    echo json_encode(['ok' => true, 'new_domains' => $total_new, 'total' => count($domains),
+        'xray_running' => $apply['xray_running']]);
     break;
 
 case 'v2fly_search':
@@ -1689,8 +2331,9 @@ case 'wg_add_peer':
 
 case 'wg_delete_peer':
     $name = trim($_POST['name'] ?? '');
-    if (!$name) { echo json_encode(['error' => 'No name']); break; }
-    echo json_encode(wg_delete_peer($name));
+    $pubkey = trim($_POST['pubkey'] ?? '');
+    if (!$name && !$pubkey) { echo json_encode(['error' => 'No name']); break; }
+    echo json_encode(wg_delete_peer($name, $pubkey));
     break;
 
 case 'wg_get_config':
@@ -1700,11 +2343,20 @@ case 'wg_get_config':
     break;
 
 case 'wg_qrcode':
+    // format=svg → {ok, svg, name}: an SVG image from `qrencode -t SVG`. Old qrencode
+    // builds without SVG (and the default format) → {ok, qr, name}: UTF-8 block text.
     $name = trim($_GET['name'] ?? '');
     if (!$name) { echo json_encode(['error' => 'No name']); break; }
-    $name = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
-    $conf_file = "$WG_DIR/$name.conf";
-    if (!file_exists($conf_file)) { echo json_encode(['error' => 'Not found']); break; }
+    $conf_file = wg_client_conf_path($WG_DIR, $name);
+    if ($conf_file === null) { echo json_encode(['error' => 'Not found']); break; }
+    if (($_GET['format'] ?? '') === 'svg') {
+        $svg = wg_qr_svg_extract((string)shell_run('/opt/bin/qrencode -t SVG -o - < '
+            . escapeshellarg($conf_file) . ' 2>/dev/null'));
+        if ($svg !== null) {
+            echo json_encode(['ok' => true, 'svg' => $svg, 'name' => $name]);
+            break;
+        }
+    }
     $qr = shell_run("/opt/bin/qrencode -t UTF8 < " . escapeshellarg($conf_file));
     echo json_encode(['ok' => true, 'qr' => $qr, 'name' => $name]);
     break;
@@ -1715,8 +2367,17 @@ case 'wg_restart':
     break;
 
 case 'logs':
-    $type = $_GET['type'] ?? 'error';
     $lines = min((int)($_GET['lines'] ?? 50), 500);
+    $source = $_GET['source'] ?? '';
+    if ($source !== '') {
+        $cmd = log_source_command((string)$source, $lines);
+        if ($cmd === null) { echo json_encode(['error' => 'Неизвестный источник логов']); break; }
+        $content = shell_run($cmd);
+        echo json_encode(explode("\n", $content));
+        break;
+    }
+    // Legacy path: type=error|access straight from the Xray log files.
+    $type = $_GET['type'] ?? 'error';
     $file = $type === 'access' ? $LOG_ACCESS : $LOG_ERROR;
     if (!file_exists($file)) { echo json_encode([]); break; }
     $content = shell_run("tail -n " . escapeshellarg($lines) . " " . escapeshellarg($file));
@@ -1731,11 +2392,50 @@ case 'clear_logs':
 
 case 'raw_config': echo file_get_contents($XRAY_CONF) ?: '{}'; break;
 
+case 'connections':
+    if ((get_features()['diag_connections'] ?? true) === false) {
+        echo json_encode(['error' => 'Инструмент выключен в настройках']);
+        break;
+    }
+    // Headroom only: the request is built to fit the router's default 8M (streamed logs).
+    @ini_set('memory_limit', '32M');
+    $limit = connections_limit($_GET['limit'] ?? null);
+    echo json_encode(run_exclusive(DIAG_LOCK_DIR . '/xray-diag-connections.lock', DIAG_BUSY_ERROR,
+        fn(): array => connections_snapshot($limit)));
+    break;
+
+case 'site_check':
+    if ((get_features()['diag_site_check'] ?? true) === false) {
+        echo json_encode(['error' => 'Инструмент выключен в настройках']);
+        break;
+    }
+    $domain = trim($_GET['domain'] ?? '');
+    if (!route_query_is_valid($domain)) { echo json_encode(['error' => 'Введите домен']); break; }
+    $withFlows = (get_features()['diag_connections'] ?? true) !== false;
+    @ini_set('memory_limit', '32M'); // headroom only, as for `connections`
+    // It may start server_probe's temporary Xray: same abort hazard as `server_probe`.
+    ignore_user_abort(true);
+    echo json_encode(run_exclusive(DIAG_LOCK_DIR . '/xray-diag-site_check.lock', DIAG_BUSY_ERROR,
+        fn(): array => site_check_snapshot($domain, $withFlows)));
+    break;
+
+case 'events':
+    if ((get_features()['diag_events'] ?? true) === false) {
+        echo json_encode(['error' => 'Инструмент выключен в настройках']);
+        break;
+    }
+    $limit = min((int)($_GET['limit'] ?? 100), 500);
+    if ($limit <= 0) $limit = 100;
+    $level = $_GET['level'] ?? null;
+    $type = $_GET['type'] ?? null;
+    $since = $_GET['since'] ?? null;
+    echo json_encode(['events' => read_events($limit, $level ?: null, $type ?: null, null, $since ?: null)]);
+    break;
+
 case 'test_connection':
     $real_ip = shell_run('/opt/bin/curl -s --max-time 5 http://api.ipify.org 2>/dev/null');
     $proxy_ip = shell_run('/opt/bin/curl -s --max-time 10 --socks5-hostname 127.0.0.1:1081 http://api.ipify.org 2>/dev/null');
-    $pid = shell_run('cat /opt/var/run/xray.pid 2>/dev/null');
-    $running = $pid && shell_run("kill -0 $pid 2>/dev/null; echo \$?") === '0';
+    $running = xray_running();
     $domains = lines_read($DOMAINS_FILE);
     $test_domain = '';
     foreach (['github.com','google.com','anthropic.com'] as $td) {
@@ -1808,6 +2508,25 @@ case 'set_ui_password':
     $cfg = _auth_cfg();
     if (!empty($cfg['hash']) && !is_authenticated()) { require_auth(); }
     $pass = $_POST['password'] ?? '';
+    // Changing an existing password from outside the LAN requires the current one; the LAN
+    // is trusted, so there it stays optional (legacy UI sends none; forgotten-password path).
+    // Wrong/missing `current` counts against the same per-IP limiter as login.
+    $current = isset($_POST['current']) ? (string)$_POST['current'] : null;
+    $has_password = !empty($cfg['hash']);
+    if ($has_password && ($current !== null || !is_local_request())) {
+        $rl = _login_attempts_check();
+        if (!empty($rl['blocked'])) {
+            http_response_code(429);
+            echo json_encode(['error' => 'too_many_attempts', 'retry_after' => $rl['retry_after']]);
+            break;
+        }
+    }
+    if (!ui_password_change_allowed($has_password, is_local_request(), $current, 'check_login')) {
+        _login_attempts_record_fail();
+        usleep(700000); // same brute-force slowdown as login
+        echo json_encode(['error' => 'Неверный текущий пароль']);
+        break;
+    }
     echo json_encode(set_ui_password($pass));
     break;
 
@@ -1846,11 +2565,22 @@ case 'get_features':
 case 'set_features':
     $patch = [];
     $truthy = ['1', 1, 'true', true, 'on', 'yes'];
-    foreach (['wireguard', 'adguard', 'auto_update', 'logs_enabled'] as $k) {
+    foreach ([
+        'wireguard', 'adguard', 'auto_update', 'logs_enabled',
+        'diag_events', 'diag_connections', 'diag_site_check',
+    ] as $k) {
         if (isset($_POST[$k])) $patch[$k] = in_array($_POST[$k], $truthy, true);
     }
     if (isset($_POST['theme'])) $patch['theme'] = $_POST['theme'];
-    echo json_encode(set_features_patch($patch));
+    $result = set_features_patch($patch);
+    if ($result['apply'] !== null && !$result['apply']['ok']) {
+        echo json_encode(['error' => $result['apply']['error']]);
+        break;
+    }
+    $out = $result['features'];
+    $out['ok'] = true;
+    if ($result['apply'] !== null) $out['xray_running'] = $result['apply']['xray_running'];
+    echo json_encode($out);
     break;
 
 case 'get_version':
@@ -1869,7 +2599,7 @@ case 'check_ips':
     $real_cache = '/opt/tmp/xray-real-ip.cache';
 
     // Skip VPN check when xray is down or watchdog has paused the redirect
-    $xray_up     = trim(shell_run('pgrep -x xray 2>/dev/null') ?? '') !== '';
+    $xray_up     = xray_running();
     $wd_state    = $xray_up && file_exists($WATCHDOG_STATE) ? trim(@file_get_contents($WATCHDOG_STATE)) : '';
     $vpn_chk     = $xray_up && $wd_state !== 'paused';
 

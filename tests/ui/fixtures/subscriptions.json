@@ -1,0 +1,1 @@
+[{"id":"sub1","name":"Моя подписка","url":"https://provider.example.com/sub/0123456789abcdef?format=v2ray","enabled":true,"updated":"2026-09-30 09:00:00"},{"id":"sub2","name":"Резервная","url":"https://backup.example.org/s/xyz","enabled":false,"updated":""}]

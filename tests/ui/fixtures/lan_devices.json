@@ -1,0 +1,32 @@
+[
+ {
+  "ip": "192.168.1.23",
+  "mac": "A4:83:E7:12:34:56",
+  "hostname": "MacBook-Vadim",
+  "active": true
+ },
+ {
+  "ip": "192.168.1.41",
+  "mac": "3C:22:FB:AA:10:01",
+  "hostname": "iPhone Анны",
+  "active": true
+ },
+ {
+  "ip": "192.168.1.50",
+  "mac": "F0:D5:BF:00:11:22",
+  "hostname": "Samsung-TV",
+  "active": true
+ },
+ {
+  "ip": "192.168.1.77",
+  "mac": "B8:27:EB:01:02:03",
+  "hostname": "",
+  "active": true
+ },
+ {
+  "ip": "192.168.1.64",
+  "mac": "DC:A6:32:9A:8B:7C",
+  "hostname": "PlayStation",
+  "active": false
+ }
+]

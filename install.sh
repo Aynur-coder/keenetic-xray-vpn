@@ -890,25 +890,43 @@ CRONJOB
 # -----------------------------------------------------------------------------
 # Step 10: Restart services
 # -----------------------------------------------------------------------------
+
+# manifest.template.json post_install "reload_lighttpd": an upgrade may ship a changed
+# conf.d/91-shadowsocks.conf (e.g. the Cache-Control block for ui/*), which lighttpd only
+# reads at start. Restart it, but only once the new config passes `lighttpd -tt` — a
+# broken config must not take the web UI down; the running lighttpd keeps serving then.
+reload_lighttpd() {
+    [ -x /opt/etc/init.d/S80lighttpd ] || return 0
+    # cron-started updates may run without /opt/sbin in PATH
+    _lt="$(command -v lighttpd 2>/dev/null || echo /opt/sbin/lighttpd)"
+    if [ -x "$_lt" ] && [ -f /opt/etc/lighttpd/lighttpd.conf ] \
+        && ! "$_lt" -tt -f /opt/etc/lighttpd/lighttpd.conf >/dev/null 2>&1; then
+        warn "lighttpd config test failed (lighttpd -tt) — lighttpd not restarted"
+        return 0
+    fi
+    /opt/etc/init.d/S80lighttpd restart >/dev/null 2>&1 || warn "lighttpd restart issue"
+}
+
 restart_services() {
     step "Restarting services"
     if dryrun "restart lighttpd / adguard / xray / wireguard"; then return; fi
 
     if [ "$MODE" = "upgrade" ]; then
         # Fast upgrade path: our releases ship PHP/shell that is read fresh per HTTP request
-        # and invoked on demand, so NO service restart is required. Restarting AdGuard/Xray is
-        # slow and would needlessly drop the VPN. Just make sure things are running.
+        # and invoked on demand, so AdGuard/Xray need no restart (slow, and it would
+        # needlessly drop the VPN) — just make sure they are running. lighttpd is the
+        # exception: it is restarted (cheap, the VPN is unaffected) so a changed conf.d
+        # takes effect now rather than at the next reboot. update.sh runs detached from
+        # lighttpd's process tree, so this does not kill the update in progress.
         # (The user reloads the browser to pick up new index.php/api.php.)
-        if [ -x /opt/etc/init.d/S80lighttpd ] && ! pgrep -x lighttpd >/dev/null 2>&1; then
-            /opt/etc/init.d/S80lighttpd start >/dev/null 2>&1 || warn "lighttpd start issue"
-        fi
+        reload_lighttpd
         if [ "$SKIP_ADGUARD" != "1" ] && [ -x /opt/etc/init.d/S99adguardhome ] && ! pgrep -x AdGuardHome >/dev/null 2>&1; then
             /opt/etc/init.d/S99adguardhome start >/dev/null 2>&1 || :
         fi
         if [ -f /opt/etc/xray/.onboarded ] && [ -x /opt/etc/init.d/S22xray ] && ! pgrep -x xray >/dev/null 2>&1; then
             /opt/etc/init.d/S22xray start >/dev/null 2>&1 || :
         fi
-        info "Upgrade: services left running (no restart needed for code-only update)"
+        info "Upgrade: lighttpd reloaded, other services left running"
         return
     fi
 
@@ -945,7 +963,8 @@ do_uninstall() {
     [ -x /opt/etc/init.d/S99wireguard ] && /opt/etc/init.d/S99wireguard stop >/dev/null 2>&1 || :
 
     info "Removing files..."
-    rm -f /opt/share/www/xray/index.php /opt/share/www/xray/api.php
+    rm -f /opt/share/www/xray/index.php /opt/share/www/xray/legacy.php /opt/share/www/xray/api.php
+    rm -rf /opt/share/www/xray/ui
     rm -f /opt/etc/xray/xray-manager.sh /opt/etc/xray/update.sh /opt/etc/xray/migrate.sh
     rm -f /opt/etc/init.d/S22xray
     rm -f /opt/etc/lighttpd/conf.d/91-shadowsocks.conf
