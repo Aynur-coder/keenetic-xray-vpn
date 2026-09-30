@@ -32,6 +32,10 @@ $KN_PASS_FILE = "$XRAY_DIR/.kn_pass";
 $LOGIN_ATTEMPTS_FILE = '/opt/tmp/xray-login-attempts.json';
 $VERSION_FILE = "$XRAY_DIR/.version";
 $WATCHDOG_STATE = '/opt/var/run/xray-watchdog.state';
+$AGH_QUERYLOG = '/opt/etc/AdGuardHome/data/querylog.json';
+// Last successful lan_devices result: lets `connections` name devices without a
+// Keenetic auth round-trip per request.
+$LAN_DEVICES_CACHE = '/opt/tmp/xray-lan-devices.json';
 
 require_once __DIR__ . '/lib/links.php';
 require_once __DIR__ . '/lib/system.php';
@@ -43,6 +47,7 @@ require_once __DIR__ . '/lib/routing.php';
 require_once __DIR__ . '/lib/overview.php';
 require_once __DIR__ . '/lib/probe.php';
 require_once __DIR__ . '/lib/auth.php';
+require_once __DIR__ . '/lib/connections.php';
 
 function json_read($f) {
     if (!file_exists($f)) return [];
@@ -203,6 +208,7 @@ function get_features() {
         'logs_enabled' => $d['logs_enabled'] ?? true,
         'theme'        => $d['theme']        ?? 'auto',
         'diag_events'  => $d['diag_events']  ?? true,
+        'diag_connections' => $d['diag_connections'] ?? true,
     ];
 }
 
@@ -823,6 +829,54 @@ function route_in_vpn_set(string $kind, string $input): ?bool {
     return null; // ipset missing/unreachable/unexpected output — unknown, not "not in set"
 }
 
+// `connections` action: one `conntrack -L`, the tails of AdGuard's querylog and Xray's
+// access.log, one batched ipset lookup — all under a ~3s wall-clock budget (every shell
+// step has a hard timeout; file reads are bounded tails, never whole files).
+function connections_snapshot(int $limit): array {
+    global $AGH_QUERYLOG, $LOG_ACCESS, $KEYS_FILE, $CACHED_FILE, $LAN_DEVICES_CACHE;
+    $deadline = microtime(true) + 2.8;
+
+    // `exec` so the timeout's SIGKILL hits conntrack itself, not just the shell. stderr is
+    // kept: its "N flow entries have been shown." tells an empty table from a missing binary.
+    $ct = shell_run_timeout('exec conntrack -L', 1.5);
+    if ($ct === null || !preg_match('/^(tcp|udp) |flow entries/m', $ct)) {
+        return ['error' => 'Не удалось прочитать таблицу соединений (conntrack)'];
+    }
+    $flows = array_values(array_filter(
+        parse_conntrack($ct),
+        fn(array $f): bool => !connections_is_local_dst($f['dst'])
+    ));
+    $total = count($flows);
+    $flows = array_slice($flows, 0, $limit);
+
+    $hits = [];
+    $script = ipset_batch_script(connections_ipset_candidates($flows));
+    $left = $deadline - microtime(true) - 0.6; // keep room for the log reads below
+    if ($script !== '' && $left > 0.1) {
+        // A timeout keeps the hits printed so far; untested IPs count as "not in set".
+        $hits = ipset_batch_hits((string)shell_run_timeout($script, min(1.2, $left)));
+    }
+
+    $access = read_file_tail($LOG_ACCESS, 512 * 1024);
+    $rows = build_connections(
+        $flows,
+        querylog_ip_map(read_file_tail($AGH_QUERYLOG, 2 * 1024 * 1024)),
+        xray_access_outbounds($access),
+        fn(string $ip): bool => isset($hits[$ip]),
+        connections_server_names(json_read($KEYS_FILE), json_read($CACHED_FILE)),
+        xray_access_domains($access)
+    );
+
+    $lan = json_decode((string)@file_get_contents($LAN_DEVICES_CACHE), true);
+    $devNames = connections_device_names(is_array($lan) ? $lan : []);
+    foreach ($rows as &$r) {
+        $r['device_name'] = $devNames[$r['device_ip']] ?? null;
+    }
+    unset($r);
+
+    return ['connections' => $rows, 'total' => $total, 'limit' => $limit];
+}
+
 function update_adguard_ipset() {
     global $AGH_CONF, $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
     if (!file_exists($AGH_CONF)) return;
@@ -1084,7 +1138,7 @@ $PUBLIC_READ_ACTIONS = [
     'keys', 'subscriptions', 'subscription_servers', 'servers',
     'domains', 'ips', 'devices', 'lan_devices',
     'github_lists', 'v2fly_search', 'rule_targets', 'route_explain',
-    'wg_peers', 'logs', 'raw_config', 'events', 'overview',
+    'wg_peers', 'logs', 'raw_config', 'events', 'overview', 'connections',
 ];
 if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
     require_auth();
@@ -1894,7 +1948,11 @@ case 'delete_device':
     echo json_encode(['ok' => true]);
     break;
 
-case 'lan_devices': echo json_encode(keenetic_get_devices()); break;
+case 'lan_devices':
+    $lan = keenetic_get_devices();
+    if ($lan) @file_put_contents($LAN_DEVICES_CACHE, json_encode($lan));
+    echo json_encode($lan);
+    break;
 
 case 'github_lists': echo json_encode(json_read($GITHUB_LISTS_FILE)); break;
 
@@ -2176,6 +2234,14 @@ case 'clear_logs':
     break;
 
 case 'raw_config': echo file_get_contents($XRAY_CONF) ?: '{}'; break;
+
+case 'connections':
+    if ((get_features()['diag_connections'] ?? true) === false) {
+        echo json_encode(['error' => 'Инструмент выключен в настройках']);
+        break;
+    }
+    echo json_encode(connections_snapshot(connections_limit($_GET['limit'] ?? null)));
+    break;
 
 case 'events':
     $limit = min((int)($_GET['limit'] ?? 100), 500);
