@@ -29,6 +29,7 @@
     {"src": "src/web/ui/screens/login.js",         "dst": "/opt/share/www/xray/ui/screens/login.js",          "mode": "644"},
     {"src": "src/web/ui/screens/overview.js",      "dst": "/opt/share/www/xray/ui/screens/overview.js",       "mode": "644"},
     {"src": "src/web/ui/screens/server-picker.js", "dst": "/opt/share/www/xray/ui/screens/server-picker.js",  "mode": "644"},
+    {"src": "src/web/ui/screens/routes-common.js", "dst": "/opt/share/www/xray/ui/screens/routes-common.js", "mode": "644"},
     {"src": "src/web/ui/screens/routes.js", "dst": "/opt/share/www/xray/ui/screens/routes.js", "mode": "644"},
     {"src": "src/web/ui/screens/routes-rules.js", "dst": "/opt/share/www/xray/ui/screens/routes-rules.js", "mode": "644"},
     {"src": "src/web/ui/screens/routes-services.js", "dst": "/opt/share/www/xray/ui/screens/routes-services.js", "mode": "644"},

@@ -14,7 +14,7 @@ import { toast } from '../components/toast.js';
 import { confirm } from '../components/confirm.js';
 import { plural } from './add-link.js';
 import { eventTime } from './overview.js';
-import { TargetSelect, reportApply, APPLY_TIMEOUT_MS } from './routes.js';
+import { TargetSelect, reportApply, APPLY_TIMEOUT_MS } from './routes-common.js';
 
 // Downloading a list from GitHub (through RU DPI) + apply.
 const FETCH_TIMEOUT_MS = 120000;
@@ -27,7 +27,7 @@ function isV2fly(list) {
   return list.source === 'v2fly';
 }
 
-function ServiceRow({ list, target, busy, servers, handlers }) {
+function ServiceRow({ list, target, busy, choices, handlers }) {
   const name = list.name || list.id;
   const when = eventTime(list.updated);
   const count = Number(list.count) || 0;
@@ -41,7 +41,7 @@ function ServiceRow({ list, target, busy, servers, handlers }) {
       </div>
       <div class="svc__controls">
         ${isV2fly(list) ? html`
-          <${TargetSelect} value=${target} servers=${servers} disabled=${!!busy}
+          <${TargetSelect} value=${target} choices=${choices} disabled=${!!busy}
             label=${`Куда направлять: ${name}`}
             onChange=${(t) => handlers.setTarget(list, t)} />`
           : html`<span class="svc__note muted">домены — в своих правилах</span>`}
@@ -131,7 +131,7 @@ function CatalogSheet({ onClose, onAdded }) {
   `;
 }
 
-export function ServicesCard({ data, servers, reload, patch }) {
+export function ServicesCard({ data, choices, reload, patch }) {
   const [busy, setBusy] = useState({}); // list id → status text
   const [catalog, setCatalog] = useState(false);
 
@@ -203,7 +203,7 @@ export function ServicesCard({ data, servers, reload, patch }) {
         <ul class="svc-list" aria-label="Подключённые сервисы">
           ${lists.map((l) => html`
             <${ServiceRow} key=${l.id} list=${l} target=${data.targets[`list:${l.name}`]}
-              busy=${busy[l.id]} servers=${servers} handlers=${handlers} />`)}
+              busy=${busy[l.id]} choices=${choices} handlers=${handlers} />`)}
         </ul>` : html`
         <${EmptyState} icon="routes" title="Сервисы не подключены"
           text="Сервис — готовый список доменов (YouTube, Instagram, OpenAI…). Подключите его,

@@ -1,75 +1,18 @@
 // Маршруты: «Куда пойдёт…» (route_explain) on top, then Сервисы (v2fly/GitHub lists)
 // and Свои правила (domains and IPs). All rule data is loaded here once and reloaded
 // after every change, so the three blocks always show what the router has stored.
-import { html, useState, useEffect, useRef } from '../vendor/preact-htm.js';
+import { html, useState, useEffect, useRef, useMemo } from '../vendor/preact-htm.js';
 import { api, errorText, refreshServers } from '../api.js';
 import { useStore } from '../store.js';
 import { Button } from '../components/button.js';
 import { Card } from '../components/card.js';
 import { EmptyState } from '../components/empty.js';
 import { Icon } from '../components/icons.js';
-import { toast } from '../components/toast.js';
+import { TARGET_DIRECT, targetChoices } from './routes-common.js';
 import { ServicesCard } from './routes-services.js';
 import { RulesCard } from './routes-rules.js';
 
-// Apply-backed rule changes wait up to the backend's 60 s apply lock.
-export const APPLY_TIMEOUT_MS = 70000;
 const EXPLAIN_DEBOUNCE_MS = 450;
-
-// ---------- targets ----------
-
-export const TARGET_PROXY = 'proxy';
-export const TARGET_DIRECT = 'direct';
-
-// <select> choices for a rule target: VPN (active server), every server grouped by
-// its source, «Напрямую». `current` that is no longer a known server stays selectable
-// so the select shows the truth instead of silently jumping to another option.
-export function targetGroups(serversData, current) {
-  const sources = (serversData && serversData.sources) || [];
-  const servers = (serversData && serversData.servers) || [];
-  const groups = sources.map((src) => ({
-    label: src.kind === 'keys' ? 'Мои ключи' : (src.name || src.id),
-    options: servers.filter((s) => s.source === src.id).map((s) => ({
-      value: s.id,
-      label: `${s.name || s.id}${src.enabled ? '' : ' — подписка выключена'}`,
-    })),
-  })).filter((g) => g.options.length);
-  const known = current === TARGET_PROXY || current === TARGET_DIRECT
-    || servers.some((s) => s.id === current);
-  const extra = !current || known ? []
-    : [{ value: current, label: 'Удалённый сервер (идёт через активный)' }];
-  return { groups, extra };
-}
-
-export function TargetSelect({ value, onChange, label, disabled = false, servers, id }) {
-  const current = value || TARGET_PROXY;
-  const { groups, extra } = targetGroups(servers, current);
-  return html`
-    <select class="select" id=${id} aria-label=${label} value=${current} disabled=${disabled}
-      onChange=${(e) => onChange(e.currentTarget.value)}>
-      <option value=${TARGET_PROXY}>VPN (активный сервер)</option>
-      ${groups.map((g) => html`
-        <optgroup key=${g.label} label=${g.label}>
-          ${g.options.map((o) => html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
-        </optgroup>`)}
-      ${extra.map((o) => html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
-      <option value=${TARGET_DIRECT}>Напрямую</option>
-    </select>
-  `;
-}
-
-// Outcome of an apply-backed change: toast on failure, a warning when Xray didn't start.
-export function reportApply(res, failText) {
-  if (res.error) {
-    toast(`${failText}: ${errorText(res.error)}`, 'error');
-    return false;
-  }
-  if (res.xray_running === false) toast('Xray не запустился — подробности в событиях', 'error');
-  else if (res.warning === 'server_disabled') {
-    toast('Подписка этого сервера выключена — пока трафик идёт через активный сервер', 'info');
-  }
-  return true;
-}
 
 // ---------- «Куда пойдёт…» ----------
 
@@ -189,6 +132,7 @@ export function RoutesScreen() {
   const servers = useStore((s) => s.servers);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const choices = useMemo(() => targetChoices(servers), [servers]);
 
   async function reload() {
     const res = await loadRoutes();
@@ -217,7 +161,7 @@ export function RoutesScreen() {
           action=${html`<${Button} onClick=${reload}>Повторить</${Button}>`} />`
       : html`<p class="muted srv-loading"><span class="spinner"></span> Загрузка…</p>`;
   } else {
-    const shared = { data, servers, reload, patch };
+    const shared = { data, choices, reload, patch };
     body = html`
       <${ServicesCard} ...${shared} />
       <${RulesCard} ...${shared} />

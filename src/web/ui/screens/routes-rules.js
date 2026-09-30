@@ -13,7 +13,7 @@ import { Icon } from '../components/icons.js';
 import { toast } from '../components/toast.js';
 import { confirm } from '../components/confirm.js';
 import { plural } from './add-link.js';
-import { TargetSelect, reportApply, APPLY_TIMEOUT_MS, TARGET_PROXY } from './routes.js';
+import { TargetSelect, reportApply, APPLY_TIMEOUT_MS, TARGET_PROXY } from './routes-common.js';
 
 const PAGE = 200;
 const RULE_FORMS = ['правило', 'правила', 'правил'];
@@ -39,14 +39,26 @@ export function splitLines(text) {
   return String(text || '').split(/[\r\n,;]+/).map((s) => s.trim()).filter(Boolean);
 }
 
-// Every own rule as one list, newest first: {key, kind, value, mode?}.
+// Every own rule as one list, newest first: {key, kind, value, mode?}. domains.txt can hold
+// the same bare domain twice (e.g. `domain:x` plus a plain `x` merged in from a GitHub
+// list); every rule action works on the bare domain, so they are one row: the first
+// occurrence keeps its place, and a suffix/exact mode wins over a legacy plain one.
 function allRules(data) {
-  const domains = data.manual.map((d) => ({
-    key: `domain:${String(d.domain).toLowerCase()}`, kind: 'domain',
-    value: String(d.domain).toLowerCase(), mode: d.mode,
-  }));
-  const ips = data.ips.map((ip) => ({ key: `ip:${ip}`, kind: 'ip', value: ip }));
-  return [...domains.reverse(), ...ips.reverse()];
+  const byKey = new Map();
+  for (const d of data.manual) {
+    const value = String(d.domain).toLowerCase();
+    const key = `domain:${value}`;
+    const seen = byKey.get(key);
+    if (!seen) byKey.set(key, { key, kind: 'domain', value, mode: d.mode });
+    else if (seen.mode === 'plain' && d.mode !== 'plain') seen.mode = d.mode;
+  }
+  for (const ip of data.ips) {
+    const key = `ip:${ip}`;
+    if (!byKey.has(key)) byKey.set(key, { key, kind: 'ip', value: ip });
+  }
+  const rules = [...byKey.values()];
+  return [...rules.filter((r) => r.kind === 'domain').reverse(),
+    ...rules.filter((r) => r.kind === 'ip').reverse()];
 }
 
 function splitKey(key) {
@@ -85,7 +97,7 @@ function AddResult({ result }) {
   `;
 }
 
-function AddRulesForm({ servers, reload }) {
+function AddRulesForm({ choices, reload }) {
   const [text, setText] = useState('');
   const [target, setTarget] = useState(TARGET_PROXY);
   const [mode, setMode] = useState('suffix');
@@ -137,7 +149,7 @@ function AddRulesForm({ servers, reload }) {
       <div class="rules-add__opts">
         <label class="field">
           <span class="field__label">Куда</span>
-          <${TargetSelect} value=${target} onChange=${setTarget} servers=${servers}
+          <${TargetSelect} value=${target} onChange=${setTarget} choices=${choices}
             label="Куда направлять новые правила" disabled=${busy} />
         </label>
         <label class="field">
@@ -159,7 +171,7 @@ function AddRulesForm({ servers, reload }) {
 
 // ---------- list ----------
 
-function RuleRow({ rule, target, selected, v2flyList, busy, servers, handlers }) {
+function RuleRow({ rule, target, selected, v2flyList, busy, choices, handlers }) {
   const isDomain = rule.kind === 'domain';
   return html`
     <li class=${`rule ${selected ? 'is-selected' : ''}`} data-key=${rule.key}>
@@ -188,7 +200,7 @@ function RuleRow({ rule, target, selected, v2flyList, busy, servers, handlers })
             ${rule.mode === 'plain' ? html`<option value="plain" disabled>Вхождение</option>`
               : null}
           </select>` : null}
-        <${TargetSelect} value=${target} servers=${servers} disabled=${busy}
+        <${TargetSelect} value=${target} choices=${choices} disabled=${busy}
           label=${`Куда направлять: ${rule.value}`}
           onChange=${(t) => handlers.setTarget(rule, t)} />
         <${Menu} label=${`Действия: ${rule.value}`} disabled=${busy} items=${[
@@ -199,13 +211,13 @@ function RuleRow({ rule, target, selected, v2flyList, busy, servers, handlers })
   `;
 }
 
-function BulkBar({ count, busy, servers, onTarget, onDelete, onClear }) {
+function BulkBar({ count, busy, choices, onTarget, onDelete, onClear }) {
   const [target, setTarget] = useState(TARGET_PROXY);
   return html`
     <div class="bulk" role="region" aria-label="Действия с выбранными">
       <span class="bulk__count">Выбрано: <strong>${count}</strong></span>
       <div class="bulk__actions">
-        <${TargetSelect} value=${target} onChange=${setTarget} servers=${servers}
+        <${TargetSelect} value=${target} onChange=${setTarget} choices=${choices}
           label="Куда направлять выбранные" disabled=${busy} />
         <${Button} size="sm" variant="secondary" disabled=${busy}
           onClick=${() => onTarget(target)}>Направить</${Button}>
@@ -218,7 +230,7 @@ function BulkBar({ count, busy, servers, onTarget, onDelete, onClear }) {
   `;
 }
 
-export function RulesCard({ data, servers, reload, patch }) {
+export function RulesCard({ data, choices, reload, patch }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [limit, setLimit] = useState(PAGE);
@@ -231,8 +243,8 @@ export function RulesCard({ data, servers, reload, patch }) {
   const picked = [...selected].filter((k) => existing.has(k));
   const counts = {
     all: rules.length,
-    domain: data.manual.length,
-    ip: data.ips.length,
+    domain: rules.filter((r) => r.kind === 'domain').length,
+    ip: rules.filter((r) => r.kind === 'ip').length,
   };
   const q = query.trim().toLowerCase();
   const shown = rules.filter((r) => (filter === 'all' || r.kind === filter)
@@ -349,7 +361,7 @@ export function RulesCard({ data, servers, reload, patch }) {
       <ul class="rule-list" aria-label="Свои правила">
         ${page.map((r) => html`
           <${RuleRow} key=${r.key} rule=${r} target=${data.targets[r.key]}
-            selected=${selected.has(r.key)} busy=${busy} servers=${servers}
+            selected=${selected.has(r.key)} busy=${busy} choices=${choices}
             v2flyList=${r.kind === 'domain' ? data.v2fly[r.value] : null}
             handlers=${handlers} />`)}
       </ul>
@@ -361,7 +373,7 @@ export function RulesCard({ data, servers, reload, patch }) {
 
   return html`
     <${Card} title="Свои правила" class="rules">
-      <${AddRulesForm} servers=${servers} reload=${reload} />
+      <${AddRulesForm} choices=${choices} reload=${reload} />
       <div class="rules__toolbar">
         <div class="rules__search">
           <${SearchInput} value=${query} onInput=${(v) => { setQuery(v); setLimit(PAGE); }}
@@ -377,7 +389,7 @@ export function RulesCard({ data, servers, reload, patch }) {
         <${Button} variant="ghost" size="sm" disabled=${busy || !rules.length}
           onClick=${dedup}>Убрать дубли</${Button}>
       </div>
-      ${picked.length ? html`<${BulkBar} count=${picked.length} busy=${busy} servers=${servers}
+      ${picked.length ? html`<${BulkBar} count=${picked.length} busy=${busy} choices=${choices}
         onTarget=${bulkTarget} onDelete=${() => handlers.remove(picked)}
         onClear=${() => setSelected(new Set())} />` : null}
       ${list}
