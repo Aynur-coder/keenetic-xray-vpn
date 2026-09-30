@@ -215,6 +215,7 @@ function connections_ipset_candidates(array $flows): array {
 // Classifies parse_conntrack() flows:
 //   vpn          — reply comes from the router's Xray port (:1080 selective, :1083 full-VPN);
 //                  server = serverNames[outbound tag from access.log] ?? the tag itself
+//                  (a redirected flow whose outbound is 'direct' is reported as direct)
 //   blocked_quic — udp/443 to an IP in the vpn set (the QUIC guard rejects it)
 //   leak         — tcp to an IP in the vpn set that still went direct
 //   direct       — everything else
@@ -230,9 +231,14 @@ function build_connections(
         $key = $f['src'] . ':' . $f['sport'];
         $server = null;
         if (_conn_is_redirected($f)) {
-            $route = 'vpn';
+            // Xray's own 'direct' outbound means the traffic left unproxied: say so.
             $tag = $accessMap[$key] ?? null;
-            if ($tag !== null) $server = $serverNames[$tag] ?? $tag;
+            if ($tag === 'direct') {
+                $route = 'direct';
+            } else {
+                $route = 'vpn';
+                if ($tag !== null) $server = $serverNames[$tag] ?? $tag;
+            }
         } elseif ($f['proto'] === 'udp' && $f['dport'] === 443) {
             $route = $inVpn($f['dst']) ? 'blocked_quic' : 'direct';
         } elseif ($f['proto'] === 'tcp') {

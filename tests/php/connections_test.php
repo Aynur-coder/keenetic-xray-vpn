@@ -176,7 +176,7 @@ function test_build_connections_route_classification(): void {
         'tcp      6 50 ESTABLISHED src=192.168.1.51 dst=77.88.8.8 sport=5001 dport=443 src=192.168.1.1 dst=192.168.1.51 sport=1083 dport=5001 mark=0 use=1',
     ]));
     $ipDomain = ['17.248.236.26' => 'icloud.com', '104.18.32.47' => 'chatgpt.com', '142.251.152.2' => 'youtube.com'];
-    $access = ['192.168.1.126:53025' => 'sub-abc', '192.168.1.51:5001' => 'direct'];
+    $access = ['192.168.1.126:53025' => 'sub-abc', '192.168.1.51:5001' => 'key-zzz'];
     $vpnSet = ['104.18.32.47' => true, '9.9.9.9' => true];
     $tested = [];
     $inVpn = function (string $ip) use ($vpnSet, &$tested): bool {
@@ -197,7 +197,7 @@ function test_build_connections_route_classification(): void {
     eq($rows[3]['route'], 'blocked_quic', 'udp/443 to a vpn-set IP -> blocked_quic');
     eq($rows[3]['domain'], null, 'unknown domain -> null');
     eq($rows[4]['route'], 'vpn', 'full-VPN redirect on :1083 -> vpn');
-    eq($rows[4]['server'], 'direct', 'unnamed outbound tag reported as-is');
+    eq($rows[4]['server'], 'key-zzz', 'unnamed outbound tag reported as-is');
     eq(in_array('17.248.236.26', $tested, true), false, 'redirected flows never hit the ipset callable');
 }
 
@@ -248,4 +248,15 @@ function test_connections_device_names(): void {
         ['ip' => '192.168.1.5', 'hostname' => ''],
         'junk',
     ]), ['192.168.1.126' => 'iPhone'], 'named hosts only');
+}
+
+function test_redirected_direct_outbound_is_direct(): void {
+    $flows = parse_conntrack(CONN_CT_REDIRECTED);
+    $called = false;
+    $inVpn = function (string $ip) use (&$called): bool { $called = true; return true; };
+    $rows = build_connections($flows, [], ['192.168.1.126:53025' => 'direct'], $inVpn,
+        ['direct' => 'Напрямую']);
+    eq($rows[0]['route'], 'direct', 'redirected into Xray but sent out by the direct outbound');
+    eq($rows[0]['server'], null, 'direct route has no server');
+    eq($called, false, 'not a leak candidate: Xray chose direct on purpose');
 }
