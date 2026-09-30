@@ -16,6 +16,7 @@ import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { SettingsScreen } from './screens/settings.js';
 import { LoginScreen } from './screens/login.js';
 import { LegacyScreen } from './screens/legacy.js';
+import { WizardScreen } from './screens/wizard.js';
 
 const OVERVIEW_EVERY_MS = 10000;
 const CHECK_IPS_EVERY_MS = 60000;
@@ -32,6 +33,8 @@ const PAGES = [
   ...SECTIONS,
   { id: 'settings', label: 'Настройки', icon: 'settings', screen: SettingsScreen },
   { id: 'login', label: 'Вход', icon: 'lock', screen: LoginScreen },
+  // Full-screen, without the navigation (`bare`); sets its own title and focus.
+  { id: 'setup', label: 'Мастер настройки', icon: 'settings', screen: WizardScreen, bare: true },
 ];
 
 // '#/diagnostics/connections' → 'diagnostics'; '', '#', '#/' → ''.
@@ -88,12 +91,13 @@ function App() {
   const heading = useRef(null);
   const firstRender = useRef(true);
   const onLogin = route === 'login';
+  const bare = !!(page && page.bare);
 
-  useVisiblePolling(refreshOverview, OVERVIEW_EVERY_MS, !onLogin);
-  useVisiblePolling(refreshIps, CHECK_IPS_EVERY_MS, !onLogin);
+  useVisiblePolling(refreshOverview, OVERVIEW_EVERY_MS, !onLogin && !bare);
+  useVisiblePolling(refreshIps, CHECK_IPS_EVERY_MS, !onLogin && !bare);
 
   useEffect(() => {
-    document.title = `${page ? page.label : 'Не найдено'} · VKeen`;
+    if (!bare) document.title = `${page ? page.label : 'Не найдено'} · VKeen`;
     if (firstRender.current) {
       firstRender.current = false;
       return;
@@ -102,6 +106,17 @@ function App() {
     // The login screen puts focus in its password field itself.
     if (heading.current && route !== 'login') heading.current.focus({ preventScroll: true });
   }, [route]);
+
+  if (bare) {
+    const Screen = page.screen;
+    return html`
+      <div class="layout layout--bare">
+        <${Screen} />
+        <${Toasts} />
+        <${ConfirmHost} />
+      </div>
+    `;
+  }
 
   let content;
   if (!page) {
@@ -154,10 +169,9 @@ async function boot() {
   initTheme();
   const root = document.getElementById('app');
   const status = await api('get_onboarding_status', null, { quiet: true });
-  if (status.onboarded === false) {
-    // The setup wizard still lives in the old interface.
-    location.replace('legacy.php');
-    return;
+  if (status.onboarded === false && currentRoute() !== 'setup') {
+    // First run: the setup wizard (replaces the entry, so «Назад» doesn't bounce back here).
+    history.replaceState(null, '', '#/setup');
   }
   if (status.features && status.features.theme) adoptRouterTheme(status.features.theme);
   root.textContent = '';

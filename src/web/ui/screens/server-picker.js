@@ -1,7 +1,8 @@
 // ServerPicker: sheet for choosing the active server (Обзор; reused by Серверы).
 // Search, favourites first, then one group per source. Tapping a row applies the choice
 // (select_server regenerates the config and restarts Xray) and closes on success;
-// a failure stays in the sheet as an inline error.
+// a failure stays in the sheet as an inline error. ServerList is the same body without the
+// sheet (setup wizard).
 import { html, useState, useEffect, useRef } from '../vendor/preact-htm.js';
 import { api, errorText, refreshOverview, refreshServers, refreshIps } from '../api.js';
 import { store, useStore } from '../store.js';
@@ -87,7 +88,11 @@ function PickerRow({ server, checked, busy, disabled, tabbable, onSelect }) {
   `;
 }
 
-export function ServerPicker({ onClose }) {
+// The picker's body without the sheet: search, list, inline error. Also shown inline by the
+// setup wizard. onDone() runs after a successful switch (or a tap on the current server);
+// onBusy(bool) reports a switch in flight; `empty` replaces the no-servers state;
+// `focusSearch` focuses the search field on desktop.
+export function ServerList({ onDone, onBusy, empty, focusSearch = false }) {
   const data = useStore((s) => s.servers);
   const [query, setQuery] = useState('');
   const [busyId, setBusyId] = useState(null);
@@ -98,6 +103,7 @@ export function ServerPicker({ onClose }) {
 
   useEffect(() => {
     refreshServers().then((res) => setLoadError(res.error ? errorText(res.error) : null));
+    if (!focusSearch) return undefined;
     // Desktop only: on a phone focusing the field would pop the keyboard over the list.
     // After the Sheet's own initial focus (its effect runs after this one).
     const t = setTimeout(() => {
@@ -114,21 +120,26 @@ export function ServerPicker({ onClose }) {
   const tabId = flat.some((s) => s.id === focusId) ? focusId
     : current ? current.id : flat.length ? flat[0].id : null;
 
+  function setBusy(id) {
+    setBusyId(id);
+    if (onBusy) onBusy(!!id);
+  }
+
   async function select(server) {
     if (busyId) return;
     if (server.active) {
-      onClose();
+      onDone();
       return;
     }
-    setBusyId(server.id);
+    setBusy(server.id);
     setError(null);
     const res = await applyServerChoice(server);
-    setBusyId(null);
+    setBusy(null);
     if (res.error) {
       setError(res.error);
       return;
     }
-    onClose();
+    onDone();
   }
 
   // Roving focus: arrows/Home/End move between rows, Enter/Space selects (a native button).
@@ -150,6 +161,8 @@ export function ServerPicker({ onClose }) {
     if (el) el.focus();
   }
 
+  // No search box over a genuinely empty list.
+  const showSearch = !data || flat.length > 0 || !!query;
   let list;
   if (!data) {
     list = loadError
@@ -159,10 +172,10 @@ export function ServerPicker({ onClose }) {
     list = query
       ? html`<${EmptyState} icon="search" title="Ничего не найдено"
           text="Попробуйте другое название, адрес или протокол." />`
-      : html`<${EmptyState} icon="servers" title="Нет доступных серверов"
+      : empty || html`<${EmptyState} icon="servers" title="Нет доступных серверов"
           text="Добавьте подписку или ключ в разделе «Серверы»."
           action=${html`<a class="btn btn--secondary btn--md" href="#/servers"
-            onClick=${onClose}>К серверам</a>`} />`;
+            onClick=${onDone}>К серверам</a>`} />`;
   } else {
     list = html`
       <div class="picker__list" role="radiogroup" aria-label="Серверы"
@@ -182,18 +195,25 @@ export function ServerPicker({ onClose }) {
   }
 
   return html`
-    <${Sheet} open=${true} title="Выбор сервера" onClose=${onClose}>
-      <div class="picker" ref=${body}>
+    <div class="picker" ref=${body}>
+      ${showSearch ? html`
         <${SearchInput} value=${query} onInput=${setQuery}
-          placeholder="Поиск по названию, адресу, протоколу" label="Поиск сервера" />
-        ${error ? html`
-          <div class="callout callout--red" role="alert">
-            <${Icon} name="alert" />
-            <div class="callout__text"><strong>Не удалось переключить сервер</strong>
-              <span class="callout__sub">${error}</span></div>
-          </div>` : null}
-        ${list}
-      </div>
+          placeholder="Поиск по названию, адресу, протоколу" label="Поиск сервера" />` : null}
+      ${error ? html`
+        <div class="callout callout--red" role="alert">
+          <${Icon} name="alert" />
+          <div class="callout__text"><strong>Не удалось переключить сервер</strong>
+            <span class="callout__sub">${error}</span></div>
+        </div>` : null}
+      ${list}
+    </div>
+  `;
+}
+
+export function ServerPicker({ onClose }) {
+  return html`
+    <${Sheet} open=${true} title="Выбор сервера" onClose=${onClose}>
+      <${ServerList} onDone=${onClose} focusSearch=${true} />
     </${Sheet}>
   `;
 }

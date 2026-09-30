@@ -35,6 +35,14 @@ export function takeReturnHash() {
   return h;
 }
 
+// Sends the user to #/login; a successful login comes back to the current route.
+export function goToLogin() {
+  const here = location.hash || '#/';
+  if (here.startsWith('#/login')) return;
+  returnHash = here;
+  location.hash = '#/login';
+}
+
 function toQuery(data) {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(data || {})) {
@@ -77,11 +85,7 @@ export async function api(action, data, opts = {}) {
   store.set({ offline: false });
 
   if (res.status === 401) {
-    const here = location.hash || '#/';
-    if (!here.startsWith('#/login')) {
-      returnHash = here;
-      location.hash = '#/login';
-    }
+    goToLogin();
     return { error: 'auth_required' };
   }
 

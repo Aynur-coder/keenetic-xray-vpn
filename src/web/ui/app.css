@@ -363,6 +363,77 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .login { min-height: calc(100vh - 57px - 2 * var(--sp-3)); }
 }
 
+/* ---------- Мастер настройки ---------- */
+
+.layout.layout--bare { display: block; }
+.layout--bare .toasts { bottom: calc(env(safe-area-inset-bottom) + var(--sp-2)); }
+.wizard {
+  min-height: 100vh; min-height: 100dvh;
+  display: grid; place-items: center;
+  padding: var(--sp-2);
+}
+.wizard__card { width: 100%; max-width: 560px; min-width: 0; display: grid; gap: var(--sp-3); }
+.wizard__top { display: grid; gap: var(--sp-2); }
+.wizard__brand {
+  display: flex; align-items: center; gap: var(--sp-1);
+  font-weight: 700; font-size: 15px; letter-spacing: -0.01em;
+}
+.wizard__brand .brand__mark { width: 20px; height: 20px; border-radius: 6px; }
+.wizard__steps {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--sp-1);
+}
+.wizard__step { position: relative; display: grid; justify-items: center; gap: 6px; }
+/* Connector line from each dot to the next. */
+.wizard__step + .wizard__step::before {
+  content: ''; position: absolute; top: 13px; right: calc(50% + 18px); left: calc(-50% + 10px);
+  height: 2px; border-radius: 1px; background: var(--border);
+}
+.wizard__step.is-done + .wizard__step::before,
+.wizard__step.is-current::before { background: var(--accent); }
+.wizard__dot {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 2px solid var(--border-strong); background: var(--surface);
+  color: var(--text-3); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums;
+}
+.wizard__step.is-current .wizard__dot {
+  border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.wizard__step.is-done .wizard__dot {
+  border-color: var(--accent); background: var(--accent); color: var(--on-accent);
+}
+.wizard__label {
+  color: var(--text-3); font-size: 12px; line-height: 1.3; text-align: center;
+  overflow-wrap: anywhere;
+}
+.wizard__step.is-current .wizard__label { color: var(--text); font-weight: 600; }
+.wizard__step.is-done .wizard__label { color: var(--text-2); }
+@media (max-width: 599px) {
+  /* The step title is the heading below; five labels don't fit a phone. */
+  .wizard__label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
+}
+.wizard__head { display: grid; gap: 2px; }
+.wizard__num { color: var(--text-2); font-size: 13px; font-weight: 550; }
+.wizard__title { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.wizard__title:focus-visible { outline-offset: 4px; }
+.wizard__form { gap: var(--sp-2); }
+.wizard__form > .form__error { min-height: 0; }
+.wizard__foot {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1); padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.wizard__back { margin-right: auto; }
+.wizard__foot .btn--primary { min-width: 112px; }
+@media (min-width: 900px) {
+  .wizard { padding: var(--sp-4) var(--sp-3); }
+}
+
 .search { position: relative; display: flex; align-items: center; }
 .search__icon { position: absolute; left: 12px; color: var(--text-3); pointer-events: none; }
 .search__input { padding: 0 44px 0 40px; }

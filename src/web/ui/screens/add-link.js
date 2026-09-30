@@ -1,6 +1,7 @@
 // AddLinkSheet: the one-field «Добавить» dialog of Серверы. Any mix of subscription URLs
 // and keys, one per line → add_link (fetches new subscriptions and applies the config once),
-// then a summary: what was added and which lines were skipped and why.
+// then a summary: what was added and which lines were skipped and why. useAddLink,
+// AddLinkFields and AddLinkSummary are also used inline by the setup wizard.
 import { html, useState } from '../vendor/preact-htm.js';
 import { api, errorText, refreshServers, refreshOverview } from '../api.js';
 import { Sheet } from '../components/sheet.js';
@@ -30,7 +31,7 @@ function countText(n, forms) {
   return `${n} ${plural(n, forms)}`;
 }
 
-function Summary({ result }) {
+export function AddLinkSummary({ result }) {
   const subs = result.added_subscriptions || 0;
   const keys = result.added_keys || 0;
   const skipped = Array.isArray(result.skipped) ? result.skipped : [];
@@ -65,14 +66,14 @@ function Summary({ result }) {
   `;
 }
 
-export function AddLinkSheet({ onClose }) {
+// State + submit of the add form (also used inline by the setup wizard).
+export function useAddLink() {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
 
-  async function submit(e) {
-    e.preventDefault();
+  async function submit() {
     if (busy) return;
     if (!text.trim()) {
       setError('Вставьте хотя бы одну ссылку');
@@ -87,7 +88,7 @@ export function AddLinkSheet({ onClose }) {
       return;
     }
     setResult(res);
-    // The summary in the sheet is the feedback; no toast on top of it.
+    // The summary is the feedback; no toast on top of it.
     if (res.added_subscriptions || res.added_keys) {
       refreshServers();
       refreshOverview();
@@ -99,13 +100,47 @@ export function AddLinkSheet({ onClose }) {
     setResult(null);
   }
 
+  return { text, setText, busy, error, result, submit, again };
+}
+
+// The textarea, hint and error of the add form; the caller owns the <form> and its buttons.
+export function AddLinkFields({ link }) {
+  const { text, setText, busy, error } = link;
+  return html`
+    <label class="field">
+      <span class="field__label">Ссылки — по одной в строке</span>
+      <textarea class="input textarea mono" rows="6" value=${text} placeholder=${PLACEHOLDER}
+        spellcheck="false" autocapitalize="off" autocomplete="off" disabled=${busy}
+        aria-describedby="add-link-hint"
+        onInput=${(e) => setText(e.currentTarget.value)}></textarea>
+    </label>
+    <p id="add-link-hint" class="muted add-hint">
+      Ссылка <span class="mono">http(s)://</span> — подписка,
+      <span class="mono">vless://</span>,
+      <span class="mono">ss://</span>, <span class="mono">trojan://</span>,
+      <span class="mono">hysteria2://</span> — отдельный ключ. Можно вставить сразу несколько.
+      ${busy ? ' Загружаю подписки и применяю настройки — это может занять до минуты.' : ''}
+    </p>
+    ${error ? html`
+      <div class="callout callout--red" role="alert">
+        <${Icon} name="alert" />
+        <div class="callout__text"><strong>Не удалось добавить</strong>
+          <span class="callout__sub">${error}</span></div>
+      </div>` : null}
+  `;
+}
+
+export function AddLinkSheet({ onClose }) {
+  const link = useAddLink();
+  const { busy, result } = link;
+
   if (result) {
     return html`
       <${Sheet} key="result" open=${true} title="Добавить" onClose=${onClose}
         footer=${html`
-          <${Button} variant="ghost" onClick=${again}>Добавить ещё</${Button}>
+          <${Button} variant="ghost" onClick=${link.again}>Добавить ещё</${Button}>
           <${Button} variant="primary" onClick=${onClose}>Готово</${Button}>`}>
-        <${Summary} result=${result} />
+        <${AddLinkSummary} result=${result} />
       </${Sheet}>
     `;
   }
@@ -116,27 +151,9 @@ export function AddLinkSheet({ onClose }) {
         <${Button} variant="ghost" onClick=${onClose} disabled=${busy}>Отмена</${Button}>
         <${Button} variant="primary" type="submit" form="add-link-form" loading=${busy}>
           ${busy ? 'Добавляю…' : 'Добавить'}</${Button}>`}>
-      <form id="add-link-form" class="form" onSubmit=${submit}>
-        <label class="field">
-          <span class="field__label">Ссылки — по одной в строке</span>
-          <textarea class="input textarea mono" rows="6" value=${text} placeholder=${PLACEHOLDER}
-            spellcheck="false" autocapitalize="off" autocomplete="off" disabled=${busy}
-            aria-describedby="add-link-hint"
-            onInput=${(e) => setText(e.currentTarget.value)}></textarea>
-        </label>
-        <p id="add-link-hint" class="muted add-hint">
-          Ссылка <span class="mono">http(s)://</span> — подписка,
-          <span class="mono">vless://</span>,
-          <span class="mono">ss://</span>, <span class="mono">trojan://</span>,
-          <span class="mono">hysteria2://</span> — отдельный ключ. Можно вставить сразу несколько.
-          ${busy ? ' Загружаю подписки и применяю настройки — это может занять до минуты.' : ''}
-        </p>
-        ${error ? html`
-          <div class="callout callout--red" role="alert">
-            <${Icon} name="alert" />
-            <div class="callout__text"><strong>Не удалось добавить</strong>
-              <span class="callout__sub">${error}</span></div>
-          </div>` : null}
+      <form id="add-link-form" class="form"
+        onSubmit=${(e) => { e.preventDefault(); link.submit(); }}>
+        <${AddLinkFields} link=${link} />
       </form>
     </${Sheet}>
   `;

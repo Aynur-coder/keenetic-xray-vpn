@@ -37,6 +37,8 @@
     {"src": "src/web/ui/screens/servers.js",       "dst": "/opt/share/www/xray/ui/screens/servers.js",        "mode": "644"},
     {"src": "src/web/ui/screens/settings.js",      "dst": "/opt/share/www/xray/ui/screens/settings.js",       "mode": "644"},
     {"src": "src/web/ui/screens/settings-update.js", "dst": "/opt/share/www/xray/ui/screens/settings-update.js", "mode": "644"},
+    {"src": "src/web/ui/screens/password-forms.js", "dst": "/opt/share/www/xray/ui/screens/password-forms.js", "mode": "644"},
+    {"src": "src/web/ui/screens/wizard.js", "dst": "/opt/share/www/xray/ui/screens/wizard.js", "mode": "644"},
     {"src": "src/web/ui/screens/diagnostics.js", "dst": "/opt/share/www/xray/ui/screens/diagnostics.js", "mode": "644"},
     {"src": "src/web/ui/screens/diag-events.js", "dst": "/opt/share/www/xray/ui/screens/diag-events.js", "mode": "644"},
     {"src": "src/web/ui/screens/diag-connections.js", "dst": "/opt/share/www/xray/ui/screens/diag-connections.js", "mode": "644"},
