@@ -86,8 +86,10 @@ function SiteResult({ result }) {
         <div><dt>Google видит</dt>
           <dd class="site__google">${countryText(result.google_country)}</dd></div>
         <div><dt>Cloudflare видит</dt><dd>${countryText(result.exit_country)}</dd></div>
-        <div><dt>Прямые соединения</dt><dd>${result.direct_flows ?? 0}</dd></div>
-        <div><dt>QUIC-утечки</dt><dd>${result.quic_leaks ?? 0}</dd></div>
+        ${result.direct_flows != null ? html`<div><dt>Прямые соединения</dt>
+          <dd>${result.direct_flows}</dd></div>` : null}
+        ${result.quic_leaks != null ? html`<div><dt>QUIC-утечки</dt>
+          <dd>${result.quic_leaks}</dd></div>` : null}
       </dl>
     </div>
   `;

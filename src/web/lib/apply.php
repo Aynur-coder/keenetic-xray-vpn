@@ -222,6 +222,23 @@ function apply_acquire_lock(string $file, int $timeout) {
 }
 
 /**
+ * Runs $fn only if nobody else holds $lockFile right now (no waiting): returns $fn()'s
+ * result, or ['error' => $busyError] when the lock is taken or cannot be opened. The lock
+ * is released even when $fn throws. Used to keep costly diagnostics (connections,
+ * site_check) from stacking up across php-cgi workers.
+ */
+function run_exclusive(string $lockFile, string $busyError, callable $fn): array {
+    $h = apply_acquire_lock($lockFile, 0);
+    if ($h === null) return ['error' => $busyError];
+    try {
+        return $fn();
+    } finally {
+        flock($h, LOCK_UN);
+        fclose($h);
+    }
+}
+
+/**
  * The reason Xray gave, from `xray run -test` output: its last non-empty line
  * (Xray prints a version banner first and the error chain last), keeping the
  * tail when it is longer than ~300 chars since the root cause is at the end.

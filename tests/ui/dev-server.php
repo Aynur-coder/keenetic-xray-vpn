@@ -8,8 +8,9 @@
 // Switches (create/delete the file while the server runs):
 //   tests/ui/.offline  — api.php answers 503 (router unreachable); if the file
 //                        contains "hang", it stalls 15 s instead (client timeout path)
-//   tests/ui/.locked   — actions other than login/logout/get_onboarding_status/
-//                        get_features answer 401 {error:auth_required};
+//   tests/ui/.locked   — a remote caller without a session, as api.php treats it:
+//                        actions other than login/logout/auth_status answer
+//                        401 {error:auth_required} (auth_status says not authed);
 //                        login with password "test" removes the lock; password
 //                        "locked" answers 429 {too_many_attempts, retry_after: 125}
 //   tests/ui/.scenario   — a name, e.g. "stopped": fixtures/<name>/<action>.json is
@@ -44,8 +45,11 @@ if ($path === '/api.php') {
         return true;
     }
 
-    $public = ['logout', 'get_onboarding_status', 'get_features'];
-    if (file_exists("$uiDir/.locked") && !in_array($action, $public, true)) {
+    if (file_exists("$uiDir/.locked") && $action === 'auth_status') {
+        echo json_encode(['authenticated' => false, 'local' => false, 'password_set' => true]);
+        return true;
+    }
+    if (file_exists("$uiDir/.locked") && $action !== 'logout') { // login is answered above
         http_response_code(401);
         echo json_encode(['error' => 'auth_required']);
         return true;

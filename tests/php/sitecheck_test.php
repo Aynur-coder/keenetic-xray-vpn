@@ -50,8 +50,8 @@ function test_site_check_count_flows_no_matching_ips(): void {
 function _sc_io(array $overrides = []): array {
     return $overrides + [
         'resolve_ips'  => fn(string $d): array => ['1.1.1.1'],
-        'in_vpn_set'   => fn(string $kind, string $input): ?bool => false,
-        'explain'      => fn(string $d): array => [
+        'ip_in_vpn_set' => fn(?string $ip): ?bool => false,
+        'explain'      => fn(string $d, callable $inVpnSet): array => [
             'input' => $d, 'kind' => 'domain', 'rule' => null, 'source' => null,
             'target' => 'direct', 'target_name' => 'Напрямую', 'in_vpn_set' => false,
         ],
@@ -74,11 +74,11 @@ function test_site_check_run_direct_route(): void {
 
 function test_site_check_run_vpn_route_with_ru_country(): void {
     $io = _sc_io([
-        'explain' => fn(string $d): array => [
+        'explain' => fn(string $d, callable $inVpnSet): array => [
             'input' => $d, 'kind' => 'domain', 'rule' => 'domain:example.com', 'source' => 'manual',
             'target' => 'srv-1', 'target_name' => 'Мой сервер', 'in_vpn_set' => true,
         ],
-        'in_vpn_set' => fn(string $kind, string $input): ?bool => true,
+        'ip_in_vpn_set' => fn(?string $ip): ?bool => true,
         'fetch' => fn(): array => [
             'youtube' => '<html>ytcfg.set({"INNERTUBE_CONTEXT":{"client":{"countryCode":"RU"}}});</html>',
             'trace'   => "ip=203.0.113.9\nloc=RU\n",
@@ -96,12 +96,57 @@ function test_site_check_run_vpn_route_with_ru_country(): void {
 }
 
 function test_site_check_run_proxy_target_counts_as_vpn(): void {
-    $io = _sc_io(['explain' => fn(string $d): array => [
+    $io = _sc_io(['explain' => fn(string $d, callable $inVpnSet): array => [
         'input' => $d, 'kind' => 'domain', 'rule' => null, 'source' => null,
         'target' => 'proxy', 'target_name' => 'VPN (активный сервер)', 'in_vpn_set' => null,
     ]]);
     $r = site_check_run('example.com', $io);
     eq($r['via'], 'vpn', 'any non-direct target counts as vpn');
+}
+
+function test_site_check_first_ipv4(): void {
+    eq(site_check_first_ipv4(['2a00::1', '1.2.3.4', '5.6.7.8']), '1.2.3.4', 'first IPv4 in order');
+    eq(site_check_first_ipv4(['2a00::1']), null, 'IPv6 only -> null');
+    eq(site_check_first_ipv4([]), null, 'no answers -> null');
+}
+
+function test_site_check_run_resolves_once_and_reuses_ips(): void {
+    $resolves = 0;
+    $probed = [];
+    $explainProbe = null;
+    $io = _sc_io([
+        'resolve_ips' => function (string $d) use (&$resolves): array {
+            $resolves++;
+            return ['2a00::1', '9.9.9.9'];
+        },
+        'ip_in_vpn_set' => function (?string $ip) use (&$probed): ?bool {
+            $probed[] = $ip;
+            return true;
+        },
+        'explain' => function (string $d, callable $inVpnSet) use (&$explainProbe): array {
+            $explainProbe = $inVpnSet('domain', $d);
+            return ['input' => $d, 'kind' => 'domain', 'rule' => null, 'source' => null,
+                    'target' => 'proxy', 'target_name' => 'VPN', 'in_vpn_set' => $explainProbe];
+        },
+        'connections' => fn(): array => [
+            ['dst' => '9.9.9.9', 'route' => 'direct', 'proto' => 'tcp', 'dport' => 443],
+            ['dst' => '2a00::1', 'route' => 'leak', 'proto' => 'udp', 'dport' => 443],
+        ],
+    ]);
+    $r = site_check_run('example.com', $io);
+    eq($resolves, 1, 'domain resolved exactly once');
+    eq($probed, ['9.9.9.9'], 'ipset probed once, with the first IPv4 answer');
+    eq($explainProbe, true, 'route_explain reuses the computed in_vpn_set');
+    eq($r['in_vpn_set'], true, 'in_vpn_set from the resolved IPs');
+    eq([$r['direct_flows'], $r['quic_leaks']], [1, 1], 'flows matched against the same IPs');
+}
+
+function test_site_check_run_without_connections_skips_flows(): void {
+    $r = site_check_run('example.com', _sc_io(['connections' => null]));
+    eq($r['direct_flows'], null, 'connections tool off -> direct_flows null');
+    eq($r['quic_leaks'], null, 'connections tool off -> quic_leaks null');
+    eq(array_keys($r), ['domain', 'ips', 'in_vpn_set', 'explain', 'via', 'google_country',
+        'exit_country', 'direct_flows', 'quic_leaks'], 'result shape unchanged');
 }
 
 // ---- log_source_command() -----------------------------------------------------

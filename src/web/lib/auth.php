@@ -15,3 +15,19 @@ function ui_password_change_allowed(bool $hasPassword, bool $isLocal, ?string $c
     if ($current === null) return $isLocal;
     return (bool)$verify($current);
 }
+
+// Actions a caller from outside the trusted LAN may use without a session: just enough to log
+// in, log out and learn that a login is needed.
+const AUTH_REMOTE_OPEN_ACTIONS = ['login', 'logout', 'auth_status'];
+
+/**
+ * Must this request log in before $action runs?
+ * - trusted LAN (or an existing session): never;
+ * - anyone else: yes, for everything except AUTH_REMOTE_OPEN_ACTIONS — reads included, since
+ *   keys/raw_config carry credentials and connections/site_check expose browsing and load
+ *   the router.
+ */
+function auth_required_for(string $action, bool $isLocal, bool $authed): bool {
+    if ($isLocal || $authed) return false;
+    return !in_array($action, AUTH_REMOTE_OPEN_ACTIONS, true);
+}

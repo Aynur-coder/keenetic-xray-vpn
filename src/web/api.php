@@ -827,6 +827,12 @@ function route_in_vpn_set(string $kind, string $input): ?bool {
             }
         }
     }
+    return route_ip_in_vpn_set($ip);
+}
+
+// Is this IPv4 in the AdGuard-filled `vpn1` ipset? null = unknown (no IP, ipset missing,
+// timeout or unexpected output), never a guessed "not in set".
+function route_ip_in_vpn_set(?string $ip): ?bool {
     if ($ip === null) return null;
 
     $out = shell_run_timeout('exec ipset test vpn1 ' . escapeshellarg($ip), 0.8);
@@ -840,7 +846,10 @@ function route_in_vpn_set(string $kind, string $input): ?bool {
 // generate_xray_config() uses (same order, same targets) and asks route_explain()
 // which rule/outbound $q would take. Shared by the `route_explain` action and
 // `site_check` (below) so the two can never disagree about where a domain routes.
-function route_explain_for(string $q): array {
+//
+// $inVpnSet replaces route_in_vpn_set() as route_explain()'s ipset probe, for a caller that
+// already knows the answer (site_check resolves the domain once and reuses it).
+function route_explain_for(string $q, ?callable $inVpnSet = null): array {
     global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR, $IPS_FILE, $KEYS_FILE, $CACHED_FILE;
 
     $built = build_outbound_tags();
@@ -862,12 +871,18 @@ function route_explain_for(string $q): array {
     ksort($ipEntries);
     $ipBuckets = regroup_rule_entries_by_target($ipEntries, $id_to_tag, $active_tag);
 
-    $result = route_explain($q, $domainBuckets, $ipBuckets, 'route_in_vpn_set');
+    $result = route_explain($q, $domainBuckets, $ipBuckets, $inVpnSet ?? 'route_in_vpn_set');
     $result['target_name'] = $result['target'] !== null
         ? route_target_name((string)$result['target'], json_read($KEYS_FILE), json_read($CACHED_FILE))
         : null;
     return $result;
 }
+
+// `connections` and `site_check` each run under their own non-blocking lock
+// (run_exclusive(), lib/apply.php): a second call while one is running answers at once
+// instead of stacking conntrack/curl work across php-cgi workers.
+const DIAG_LOCK_DIR = '/opt/var/run';
+const DIAG_BUSY_ERROR = 'Проверка уже выполняется, подождите';
 
 // `connections` action: wires connections_collect() (lib/connections.php) to the router —
 // one `conntrack -L`, one batched ipset lookup, the tails of Xray's access.log (512 KB) and
@@ -912,24 +927,26 @@ function site_check_fetch_probes(): array {
 }
 
 // `site_check` action: wires site_check_run() (lib/sitecheck.php) to the router — resolves
-// the domain via nslookup (an IP literal resolves to itself, no lookup needed), reuses
-// route_explain_for() for the routing verdict, fetches through Xray's real socks inbound,
-// and reuses one connections_snapshot() to count recent direct/leaked flows to the domain's
-// IPs. $limit is generous (the ipset ceiling) since this runs on demand, not polled.
-function site_check_snapshot(string $domain): array {
+// the domain once via nslookup (an IP literal resolves to itself, no lookup needed) and
+// reuses those IPs for the vpn1 ipset probe and flow matching, reuses route_explain_for()
+// for the routing verdict, and fetches through Xray's real socks inbound. With $withFlows
+// (the «Соединения» tool is on) one connections_snapshot() counts recent direct/leaked flows
+// to the domain's IPs — $limit is generous (the ipset ceiling) since this runs on demand,
+// not polled; with it off, no conntrack work is done and the counts are null.
+function site_check_snapshot(string $domain, bool $withFlows): array {
     $io = [
         'resolve_ips' => function (string $d): array {
             if (filter_var($d, FILTER_VALIDATE_IP) !== false) return [$d];
             $out = shell_run_timeout('exec nslookup ' . escapeshellarg($d) . ' 127.0.0.1', 1.5);
             return $out !== null ? parse_nslookup_ips($out) : [];
         },
-        'in_vpn_set'  => 'route_in_vpn_set',
+        'ip_in_vpn_set' => 'route_ip_in_vpn_set',
         'explain'     => 'route_explain_for',
         'fetch'       => 'site_check_fetch_probes',
-        'connections' => function (): array {
+        'connections' => $withFlows ? function (): array {
             $snap = connections_snapshot(CONNECTIONS_MAX_LIMIT);
             return $snap['connections'] ?? [];
-        },
+        } : null,
     ];
     return site_check_run($domain, $io);
 }
@@ -1221,7 +1238,8 @@ function wg_get_client_config($name) {
 // ===== API Router =====
 $action = $_GET['action'] ?? $_POST['action'] ?? '';
 
-// Read-only actions are public on local network (always require auth from outside).
+// Read-only actions are public on the trusted LAN; from outside, every action except
+// login/logout/auth_status needs a session (auth_required_for(), lib/auth.php).
 // Mutating actions go through require_auth() which short-circuits with 401 if no session.
 $PUBLIC_READ_ACTIONS = [
     'status', 'login', 'logout', 'auth_status',
@@ -1232,7 +1250,8 @@ $PUBLIC_READ_ACTIONS = [
     'github_lists', 'v2fly_search', 'rule_targets', 'route_explain',
     'wg_peers', 'logs', 'raw_config', 'events', 'overview', 'connections', 'site_check',
 ];
-if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
+if (!in_array($action, $PUBLIC_READ_ACTIONS, true)
+    || auth_required_for($action, is_local_request(), is_authenticated())) {
     require_auth();
 }
 
@@ -2343,7 +2362,9 @@ case 'connections':
         echo json_encode(['error' => 'Инструмент выключен в настройках']);
         break;
     }
-    echo json_encode(connections_snapshot(connections_limit($_GET['limit'] ?? null)));
+    $limit = connections_limit($_GET['limit'] ?? null);
+    echo json_encode(run_exclusive(DIAG_LOCK_DIR . '/xray-diag-connections.lock', DIAG_BUSY_ERROR,
+        fn(): array => connections_snapshot($limit)));
     break;
 
 case 'site_check':
@@ -2353,7 +2374,9 @@ case 'site_check':
     }
     $domain = trim($_GET['domain'] ?? '');
     if (!route_query_is_valid($domain)) { echo json_encode(['error' => 'Введите домен']); break; }
-    echo json_encode(site_check_snapshot($domain));
+    $withFlows = (get_features()['diag_connections'] ?? true) !== false;
+    echo json_encode(run_exclusive(DIAG_LOCK_DIR . '/xray-diag-site_check.lock', DIAG_BUSY_ERROR,
+        fn(): array => site_check_snapshot($domain, $withFlows)));
     break;
 
 case 'events':

@@ -6,7 +6,8 @@ declare(strict_types=1);
 // 'explain'), what Google/Cloudflare think the exit country is when fetched
 // through Xray's own socks inbound (127.0.0.1:1081, so the real routing
 // rules apply), and how many recent flows to that domain's IPs went direct
-// or leaked as QUIC (from one connections_collect() snapshot, lib/connections.php).
+// or leaked as QUIC (from one connections_collect() snapshot, lib/connections.php,
+// only while the «Соединения» tool is on).
 //
 // Also home to the `logs?source=` whitelist: which shell command reads each
 // named log source, so an unknown source is rejected before anything reaches
@@ -69,23 +70,37 @@ function site_check_count_flows(array $connections, array $ips): array {
     return ['direct_flows' => $direct, 'quic_leaks' => $quic];
 }
 
+// The first IPv4 among $ips (in answer order) — the address route_in_vpn_set() would
+// have tested for the same nslookup output, since the vpn1 ipset holds IPv4 only.
+function site_check_first_ipv4(array $ips): ?string {
+    foreach ($ips as $ip) {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) return $ip;
+    }
+    return null;
+}
+
 // The whole `site_check` request, with every I/O step injected so this stays
-// testable without touching the network or the router.
+// testable without touching the network or the router. The domain is resolved
+// ONCE; the ipset probe, route_explain()'s own in_vpn_set and the flow matching
+// all reuse those IPs.
 //
 // $io:
 //   resolve_ips(string $domain): string[] — the domain's current A/AAAA answers
-//   in_vpn_set(string $kind, string $input): ?bool — route_explain()'s own probe
-//     (route_in_vpn_set() in production), called here with kind='domain' so the
-//     result reflects the domain, not any one resolved IP
-//   explain(string $domain): array — route_explain()'s result (target_name filled),
-//     built by the caller from the SAME domain/ip buckets the config generator uses
+//   ip_in_vpn_set(?string $ipv4): ?bool — is this IPv4 in the vpn1 ipset
+//     (route_ip_in_vpn_set() in production); null = unknown / no IPv4 answer
+//   explain(string $domain, callable $inVpnSet): array — route_explain()'s result
+//     (target_name filled), built by the caller from the SAME domain/ip buckets the
+//     config generator uses; $inVpnSet is route_explain()'s ipset probe, here
+//     answering with the value already computed from the resolved IPs
 //   fetch(): array{youtube: ?string, trace: ?string} — raw bodies fetched THROUGH
 //     Xray's socks inbound (so routing applies); null means the fetch failed/timed out
-//   connections(): array — one connections_collect() snapshot's 'connections' rows
+//   connections: null | callable(): array — one connections_collect() snapshot's
+//     'connections' rows; null when the «Соединения» tool is off, and then no flows
+//     are counted (direct_flows/quic_leaks are null, not 0)
 function site_check_run(string $domain, array $io): array {
     $ips = $io['resolve_ips']($domain);
-    $inVpnSet = $io['in_vpn_set']('domain', $domain);
-    $explain = $io['explain']($domain);
+    $inVpnSet = $io['ip_in_vpn_set'](site_check_first_ipv4($ips));
+    $explain = $io['explain']($domain, fn(string $kind, string $input): ?bool => $inVpnSet);
     $via = ($explain['target'] ?? 'direct') === 'direct' ? 'direct' : 'vpn';
 
     $probe = $io['fetch']();
@@ -93,7 +108,10 @@ function site_check_run(string $domain, array $io): array {
     $trace = !empty($probe['trace']) ? parse_cf_trace($probe['trace']) : [];
     $exitCountry = ($trace['loc'] ?? '') !== '' ? $trace['loc'] : null;
 
-    $flows = site_check_count_flows($io['connections'](), $ips);
+    $flows = ['direct_flows' => null, 'quic_leaks' => null];
+    if (($io['connections'] ?? null) !== null) {
+        $flows = site_check_count_flows($io['connections'](), $ips);
+    }
 
     return [
         'domain'         => $domain,

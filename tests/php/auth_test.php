@@ -36,3 +36,30 @@ function test_ui_password_change_remote_right_current(): void {
     eq(ui_password_change_allowed(true, false, 'secret', _auth_verify_secret()), true,
         'remote change with the right current password is allowed');
 }
+
+// ---- auth_required_for() ------------------------------------------------------
+
+function test_auth_required_for_remote_unauthenticated_reads(): void {
+    foreach (['keys', 'raw_config', 'connections', 'overview', 'get_onboarding_status',
+              'site_check', 'status', 'add_domains', ''] as $a) {
+        eq(auth_required_for($a, false, false), true, "remote without session: $a needs login");
+    }
+}
+
+function test_auth_required_for_remote_open_actions(): void {
+    foreach (['login', 'logout', 'auth_status'] as $a) {
+        eq(auth_required_for($a, false, false), false, "remote without session: $a stays open");
+    }
+}
+
+function test_auth_required_for_local(): void {
+    foreach (['keys', 'raw_config', 'connections', 'login', 'add_domains'] as $a) {
+        eq(auth_required_for($a, true, false), false, "trusted LAN: $a needs no login");
+    }
+}
+
+function test_auth_required_for_remote_authenticated(): void {
+    foreach (['keys', 'raw_config', 'connections', 'overview', 'get_onboarding_status'] as $a) {
+        eq(auth_required_for($a, false, true), false, "remote with session: $a allowed");
+    }
+}

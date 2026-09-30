@@ -347,3 +347,51 @@ function test_candidate_config_has_json_extension(): void {
     eq(glob("$dir/config.*new*") ?: [], [], 'no candidate file left behind');
     _apply_cleanup($dir);
 }
+
+// ---- run_exclusive() ----------------------------------------------------------
+
+function _excl_lock_file(): string {
+    return sys_get_temp_dir() . '/xray_excl_' . bin2hex(random_bytes(4)) . '/diag.lock';
+}
+
+function test_run_exclusive_runs_when_free_and_releases(): void {
+    $lock = _excl_lock_file();
+    eq(run_exclusive($lock, 'busy', fn(): array => ['ok' => true]), ['ok' => true],
+        'free lock: callback result returned (lock dir created)');
+    $h = fopen($lock, 'c');
+    eq(flock($h, LOCK_EX | LOCK_NB), true, 'lock released after the callback');
+    fclose($h);
+    @unlink($lock);
+    @rmdir(dirname($lock));
+}
+
+function test_run_exclusive_busy_when_held(): void {
+    $lock = _excl_lock_file();
+    @mkdir(dirname($lock), 0755, true);
+    $h = fopen($lock, 'c');
+    flock($h, LOCK_EX);
+    $called = false;
+    $r = run_exclusive($lock, 'Проверка уже выполняется, подождите',
+        function () use (&$called): array { $called = true; return ['ok' => true]; });
+    eq($r, ['error' => 'Проверка уже выполняется, подождите'], 'held lock: busy error at once');
+    eq($called, false, 'held lock: callback never runs');
+    flock($h, LOCK_UN);
+    fclose($h);
+    @unlink($lock);
+    @rmdir(dirname($lock));
+}
+
+function test_run_exclusive_releases_on_exception(): void {
+    $lock = _excl_lock_file();
+    $thrown = false;
+    try {
+        run_exclusive($lock, 'busy', function (): array { throw new RuntimeException('boom'); });
+    } catch (RuntimeException $e) {
+        $thrown = true;
+    }
+    eq($thrown, true, 'exception propagates');
+    eq(run_exclusive($lock, 'busy', fn(): array => ['ok' => 1]), ['ok' => 1],
+        'lock free again after the exception');
+    @unlink($lock);
+    @rmdir(dirname($lock));
+}
