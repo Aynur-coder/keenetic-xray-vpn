@@ -194,7 +194,7 @@ function test_build_connections_route_classification(): void {
     eq($rows[1]['domain'], 'youtube.com', 'domain from querylog');
     eq($rows[1]['server'], null, 'direct has no server');
     eq($rows[2]['route'], 'leak', 'tcp to a vpn-set IP that went direct -> leak');
-    eq($rows[3]['route'], 'blocked_quic', 'udp/443 to a vpn-set IP -> blocked_quic');
+    eq($rows[3]['route'], 'leak', 'udp/443 to a vpn-set IP visible in conntrack got past the QUIC guard -> leak');
     eq($rows[3]['domain'], null, 'unknown domain -> null');
     eq($rows[4]['route'], 'vpn', 'full-VPN redirect on :1083 -> vpn');
     eq($rows[4]['server'], 'key-zzz', 'unnamed outbound tag reported as-is');
@@ -259,4 +259,127 @@ function test_redirected_direct_outbound_is_direct(): void {
     eq($rows[0]['route'], 'direct', 'redirected into Xray but sent out by the direct outbound');
     eq($rows[0]['server'], null, 'direct route has no server');
     eq($called, false, 'not a leak candidate: Xray chose direct on purpose');
+}
+
+function test_udp_quic_to_vpn_set_is_leak(): void {
+    $rows = build_connections(parse_conntrack(CONN_CT_UDP_FASTNAT), [], [],
+        fn(string $ip): bool => $ip === '142.251.152.2', []);
+    eq($rows[0]['route'], 'leak', 'live FASTNAT QUIC flow to a vpn-set IP is a leak');
+    eq($rows[0]['server'], null, 'leak has no server');
+}
+
+function test_redirected_block_outbound_is_blocked(): void {
+    $rows = build_connections(parse_conntrack(CONN_CT_REDIRECTED), [],
+        ['192.168.1.126:53025' => 'block'], fn(string $ip): bool => false,
+        ['block' => 'Заблокировано']);
+    eq($rows[0]['route'], 'blocked', 'redirected into Xray and sent to the block outbound');
+    eq($rows[0]['server'], null, 'blocked has no server');
+}
+
+function test_build_connections_routes_are_closed_set(): void {
+    $text = implode("\n", [CONN_CT_REDIRECTED, CONN_CT_UDP_FASTNAT, CONN_CT_LEAK]);
+    $rows = build_connections(parse_conntrack($text), [], [], fn(string $ip): bool => true, []);
+    foreach ($rows as $r) {
+        eq(in_array($r['route'], ['vpn', 'direct', 'leak', 'blocked'], true), true, 'route ' . $r['route']);
+    }
+}
+
+// ---- connections_collect(): deadline + partial flag via an injected clock ------------
+
+// I/O fakes that advance a fake clock by the given seconds per call and record calls.
+function _conn_io(array &$clock, array &$calls, array $cost, string $conntrack): array {
+    $step = function (string $name) use (&$clock, &$calls, $cost): void {
+        $calls[] = $name;
+        $clock['t'] += $cost[$name] ?? 0.0;
+    };
+    return [
+        'conntrack' => function (float $timeout) use ($step, $conntrack): ?string {
+            $step('conntrack');
+            return $conntrack;
+        },
+        'ipset' => function (string $script, float $timeout) use ($step): ?string {
+            $step('ipset');
+            return "104.18.32.47\n";
+        },
+        'access_log' => function () use ($step): string {
+            $step('access_log');
+            return "2026/09/30 00:50:16.000001 from 192.168.1.126:53025 accepted tcp:gemini.google.com:443 [tproxy-in -> key-abc]\n";
+        },
+        'querylog' => function () use ($step): string {
+            $step('querylog');
+            return _conn_ql_line('chatgpt.com', ['104.18.32.47']) . "\n";
+        },
+        'server_names' => ['key-abc' => 'Финляндия'],
+        'device_names' => ['192.168.1.50' => 'MacBook'],
+    ];
+}
+
+function test_connections_collect_fast_path_not_partial(): void {
+    $clock = ['t' => 100.0];
+    $calls = [];
+    $io = _conn_io($clock, $calls, ['conntrack' => 0.2, 'ipset' => 0.1],
+        CONN_CT_REDIRECTED . "\n" . CONN_CT_LEAK . "\n");
+    $r = connections_collect(300, $io, function () use (&$clock): float { return $clock['t']; });
+    eq($r['partial'], false, 'within budget -> not partial');
+    eq($r['total'], 2, 'total');
+    eq($calls, ['conntrack', 'ipset', 'access_log', 'querylog'], 'every step ran once');
+    eq($r['connections'][0]['server'], 'Финляндия', 'server from access.log + names');
+    eq($r['connections'][0]['domain'], 'gemini.google.com', 'access.log domain fallback');
+    eq($r['connections'][1]['route'], 'leak', 'ipset hit -> leak');
+    eq($r['connections'][1]['domain'], 'chatgpt.com', 'querylog domain');
+    eq($r['connections'][1]['device_name'], 'MacBook', 'device name attached');
+    eq($r['connections'][0]['device_name'], null, 'unknown device -> null');
+}
+
+function test_connections_collect_slow_conntrack_is_partial(): void {
+    $clock = ['t' => 0.0];
+    $calls = [];
+    $io = _conn_io($clock, $calls, ['conntrack' => 2.7], CONN_CT_REDIRECTED . "\n" . CONN_CT_LEAK . "\n");
+    $r = connections_collect(300, $io, function () use (&$clock): float { return $clock['t']; });
+    eq($r['partial'], true, 'conntrack hit its timeout -> partial');
+    eq($calls, ['conntrack'], 'no time left: ipset and log tails skipped');
+    eq(count($r['connections']), 2, 'flows still returned');
+    eq($r['connections'][1]['route'], 'direct', 'untested IP is reported direct');
+}
+
+function test_connections_collect_slow_ipset_skips_querylog(): void {
+    $clock = ['t' => 0.0];
+    $calls = [];
+    $io = _conn_io($clock, $calls, ['conntrack' => 0.3, 'ipset' => 1.2, 'access_log' => 0.5],
+        CONN_CT_LEAK . "\n");
+    $r = connections_collect(300, $io, function () use (&$clock): float { return $clock['t']; });
+    eq($r['partial'], true, 'ipset ran into its timeout -> partial');
+    eq(in_array('querylog', $calls, true), false, 'querylog tail skipped once the budget is gone');
+}
+
+function test_connections_collect_conntrack_errors(): void {
+    $clock = ['t' => 0.0];
+    $calls = [];
+    $now = function () use (&$clock): float { return $clock['t']; };
+    $io = _conn_io($clock, $calls, [], 'sh: conntrack: not found');
+    eq(connections_collect(300, $io, $now)['error'] ?? null,
+        'Не удалось прочитать таблицу соединений (conntrack)', 'missing binary -> error');
+    $io = _conn_io($clock, $calls, [], 'conntrack v1.4.6 (conntrack-tools): 0 flow entries have been shown.');
+    $r = connections_collect(300, $io, $now);
+    eq([$r['connections'], $r['total'], $r['partial']], [[], 0, false], 'empty table -> empty list');
+}
+
+function test_connections_collect_limit(): void {
+    $clock = ['t' => 0.0];
+    $calls = [];
+    $io = _conn_io($clock, $calls, [], CONN_CT_REDIRECTED . "\n" . CONN_CT_LEAK . "\n" . CONN_CT_UDP_FASTNAT);
+    $r = connections_collect(2, $io, function () use (&$clock): float { return $clock['t']; });
+    eq([count($r['connections']), $r['total'], $r['limit']], [2, 3, 2], 'limit applied, total counts all');
+}
+
+// ---- lan_devices cache policy ------------------------------------------------
+
+function test_lan_devices_cache_should_write(): void {
+    $named = [['ip' => '192.168.1.5', 'hostname' => 'iPhone']];
+    $nameless = [['ip' => '192.168.1.5', 'hostname' => '']];
+    eq(lan_devices_cache_should_write([], $named), false, 'empty result never overwrites');
+    eq(lan_devices_cache_should_write($named, $named), true, 'named result always written');
+    eq(lan_devices_cache_should_write($nameless, $named), false, 'nameless fallback keeps a named cache');
+    eq(lan_devices_cache_should_write($nameless, null), true, 'nameless result seeds an empty cache');
+    eq(lan_devices_cache_should_write($nameless, $nameless), true, 'nameless replaces nameless');
 }

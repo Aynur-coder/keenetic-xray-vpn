@@ -829,52 +829,35 @@ function route_in_vpn_set(string $kind, string $input): ?bool {
     return null; // ipset missing/unreachable/unexpected output — unknown, not "not in set"
 }
 
-// `connections` action: one `conntrack -L`, the tails of AdGuard's querylog and Xray's
-// access.log, one batched ipset lookup — all under a ~3s wall-clock budget (every shell
-// step has a hard timeout; file reads are bounded tails, never whole files).
+// `connections` action: wires connections_collect() (lib/connections.php) to the router —
+// one `conntrack -L`, one batched ipset lookup, the tails of Xray's access.log (512 KB) and
+// AdGuard's querylog (2 MB), device names from the lan_devices cache — under one 2.8 s
+// deadline; whatever doesn't fit is skipped and the result is flagged partial.
 function connections_snapshot(int $limit): array {
     global $AGH_QUERYLOG, $LOG_ACCESS, $KEYS_FILE, $CACHED_FILE, $LAN_DEVICES_CACHE;
-    $deadline = microtime(true) + 2.8;
-
-    // `exec` so the timeout's SIGKILL hits conntrack itself, not just the shell. stderr is
-    // kept: its "N flow entries have been shown." tells an empty table from a missing binary.
-    $ct = shell_run_timeout('exec conntrack -L', 1.5);
-    if ($ct === null || !preg_match('/^(tcp|udp) |flow entries/m', $ct)) {
-        return ['error' => 'Не удалось прочитать таблицу соединений (conntrack)'];
-    }
-    $flows = array_values(array_filter(
-        parse_conntrack($ct),
-        fn(array $f): bool => !connections_is_local_dst($f['dst'])
-    ));
-    $total = count($flows);
-    $flows = array_slice($flows, 0, $limit);
-
-    $hits = [];
-    $script = ipset_batch_script(connections_ipset_candidates($flows));
-    $left = $deadline - microtime(true) - 0.6; // keep room for the log reads below
-    if ($script !== '' && $left > 0.1) {
-        // A timeout keeps the hits printed so far; untested IPs count as "not in set".
-        $hits = ipset_batch_hits((string)shell_run_timeout($script, min(1.2, $left)));
-    }
-
-    $access = read_file_tail($LOG_ACCESS, 512 * 1024);
-    $rows = build_connections(
-        $flows,
-        querylog_ip_map(read_file_tail($AGH_QUERYLOG, 2 * 1024 * 1024)),
-        xray_access_outbounds($access),
-        fn(string $ip): bool => isset($hits[$ip]),
-        connections_server_names(json_read($KEYS_FILE), json_read($CACHED_FILE)),
-        xray_access_domains($access)
-    );
-
     $lan = json_decode((string)@file_get_contents($LAN_DEVICES_CACHE), true);
-    $devNames = connections_device_names(is_array($lan) ? $lan : []);
-    foreach ($rows as &$r) {
-        $r['device_name'] = $devNames[$r['device_ip']] ?? null;
-    }
-    unset($r);
+    $io = [
+        // `exec` so the timeout's SIGKILL hits conntrack itself, not just the shell. stderr
+        // is kept: "N flow entries have been shown." tells an empty table from a missing binary.
+        'conntrack'  => fn(float $t): ?string => shell_run_timeout('exec conntrack -L', $t),
+        'ipset'      => fn(string $script, float $t): ?string => shell_run_timeout($script, $t),
+        'access_log' => fn(): string => read_file_tail($LOG_ACCESS, 512 * 1024),
+        'querylog'   => fn(): string => read_file_tail($AGH_QUERYLOG, 2 * 1024 * 1024),
+        'server_names' => connections_server_names(json_read($KEYS_FILE), json_read($CACHED_FILE)),
+        'device_names' => connections_device_names(is_array($lan) ? $lan : []),
+    ];
+    return connections_collect($limit, $io, fn(): float => microtime(true));
+}
 
-    return ['connections' => $rows, 'total' => $total, 'limit' => $limit];
+// Saves a lan_devices result for `connections` atomically (tmp + rename), keeping a cache
+// that has hostnames when the new result (e.g. the ARP fallback) has none.
+function lan_devices_cache_save(array $devices): void {
+    global $LAN_DEVICES_CACHE;
+    $old = json_decode((string)@file_get_contents($LAN_DEVICES_CACHE), true);
+    if (!lan_devices_cache_should_write($devices, is_array($old) ? $old : null)) return;
+    $tmp = $LAN_DEVICES_CACHE . '.' . getmypid() . '.tmp';
+    if (@file_put_contents($tmp, json_encode($devices)) === false) return;
+    if (!@rename($tmp, $LAN_DEVICES_CACHE)) @unlink($tmp);
 }
 
 function update_adguard_ipset() {
@@ -1950,7 +1933,7 @@ case 'delete_device':
 
 case 'lan_devices':
     $lan = keenetic_get_devices();
-    if ($lan) @file_put_contents($LAN_DEVICES_CACHE, json_encode($lan));
+    lan_devices_cache_save($lan);
     echo json_encode($lan);
     break;
 

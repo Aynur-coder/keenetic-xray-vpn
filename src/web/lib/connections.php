@@ -65,7 +65,9 @@ function _dns_skip_name(string $msg, int $pos): ?int {
 }
 
 // IPs from the A/AAAA answer records of a base64 DNS wire message; other record types
-// (CNAME, TXT…) are skipped. Malformed/truncated input yields what parsed before the break.
+// (CNAME, TXT…) are skipped. Compressed names are skipped, not resolved — owner names
+// aren't needed to pull out A/AAAA data, and never following pointers rules out loops.
+// Malformed/truncated input yields what parsed before the break.
 function dns_wire_answers(string $wireB64): array {
     $msg = base64_decode($wireB64, true);
     if ($msg === false || strlen($msg) < 12) return [];
@@ -213,12 +215,14 @@ function connections_ipset_candidates(array $flows): array {
 }
 
 // Classifies parse_conntrack() flows:
-//   vpn          — reply comes from the router's Xray port (:1080 selective, :1083 full-VPN);
-//                  server = serverNames[outbound tag from access.log] ?? the tag itself
-//                  (a redirected flow whose outbound is 'direct' is reported as direct)
-//   blocked_quic — udp/443 to an IP in the vpn set (the QUIC guard rejects it)
-//   leak         — tcp to an IP in the vpn set that still went direct
-//   direct       — everything else
+//   vpn     — reply comes from the router's Xray port (:1080 selective, :1083 full-VPN);
+//             server = serverNames[outbound tag from access.log] ?? the tag itself
+//   blocked — redirected into Xray, which sent it to its 'block' outbound
+//   direct  — redirected into Xray, which sent it to its 'direct' outbound; or not
+//             redirected and the destination is not in the vpn set
+//   leak    — not redirected, yet the destination IS in the vpn set: tcp that bypassed the
+//             redirect, or udp/443. The QUIC guard REJECTs in FORWARD, before conntrack
+//             confirms the entry, so a udp/443 flow that shows up here got through.
 // $inVpn(string $ip): bool is only called for non-redirected tcp and udp/443 flows.
 // $accessDomains (xray_access_domains()) is a fallback when the querylog has no answer.
 function build_connections(
@@ -231,17 +235,17 @@ function build_connections(
         $key = $f['src'] . ':' . $f['sport'];
         $server = null;
         if (_conn_is_redirected($f)) {
-            // Xray's own 'direct' outbound means the traffic left unproxied: say so.
+            // Xray's own 'direct'/'block' outbounds mean the traffic was not proxied.
             $tag = $accessMap[$key] ?? null;
             if ($tag === 'direct') {
                 $route = 'direct';
+            } elseif ($tag === 'block') {
+                $route = 'blocked';
             } else {
                 $route = 'vpn';
                 if ($tag !== null) $server = $serverNames[$tag] ?? $tag;
             }
-        } elseif ($f['proto'] === 'udp' && $f['dport'] === 443) {
-            $route = $inVpn($f['dst']) ? 'blocked_quic' : 'direct';
-        } elseif ($f['proto'] === 'tcp') {
+        } elseif ($f['proto'] === 'tcp' || $f['dport'] === 443) {
             $route = $inVpn($f['dst']) ? 'leak' : 'direct';
         } else {
             $route = 'direct';
@@ -307,4 +311,81 @@ function connections_device_names(array $devices): array {
         if ($ip !== '' && $name !== '') $names[$ip] = $name;
     }
     return $names;
+}
+
+const CONNECTIONS_CONNTRACK_ERROR = 'Не удалось прочитать таблицу соединений (conntrack)';
+
+// The whole `connections` request, with every I/O step injected so the time budget is
+// testable. $io: conntrack(float $timeout): ?string, ipset(string $script, float $timeout):
+// ?string, access_log(): string, querylog(): string, server_names: array, device_names: array.
+// $now(): float is the clock (microtime(true) in production).
+//
+// All steps share one $budget-second deadline, in order of importance: conntrack (the rows
+// themselves), ipset (leak detection), access.log (server + fallback domain), querylog
+// (domains; the costliest CPU step). A step that hits its timeout, or is skipped because too
+// little time is left, sets 'partial' => true instead of letting the request overrun.
+function connections_collect(int $limit, array $io, callable $now, float $budget = 2.8): array {
+    $start = $now();
+    $left = fn(): float => $budget - ($now() - $start);
+    $partial = false;
+    // Runs one step with a timeout: [its output, whether it used (almost) all of it].
+    $timed = function (callable $fn, float $timeout) use ($now): array {
+        $t0 = $now();
+        $out = $fn($timeout);
+        return [$out, $now() - $t0 >= $timeout - 0.01];
+    };
+
+    [$ct, $timedOut] = $timed($io['conntrack'], min(1.5, $left()));
+    if ($timedOut) $partial = true;
+    if ($ct === null || !preg_match('/^(tcp|udp) |flow entries/m', $ct)) {
+        return ['error' => CONNECTIONS_CONNTRACK_ERROR];
+    }
+    $flows = array_values(array_filter(
+        parse_conntrack($ct),
+        fn(array $f): bool => !connections_is_local_dst($f['dst'])
+    ));
+    unset($ct);
+    $total = count($flows);
+    $flows = array_slice($flows, 0, $limit);
+
+    // ipset leaves 1 s for the log steps; a timeout keeps the hits printed so far and
+    // untested IPs count as "not in set".
+    $hits = [];
+    $script = ipset_batch_script(connections_ipset_candidates($flows));
+    if ($script !== '') {
+        $t = min(1.2, $left() - 1.0);
+        if ($t < 0.1) {
+            $partial = true;
+        } else {
+            $ipset = $io['ipset'];
+            [$ipsetOut, $timedOut] = $timed(fn(float $to) => $ipset($script, $to), $t);
+            if ($timedOut) $partial = true;
+            $hits = ipset_batch_hits((string)$ipsetOut);
+        }
+    }
+
+    $access = '';
+    if ($left() > 0.3) $access = $io['access_log'](); else $partial = true;
+    $ipDomain = [];
+    if ($left() > 1.0) $ipDomain = querylog_ip_map($io['querylog']()); else $partial = true;
+
+    $rows = build_connections(
+        $flows, $ipDomain, xray_access_outbounds($access),
+        fn(string $ip): bool => isset($hits[$ip]),
+        $io['server_names'], xray_access_domains($access)
+    );
+    foreach ($rows as &$r) {
+        $r['device_name'] = $io['device_names'][$r['device_ip']] ?? null;
+    }
+    unset($r);
+
+    return ['connections' => $rows, 'total' => $total, 'limit' => $limit, 'partial' => $partial];
+}
+
+// Whether a fresh lan_devices result should replace the cache: never an empty one, and
+// never a nameless one (the ARP fallback) over a cache that has hostnames.
+function lan_devices_cache_should_write(array $new, ?array $old): bool {
+    if (!$new) return false;
+    if (connections_device_names($new)) return true;
+    return !connections_device_names($old ?? []);
 }
