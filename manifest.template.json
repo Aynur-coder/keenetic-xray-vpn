@@ -39,6 +39,7 @@
     {"src": "src/web/lib/servers.php",                  "dst": "/opt/share/www/xray/lib/servers.php",                 "mode": "644"},
     {"src": "src/web/lib/apply.php",                    "dst": "/opt/share/www/xray/lib/apply.php",                   "mode": "644"},
     {"src": "src/web/lib/rules.php",                    "dst": "/opt/share/www/xray/lib/rules.php",                   "mode": "644"},
+    {"src": "src/web/lib/routing.php",                  "dst": "/opt/share/www/xray/lib/routing.php",                 "mode": "644"},
     {"src": "src/web/lib/overview.php",                 "dst": "/opt/share/www/xray/lib/overview.php",                "mode": "644"},
     {"src": "src/web/lib/probe.php",                    "dst": "/opt/share/www/xray/lib/probe.php",                   "mode": "644"},
     {"src": "src/web/lib/auth.php",                     "dst": "/opt/share/www/xray/lib/auth.php",                    "mode": "644"},

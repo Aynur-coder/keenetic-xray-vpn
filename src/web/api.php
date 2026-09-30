@@ -39,6 +39,7 @@ require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/servers.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/rules.php';
+require_once __DIR__ . '/lib/routing.php';
 require_once __DIR__ . '/lib/overview.php';
 require_once __DIR__ . '/lib/probe.php';
 require_once __DIR__ . '/lib/auth.php';
@@ -469,11 +470,12 @@ function refresh_subscriptions(): array {
     return ['count' => count($all_servers), 'added' => $added, 'removed' => $removed];
 }
 
-// Writes to $outFile (default: the live config). apply_changes() passes config.new.json
-// so a config Xray rejects never replaces the working one.
-function generate_xray_config(?string $outFile = null) {
-    global $XRAY_DIR, $XRAY_CONF, $KEYS_FILE, $CACHED_FILE, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE, $STATE_FILE;
-    global $SUBS_FILE;
+// Builds the outbound list, id->tag map and active tag exactly as
+// generate_xray_config() needs them, without emitting a full Xray config —
+// shared with route_explain() (case 'route_explain' in the API router) so
+// "which server" answers can never drift from what actually gets applied.
+function build_outbound_tags(): array {
+    global $KEYS_FILE, $CACHED_FILE, $STATE_FILE, $SUBS_FILE;
 
     $outbounds = [];
     $server_ips = [];
@@ -515,7 +517,6 @@ function generate_xray_config(?string $outFile = null) {
         }
     }
 
-    if (empty($outbounds)) return ['error' => 'No active outbounds'];
     if (!$active_tag) {
         foreach ($outbounds as $ob) {
             if ($ob['tag'] !== 'direct' && $ob['tag'] !== 'block') { $active_tag = $ob['tag']; break; }
@@ -526,12 +527,36 @@ function generate_xray_config(?string $outFile = null) {
     // its link failed to build a usable outbound) so the UI can show why.
     $effective_id = array_search($active_tag, $id_to_tag, true);
     $effective_id = $effective_id !== false ? $effective_id : null;
-    // Returned, not written: apply_changes() persists it only once Xray accepted this config.
     $effectiveState = [
         'effective_outbound' => $effective_id,
         'effective_reason'   => ($effective_id !== null && $effective_id === $active_id)
             ? $resolved['reason'] : 'fallback_missing',
     ];
+
+    return [
+        'outbounds' => $outbounds,
+        'server_ips' => $server_ips,
+        'id_to_tag' => $id_to_tag,
+        'active_tag' => $active_tag,
+        'effective_state' => $effectiveState,
+    ];
+}
+
+// Writes to $outFile (default: the live config). apply_changes() passes config.new.json
+// so a config Xray rejects never replaces the working one.
+function generate_xray_config(?string $outFile = null) {
+    global $XRAY_DIR, $XRAY_CONF, $DOMAINS_FILE, $IPS_FILE, $FULLVPN_FILE;
+    global $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
+
+    $built = build_outbound_tags();
+    $outbounds = $built['outbounds'];
+    $server_ips = $built['server_ips'];
+    $id_to_tag = $built['id_to_tag'];
+    $active_tag = $built['active_tag'];
+    // Returned, not written: apply_changes() persists it only once Xray accepted this config.
+    $effectiveState = $built['effective_state'];
+
+    if (empty($outbounds)) return ['error' => 'No active outbounds'];
 
     usort($outbounds, function($a, $b) use ($active_tag) {
         if ($a['tag'] === $active_tag) return -1;
@@ -540,12 +565,11 @@ function generate_xray_config(?string $outFile = null) {
     });
 
     $targets = rule_targets();
-    $domain_buckets = all_domains_with_target($targets, $id_to_tag, $active_tag);
-    $ip_buckets = [];
-    foreach (lines_read($IPS_FILE) as $ipv) {
-        $btag = resolve_target('ip:' . $ipv, $targets, $id_to_tag, $active_tag);
-        $ip_buckets[$btag][] = $ipv;
-    }
+    $domain_buckets = all_domains_with_target(
+        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
+        $targets, $id_to_tag, $active_tag
+    );
+    $ip_buckets = ip_buckets_with_target(lines_read($IPS_FILE), $targets, $id_to_tag, $active_tag);
 
     // Use explicit private ranges instead of geoip:private — geoip.dat may not exist on MIPS Entware
     $private_ranges = ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16',
@@ -677,61 +701,8 @@ function rule_targets() {
     return is_array($t) ? $t : [];
 }
 
-// Resolve a rule key to an outbound tag. proxy/missing -> active; direct -> 'direct';
-// pinned server present -> its tag; pinned server missing/disabled -> fall back to active.
-function resolve_target($key, $targets, $id_to_tag, $active_tag) {
-    $t = $targets[$key] ?? 'proxy';
-    if ($t === 'proxy' || $t === '') return $active_tag;
-    if ($t === 'direct') return 'direct';
-    if (isset($id_to_tag[$t])) return $id_to_tag[$t];
-    return $active_tag;
-}
-
-// Bucket all domains (manual tokens kept WITH match-prefix; v2fly as domain:<bare>)
-// by their effective outbound tag.
-// Precedence: v2fly lists are authoritative. A manual domain only overrides a v2fly list
-// when it carries an explicit override (specific server or "direct"); a plain "proxy" manual
-// domain that duplicates a v2fly list is treated as redundant and the v2fly list wins.
-function all_domains_with_target($targets, $id_to_tag, $active_tag) {
-    global $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
-    // 1) v2fly domains -> their list's target tag (bare host => tag)
-    $v2flyMap = [];
-    foreach (json_read($GITHUB_LISTS_FILE) as $l) {
-        if (empty($l['enabled']) || ($l['source'] ?? '') !== 'v2fly' || empty($l['name'])) continue;
-        $f = "$V2FLY_LISTS_DIR/{$l['name']}.txt";
-        if (!file_exists($f)) continue;
-        $tag = resolve_target('list:' . $l['name'], $targets, $id_to_tag, $active_tag);
-        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $d) {
-            $d = trim($d);
-            if ($d === '' || $d[0] === '#') continue;
-            $bare = strtolower(bare_domain($d));
-            if ($bare === '' || isset($v2flyMap[$bare])) continue;
-            $v2flyMap[$bare] = $tag;
-        }
-    }
-    $buckets = [];
-    $seen = [];
-    // 2) Manual domains: kept only if NOT redundant with v2fly, or if they carry an override
-    foreach (lines_read($DOMAINS_FILE) as $token) {
-        $bare = strtolower(bare_domain($token));
-        if ($bare === '' || isset($seen[$bare])) continue;
-        $ov = $targets['domain:' . $bare] ?? 'proxy';
-        $isOverride = ($ov !== 'proxy' && $ov !== '');
-        if (!$isOverride && isset($v2flyMap[$bare])) continue; // v2fly wins; skip (do not mark seen)
-        $seen[$bare] = true;
-        $tag = resolve_target('domain:' . $bare, $targets, $id_to_tag, $active_tag);
-        $buckets[$tag][$token] = true;
-    }
-    // 3) v2fly domains not overridden by a manual entry
-    foreach ($v2flyMap as $bare => $tag) {
-        if (isset($seen[$bare])) continue;
-        $seen[$bare] = true;
-        $buckets[$tag]['domain:' . $bare] = true;
-    }
-    $out = [];
-    foreach ($buckets as $tag => $set) $out[$tag] = array_keys($set);
-    return $out;
-}
+// resolve_target() / all_domains_with_target() now live in lib/routing.php
+// (shared with route_explain(); see build_outbound_tags()/generate_xray_config()).
 
 // Write derived plain-text files consumed by the shell firewall (busybox has no JSON parser).
 // direct_ips.txt = static IP tokens whose effective target is "direct" (must bypass the ipset).
@@ -813,14 +784,53 @@ function warmup_ipset() {
     shell_exec("nohup nice -n 19 sh -c '$script' >/dev/null 2>&1 &");
 }
 
+// route_explain()'s in_vpn_set callable: for an IP literal, tests it directly;
+// for a domain, resolves it via `nslookup <d> 127.0.0.1` first and tests the
+// first IPv4 answer. Both steps run under a hard timeout so the whole
+// route_explain request stays well under the API's 3s budget even when DNS
+// or the ipset lookup hangs.
+function route_in_vpn_set(string $kind, string $input): ?bool {
+    $ip = null;
+    if ($kind === 'ip') {
+        $ip = filter_var($input, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $input : null;
+    } else {
+        $out = shell_run_timeout('nslookup ' . escapeshellarg($input) . ' 127.0.0.1', 1.5);
+        if ($out !== null) {
+            // BusyBox nslookup prints "Server:"/"Address 1:" for the resolver itself
+            // first, then a "Name:"/"Address N:" pair per answer — only match
+            // addresses that come after a "Name:" line so the resolver's own IP
+            // (127.0.0.1) is never mistaken for the domain's.
+            $seenName = false;
+            foreach (explode("\n", $out) as $ln) {
+                $ln = trim($ln);
+                if (stripos($ln, 'Name:') === 0) { $seenName = true; continue; }
+                if ($seenName && preg_match('/^Address\s*\d*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b/i', $ln, $m)) {
+                    $ip = $m[1];
+                    break;
+                }
+            }
+        }
+    }
+    if ($ip === null) return null;
+
+    $out = shell_run_timeout('ipset test vpn1 ' . escapeshellarg($ip), 0.8);
+    if ($out === null) return null;
+    if (stripos($out, 'is in set') !== false) return true;
+    if (stripos($out, 'is NOT in set') !== false) return false;
+    return null; // ipset missing/unreachable/unexpected output — unknown, not "not in set"
+}
+
 function update_adguard_ipset() {
-    global $AGH_CONF;
+    global $AGH_CONF, $DOMAINS_FILE, $GITHUB_LISTS_FILE, $V2FLY_LISTS_DIR;
     if (!file_exists($AGH_CONF)) return;
     // Reuse the routing bucketization (same v2fly-authoritative + override precedence).
     // Domains routed "direct" must NOT enter the vpn1 ipset (they bypass Xray entirely);
     // everything else (proxy + pinned servers) must, so it reaches Xray. id_to_tag is empty
     // here so server pins collapse to the non-"direct" bucket — exactly what we need.
-    $buckets = all_domains_with_target(rule_targets(), [], 'proxy');
+    $buckets = all_domains_with_target(
+        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
+        rule_targets(), [], 'proxy'
+    );
     $entries = [];
     foreach ($buckets as $tag => $tokens) {
         if ($tag === 'direct') continue;
@@ -1070,7 +1080,7 @@ $PUBLIC_READ_ACTIONS = [
     'check_update', 'status_update', 'check_ips', 'changelog_full',
     'keys', 'subscriptions', 'subscription_servers', 'servers',
     'domains', 'ips', 'devices', 'lan_devices',
-    'github_lists', 'v2fly_search', 'rule_targets',
+    'github_lists', 'v2fly_search', 'rule_targets', 'route_explain',
     'wg_peers', 'logs', 'raw_config', 'events', 'overview',
 ];
 if (!in_array($action, $PUBLIC_READ_ACTIONS, true)) {
@@ -1580,6 +1590,36 @@ case 'select_server':
     break;
 
 case 'rule_targets': echo json_encode((object)rule_targets()); break;
+
+case 'route_explain':
+    $q = trim($_GET['q'] ?? '');
+    if ($q === '') { echo json_encode(['error' => 'q required']); break; }
+
+    $built = build_outbound_tags();
+    $id_to_tag = $built['id_to_tag'];
+    $active_tag = $built['active_tag'];
+    $targets = rule_targets();
+
+    // Same rule ORDER generate_xray_config() emits (ksort by outbound tag) before
+    // relabeling tags to targets, so first-match here means what it does in the
+    // generated config.
+    $domainEntries = domain_rule_entries(
+        lines_read($DOMAINS_FILE), json_read($GITHUB_LISTS_FILE), $V2FLY_LISTS_DIR,
+        $targets, $id_to_tag, $active_tag
+    );
+    ksort($domainEntries);
+    $domainBuckets = regroup_rule_entries_by_target($domainEntries, $id_to_tag, $active_tag);
+
+    $ipEntries = ip_rule_entries(lines_read($IPS_FILE), $targets, $id_to_tag, $active_tag);
+    ksort($ipEntries);
+    $ipBuckets = regroup_rule_entries_by_target($ipEntries, $id_to_tag, $active_tag);
+
+    $result = route_explain($q, $domainBuckets, $ipBuckets, 'route_in_vpn_set');
+    $result['target_name'] = $result['target'] !== null
+        ? route_target_name((string)$result['target'], json_read($KEYS_FILE), json_read($CACHED_FILE))
+        : null;
+    echo json_encode($result);
+    break;
 
 case 'set_rule_target':
     $key = trim($_POST['key'] ?? '');
