@@ -20,6 +20,45 @@ function test_shell_run_no_double_redirect(): void {
     eq(shell_run('echo x 2>/dev/null'), 'x', 'existing redirect is not doubled');
 }
 
+// ---- shell_lines_timeout() ------------------------------------------------------
+
+function test_shell_lines_timeout_streams_lines(): void {
+    $lines = shell_lines_timeout("exec printf 'a\\nbb\\n\\nlast'", 2.0);
+    eq(iterator_to_array($lines, false), ['a', 'bb', '', 'last'],
+        'every line, the unterminated last one too');
+    $many = 0;
+    foreach (shell_lines_timeout('exec seq 1 20000', 5.0) as $line) $many++;
+    eq($many, 20000, 'output larger than the pipe buffer arrives whole');
+}
+
+// Early stop / deadline must kill the process (pid via `exec`, as in the test below).
+function _sl_pid_gone(string $pidFile): bool {
+    usleep(200000);
+    $pid = (int)trim((string)@file_get_contents($pidFile));
+    @unlink($pidFile);
+    if ($pid <= 0) return false;
+    if (function_exists('posix_kill')) return !@posix_kill($pid, 0);
+    return trim((string)shell_exec('ps -p ' . $pid . ' -o pid= 2>/dev/null')) === '';
+}
+
+function test_shell_lines_timeout_deadline_and_early_stop_kill(): void {
+    $pidFile = tempnam(sys_get_temp_dir(), 'sl_pid_');
+    $start = microtime(true);
+    $got = iterator_to_array(shell_lines_timeout(
+        'echo $$ > ' . escapeshellarg($pidFile) . '; echo first; exec sleep 91713', 0.3), false);
+    eq(microtime(true) - $start < 2.0, true, 'returns at the deadline');
+    eq($got, ['first'], 'lines before the deadline are kept');
+    eq(_sl_pid_gone($pidFile), true, 'process killed at the deadline');
+
+    $pidFile = tempnam(sys_get_temp_dir(), 'sl_pid_');
+    $lines = shell_lines_timeout('echo $$ > ' . escapeshellarg($pidFile) . '; exec yes', 5.0);
+    $start = microtime(true);
+    foreach ($lines as $line) break;
+    unset($lines);
+    eq(microtime(true) - $start < 2.0, true, 'stopping early does not wait for the deadline');
+    eq(_sl_pid_gone($pidFile), true, 'process killed once the caller drops the generator');
+}
+
 // ---- shell_run_parallel_timeout() ---------------------------------------------
 
 function test_shell_run_parallel_timeout_collects_both_outputs_in_order(): void {

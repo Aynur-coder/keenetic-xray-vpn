@@ -885,19 +885,21 @@ const DIAG_LOCK_DIR = '/opt/var/run';
 const DIAG_BUSY_ERROR = 'Проверка уже выполняется, подождите';
 
 // `connections` action: wires connections_collect() (lib/connections.php) to the router —
-// one `conntrack -L`, one batched ipset lookup, the tails of Xray's access.log (512 KB) and
-// AdGuard's querylog (2 MB), device names from the lan_devices cache — under one 2.8 s
-// deadline; whatever doesn't fit is skipped and the result is flagged partial.
+// one `conntrack -L`, one batched ipset lookup, the tails of Xray's access.log and AdGuard's
+// querylog (512 KB each), device names from the lan_devices cache — under one 2.8 s
+// deadline; whatever doesn't fit is skipped and the result is flagged partial. Every source
+// is streamed line by line (shell_lines_timeout(), file_tail_lines()) so the request fits
+// the router's 8M PHP memory_limit.
 function connections_snapshot(int $limit): array {
     global $AGH_QUERYLOG, $LOG_ACCESS, $KEYS_FILE, $CACHED_FILE, $LAN_DEVICES_CACHE;
     $lan = json_decode((string)@file_get_contents($LAN_DEVICES_CACHE), true);
     $io = [
         // `exec` so the timeout's SIGKILL hits conntrack itself, not just the shell. stderr
         // is kept: "N flow entries have been shown." tells an empty table from a missing binary.
-        'conntrack'  => fn(float $t): ?string => shell_run_timeout('exec conntrack -L', $t),
+        'conntrack'  => fn(float $t): ?iterable => shell_lines_timeout('exec conntrack -L', $t),
         'ipset'      => fn(string $script, float $t): ?string => shell_run_timeout($script, $t),
-        'access_log' => fn(): string => read_file_tail($LOG_ACCESS, 512 * 1024),
-        'querylog'   => fn(): string => read_file_tail($AGH_QUERYLOG, 2 * 1024 * 1024),
+        'access_log' => fn(): iterable => file_tail_lines($LOG_ACCESS, CONNECTIONS_ACCESS_TAIL),
+        'querylog'   => fn(): iterable => file_tail_lines($AGH_QUERYLOG, CONNECTIONS_QUERYLOG_TAIL),
         'server_names' => connections_server_names(json_read($KEYS_FILE), json_read($CACHED_FILE)),
         'device_names' => connections_device_names(is_array($lan) ? $lan : []),
     ];
@@ -2362,6 +2364,8 @@ case 'connections':
         echo json_encode(['error' => 'Инструмент выключен в настройках']);
         break;
     }
+    // Headroom only: the request is built to fit the router's default 8M (streamed logs).
+    @ini_set('memory_limit', '32M');
     $limit = connections_limit($_GET['limit'] ?? null);
     echo json_encode(run_exclusive(DIAG_LOCK_DIR . '/xray-diag-connections.lock', DIAG_BUSY_ERROR,
         fn(): array => connections_snapshot($limit)));
@@ -2375,6 +2379,7 @@ case 'site_check':
     $domain = trim($_GET['domain'] ?? '');
     if (!route_query_is_valid($domain)) { echo json_encode(['error' => 'Введите домен']); break; }
     $withFlows = (get_features()['diag_connections'] ?? true) !== false;
+    @ini_set('memory_limit', '32M'); // headroom only, as for `connections`
     echo json_encode(run_exclusive(DIAG_LOCK_DIR . '/xray-diag-site_check.lock', DIAG_BUSY_ERROR,
         fn(): array => site_check_snapshot($domain, $withFlows)));
     break;

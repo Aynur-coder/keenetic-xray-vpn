@@ -2,11 +2,12 @@
 // Live connections: which LAN device talks to which host, by which route.
 //
 // Joins three router-side sources, each read once per request by the API:
-//   - `conntrack -L`            -> the flows themselves (parse_conntrack)
+//   - `conntrack -L`            -> the flows themselves (parse_conntrack_line)
 //   - AdGuard querylog.json     -> IP -> domain from recent DNS answers (querylog_ip_map)
 //   - Xray access.log           -> which outbound served a redirected flow (xray_access_outbounds)
-// and classifies each flow (build_connections). Pure logic plus one bounded file reader;
-// no globals, no shelling out — the API runs `conntrack`/`ipset` and passes results in.
+// and classifies each flow (build_connections). Pure logic plus one streaming file-tail
+// reader; no globals, no shelling out — the API runs `conntrack`/`ipset` and passes results
+// in. Every source is consumed line by line: the router's PHP memory_limit is 8M.
 
 require_once __DIR__ . '/routing.php';
 
@@ -31,22 +32,42 @@ function connections_limit(?string $raw): int {
     return min($n, CONNECTIONS_MAX_LIMIT);
 }
 
-// Last $bytes of $path without ever loading the whole file (querylog.json is ~1 GB).
-// When the read starts mid-file the first, partial line is dropped. '' on any error.
-function read_file_tail(string $path, int $bytes): string {
+// Tail windows read per `connections` request. Each is streamed line by line, never held
+// whole: the router's PHP memory_limit is 8M and querylog.json alone is ~1 GB.
+const CONNECTIONS_QUERYLOG_TAIL = 512 * 1024;
+const CONNECTIONS_ACCESS_TAIL = 512 * 1024;
+// querylog_ip_map() keeps at most this many IPs (the newest answers win).
+const QUERYLOG_MAP_MAX = 4000;
+// conntrack lines read at most; past it the result is flagged partial.
+const CONNECTIONS_CONNTRACK_MAX_LINES = 20000;
+// Longest line file_tail_lines() hands over; a longer one arrives in pieces that no
+// parser here accepts.
+const FILE_TAIL_LINE_MAX = 65536;
+
+// The lines (without "\n") of the last $bytes of $path, oldest first, read one at a time
+// with fgets — the tail is never loaded as one string. When the read starts mid-file the
+// first, partial line is dropped. Nothing on any error (missing/unreadable file).
+function file_tail_lines(string $path, int $bytes): Generator {
     $fh = @fopen($path, 'rb');
-    if ($fh === false) return '';
-    $size = @filesize($path);
-    if ($size === false || $size <= 0 || $bytes <= 0) { fclose($fh); return ''; }
-    $start = max(0, $size - $bytes);
-    if (@fseek($fh, $start) !== 0) { fclose($fh); return ''; }
-    $data = (string)stream_get_contents($fh, $size - $start);
-    fclose($fh);
-    if ($start > 0) {
-        $nl = strpos($data, "\n");
-        $data = $nl === false ? '' : substr($data, $nl + 1);
+    if ($fh === false) return;
+    try {
+        $size = @filesize($path);
+        if ($size === false || $size <= 0 || $bytes <= 0) return;
+        $start = max(0, $size - $bytes);
+        if (@fseek($fh, $start) !== 0) return;
+        if ($start > 0) {
+            // Skip the partial first line (it may be longer than one fgets chunk).
+            do {
+                $skip = fgets($fh, FILE_TAIL_LINE_MAX);
+            } while ($skip !== false && substr($skip, -1) !== "\n");
+        }
+        // Stop at the size seen above: a log still being appended to can't stretch the read.
+        while (ftell($fh) < $size && ($line = fgets($fh, FILE_TAIL_LINE_MAX)) !== false) {
+            yield rtrim($line, "\r\n");
+        }
+    } finally {
+        fclose($fh);
     }
-    return $data;
 }
 
 // Offset just past the (possibly compressed) domain name at $pos, or null if it runs off
@@ -96,11 +117,17 @@ function dns_wire_answers(string $wireB64): array {
 }
 
 // [ip => domain] from querylog.json lines (JSONL, oldest first), so a later answer for the
-// same IP overwrites an earlier one. Lines that don't decode (the cut first line of a tail
-// read, a half-flushed last line) are skipped. Blocked answers (0.0.0.0 / ::) are ignored.
-function querylog_ip_map(string $jsonl): array {
+// same IP overwrites an earlier one. Each line is decoded on its own as it streams in.
+// Lines that don't decode (a cut first line, a half-flushed last line) are skipped. Blocked
+// answers (0.0.0.0 / ::) are ignored. $onlyIps (a set, [ip => true]) keeps just the IPs
+// the caller will look up. The map holds at most $max IPs, the newest answers winning.
+function querylog_ip_map(
+    iterable $lines, ?array $onlyIps = null, int $max = QUERYLOG_MAP_MAX
+): array {
     $map = [];
-    foreach (explode("\n", $jsonl) as $line) {
+    // Trimmed in batches (not per insert) so a full map doesn't cost O($max) per line.
+    $slack = max(1, intdiv($max, 4));
+    foreach ($lines as $line) {
         if ($line === '' || $line[0] !== '{') continue;
         $row = json_decode($line, true);
         if (!is_array($row) || !is_string($row['QH'] ?? null) || !is_string($row['Answer'] ?? null)) {
@@ -110,81 +137,95 @@ function querylog_ip_map(string $jsonl): array {
         if ($host === '') continue;
         foreach (dns_wire_answers($row['Answer']) as $ip) {
             if ($ip === '0.0.0.0' || $ip === '::') continue;
+            if ($onlyIps !== null && !isset($onlyIps[$ip])) continue;
+            unset($map[$ip]); // re-inserted at the end: the newest answers sit last
             $map[$ip] = $host;
         }
+        if (count($map) > $max + $slack) $map = array_slice($map, -$max, null, true);
     }
-    return $map;
+    return count($map) > $max ? array_slice($map, -$max, null, true) : $map;
 }
 
 function _conn_is_lan_source(string $ip): bool {
     return (bool)preg_match('/^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/', $ip);
 }
 
-// conntrack -L output -> flows from LAN sources. The first src/dst/sport/dport group is the
-// original direction, the second the reply; packets/bytes are summed over both directions
-// (null when the kernel doesn't account them). UDP lines carry no state (null).
+// One `conntrack -L` line -> a flow from a LAN source, or null (other sources, the
+// summary line, anything unparsable). The first src/dst/sport/dport group is the original
+// direction, the second the reply; packets/bytes are summed over both directions (null
+// when the kernel doesn't account them). UDP lines carry no state (null).
+function parse_conntrack_line(string $line): ?array {
+    $tok = preg_split('/\s+/', trim($line));
+    if (count($tok) < 4 || ($tok[0] !== 'tcp' && $tok[0] !== 'udp')) return null;
+    $dir = [[], []];
+    $n = -1;
+    $state = null;
+    foreach ($tok as $i => $t) {
+        $eq = strpos($t, '=');
+        if ($eq === false) {
+            if ($i === 3 && preg_match('/^[A-Z_]+$/', $t)) $state = $t;
+            continue;
+        }
+        $k = substr($t, 0, $eq);
+        if ($k === 'src') $n++;
+        if ($n < 0 || $n > 1) continue;
+        if (in_array($k, ['src', 'dst', 'sport', 'dport', 'packets', 'bytes'], true)) {
+            $dir[$n][$k] = substr($t, $eq + 1);
+        }
+    }
+    [$o, $r] = $dir;
+    if (!isset($o['src'], $o['dst'], $o['sport'], $o['dport'], $r['src'], $r['sport'])) return null;
+    if (!_conn_is_lan_source($o['src'])) return null;
+    $sum = function (string $k) use ($o, $r): ?int {
+        if (!isset($o[$k]) && !isset($r[$k])) return null;
+        return (int)($o[$k] ?? 0) + (int)($r[$k] ?? 0);
+    };
+    return [
+        'proto' => $tok[0], 'src' => $o['src'], 'dst' => $o['dst'],
+        'sport' => (int)$o['sport'], 'dport' => (int)$o['dport'],
+        'reply_src' => $r['src'], 'reply_sport' => (int)$r['sport'],
+        'state' => $state, 'packets' => $sum('packets'), 'bytes' => $sum('bytes'),
+    ];
+}
+
+// Whole `conntrack -L` output -> parse_conntrack_line() flows (small inputs only; the
+// `connections` request streams the table instead).
 function parse_conntrack(string $text): array {
     $rows = [];
     foreach (explode("\n", $text) as $line) {
-        $tok = preg_split('/\s+/', trim($line));
-        if (count($tok) < 4 || ($tok[0] !== 'tcp' && $tok[0] !== 'udp')) continue;
-        $dir = [[], []];
-        $n = -1;
-        $state = null;
-        foreach ($tok as $i => $t) {
-            $eq = strpos($t, '=');
-            if ($eq === false) {
-                if ($i === 3 && preg_match('/^[A-Z_]+$/', $t)) $state = $t;
-                continue;
-            }
-            $k = substr($t, 0, $eq);
-            if ($k === 'src') $n++;
-            if ($n < 0 || $n > 1) continue;
-            if (in_array($k, ['src', 'dst', 'sport', 'dport', 'packets', 'bytes'], true)) {
-                $dir[$n][$k] = substr($t, $eq + 1);
-            }
-        }
-        [$o, $r] = $dir;
-        if (!isset($o['src'], $o['dst'], $o['sport'], $o['dport'], $r['src'], $r['sport'])) continue;
-        if (!_conn_is_lan_source($o['src'])) continue;
-        $sum = function (string $k) use ($o, $r): ?int {
-            if (!isset($o[$k]) && !isset($r[$k])) return null;
-            return (int)($o[$k] ?? 0) + (int)($r[$k] ?? 0);
-        };
-        $rows[] = [
-            'proto' => $tok[0], 'src' => $o['src'], 'dst' => $o['dst'],
-            'sport' => (int)$o['sport'], 'dport' => (int)$o['dport'],
-            'reply_src' => $r['src'], 'reply_sport' => (int)$r['sport'],
-            'state' => $state, 'packets' => $sum('packets'), 'bytes' => $sum('bytes'),
-        ];
+        $f = parse_conntrack_line($line);
+        if ($f !== null) $rows[] = $f;
     }
     return $rows;
 }
 
 // access.log lines "… from IP:PORT accepted tcp:HOST:PORT [inbound -> outbound]" (Xray also
 // writes ">>" for some routes) -> ["IP:PORT" => ['tag' => outbound, 'host' => HOST]].
-// Later lines win for the same source.
-function _xray_access_entries(string $log): array {
+// Later lines win for the same source. $onlyKeys (a set, ["IP:PORT" => true]) keeps just
+// the sources the caller will look up, so a long tail can't grow a big map.
+function xray_access_entries(iterable $lines, ?array $onlyKeys = null): array {
     $out = [];
     $re = '/ from (?:tcp:|udp:)?(\S+):(\d+) accepted (?:tcp|udp):(\S+):\d+ '
         . '\[[^\]]*?(?:->|>>)\s*([^\]\s]+)\s*\]/';
-    foreach (explode("\n", $log) as $line) {
+    foreach ($lines as $line) {
         if (!preg_match($re, $line, $m)) continue;
-        $src = trim($m[1], '[]');
-        $out[$src . ':' . $m[2]] = ['tag' => $m[4], 'host' => trim($m[3], '[]')];
+        $key = trim($m[1], '[]') . ':' . $m[2];
+        if ($onlyKeys !== null && !isset($onlyKeys[$key])) continue;
+        $out[$key] = ['tag' => $m[4], 'host' => trim($m[3], '[]')];
     }
     return $out;
 }
 
-function xray_access_outbounds(string $log): array {
-    return array_map(fn(array $e): string => $e['tag'], _xray_access_entries($log));
+// ["IP:PORT" => outbound tag] from xray_access_entries().
+function xray_access_outbounds(array $entries): array {
+    return array_map(fn(array $e): string => $e['tag'], $entries);
 }
 
-// ["IP:PORT" => domain] for access.log lines whose destination is a hostname (sniffed by
+// ["IP:PORT" => domain] for access.log entries whose destination is a hostname (sniffed by
 // Xray) — fills the gap for the newest flows that AdGuard hasn't flushed to querylog.json yet.
-function xray_access_domains(string $log): array {
+function xray_access_domains(array $entries): array {
     $out = [];
-    foreach (_xray_access_entries($log) as $key => $e) {
+    foreach ($entries as $key => $e) {
         if (ip_is_valid($e['host'])) continue;
         $out[$key] = strtolower($e['host']);
     }
@@ -316,37 +357,41 @@ function connections_device_names(array $devices): array {
 const CONNECTIONS_CONNTRACK_ERROR = 'Не удалось прочитать таблицу соединений (conntrack)';
 
 // The whole `connections` request, with every I/O step injected so the time budget is
-// testable. $io: conntrack(float $timeout): ?string, ipset(string $script, float $timeout):
-// ?string, access_log(): string, querylog(): string, server_names: array, device_names: array.
+// testable. $io: conntrack(float $timeout): ?iterable (output lines; null = could not
+// run), ipset(string $script, float $timeout): ?string, access_log(): iterable (lines),
+// querylog(): iterable (lines), server_names: array, device_names: array.
 // $now(): float is the clock (microtime(true) in production).
 //
 // All steps share one $budget-second deadline, in order of importance: conntrack (the rows
 // themselves), ipset (leak detection), access.log (server + fallback domain), querylog
 // (domains; the costliest CPU step). A step that hits its timeout, or is skipped because too
 // little time is left, sets 'partial' => true instead of letting the request overrun.
+// Memory stays flat whatever the table/log sizes: only the first $limit flows are kept
+// (the rest are just counted), and the log tails keep only entries for those flows.
 function connections_collect(int $limit, array $io, callable $now, float $budget = 2.8): array {
     $start = $now();
     $left = fn(): float => $budget - ($now() - $start);
     $partial = false;
-    // Runs one step with a timeout: [its output, whether it used (almost) all of it].
-    $timed = function (callable $fn, float $timeout) use ($now): array {
-        $t0 = $now();
-        $out = $fn($timeout);
-        return [$out, $now() - $t0 >= $timeout - 0.01];
-    };
 
-    [$ct, $timedOut] = $timed($io['conntrack'], min(1.5, $left()));
-    if ($timedOut) $partial = true;
-    if ($ct === null || !preg_match('/^(tcp|udp) |flow entries/m', $ct)) {
-        return ['error' => CONNECTIONS_CONNTRACK_ERROR];
+    $t0 = $now();
+    $ctTimeout = min(1.5, $left());
+    $lines = $io['conntrack']($ctTimeout);
+    if ($lines === null) return ['error' => CONNECTIONS_CONNTRACK_ERROR];
+    $recognized = false; // a flow line or the "N flow entries" summary: conntrack really ran
+    $flows = [];
+    $total = 0;
+    $read = 0;
+    foreach ($lines as $line) {
+        if (++$read > CONNECTIONS_CONNTRACK_MAX_LINES) { $partial = true; break; }
+        if (!$recognized && preg_match('/^(tcp|udp) |flow entries/', $line)) $recognized = true;
+        $f = parse_conntrack_line($line);
+        if ($f === null || connections_is_local_dst($f['dst'])) continue;
+        $total++;
+        if (count($flows) < $limit) $flows[] = $f;
     }
-    $flows = array_values(array_filter(
-        parse_conntrack($ct),
-        fn(array $f): bool => !connections_is_local_dst($f['dst'])
-    ));
-    unset($ct);
-    $total = count($flows);
-    $flows = array_slice($flows, 0, $limit);
+    unset($lines); // a generator: dropping it ends the conntrack process now
+    if ($now() - $t0 >= $ctTimeout - 0.01) $partial = true;
+    if (!$recognized) return ['error' => CONNECTIONS_CONNTRACK_ERROR];
 
     // ipset leaves 1 s for the log steps; a timeout keeps the hits printed so far and
     // untested IPs count as "not in set".
@@ -357,17 +402,31 @@ function connections_collect(int $limit, array $io, callable $now, float $budget
         if ($t < 0.1) {
             $partial = true;
         } else {
-            $ipset = $io['ipset'];
-            [$ipsetOut, $timedOut] = $timed(fn(float $to) => $ipset($script, $to), $t);
-            if ($timedOut) $partial = true;
+            $t1 = $now();
+            $ipsetOut = $io['ipset']($script, $t);
+            if ($now() - $t1 >= $t - 0.01) $partial = true;
             $hits = ipset_batch_hits((string)$ipsetOut);
         }
     }
 
-    $access = '';
-    if ($left() > 0.3) $access = $io['access_log'](); else $partial = true;
+    $flowKeys = [];
+    $flowDsts = [];
+    foreach ($flows as $f) {
+        $flowKeys[$f['src'] . ':' . $f['sport']] = true;
+        $flowDsts[$f['dst']] = true;
+    }
+    $access = [];
+    if ($left() > 0.3) {
+        $access = xray_access_entries($io['access_log'](), $flowKeys);
+    } else {
+        $partial = true;
+    }
     $ipDomain = [];
-    if ($left() > 1.0) $ipDomain = querylog_ip_map($io['querylog']()); else $partial = true;
+    if ($left() > 1.0) {
+        $ipDomain = querylog_ip_map($io['querylog'](), $flowDsts);
+    } else {
+        $partial = true;
+    }
 
     $rows = build_connections(
         $flows, $ipDomain, xray_access_outbounds($access),

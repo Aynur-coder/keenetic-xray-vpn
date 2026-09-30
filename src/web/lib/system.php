@@ -52,6 +52,58 @@ function shell_run_timeout(string $cmd, float $seconds): ?string {
     return trim($out);
 }
 
+// Longest line shell_lines_timeout() buffers; anything longer is dropped, so a runaway
+// line can never grow into a multi-MB string.
+const SHELL_LINE_MAX = 65536;
+
+// Like shell_run_timeout(), but hands the output over line by line (without the "\n")
+// instead of as one string, so a big output (`conntrack -L` on a busy router) never sits
+// in memory whole — the router's PHP memory_limit is 8M. Returns null when the process
+// could not be started. The process is killed once $seconds have passed (the lines read
+// so far stay delivered), or as soon as the caller stops iterating and drops the
+// generator — unset() it right after the loop so that happens there, not at scope end.
+// Prefix $cmd with `exec`, as for shell_run_timeout().
+function shell_lines_timeout(string $cmd, float $seconds): ?Generator {
+    $withRedirect = strpos($cmd, '2>') === false ? $cmd . ' 2>&1' : $cmd;
+    $proc = @proc_open($withRedirect, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($proc)) return null;
+    return _proc_output_lines($proc, $pipes, microtime(true) + $seconds);
+}
+
+function _proc_output_lines($proc, array $pipes, float $deadline): Generator {
+    $out = $pipes[1];
+    stream_set_blocking($out, false);
+    $buf = '';
+    try {
+        while (microtime(true) < $deadline) {
+            $chunk = fread($out, 8192);
+            if ($chunk === false || $chunk === '') {
+                if (feof($out)) {
+                    if ($buf !== '') yield $buf;
+                    break;
+                }
+                $r = [$out];
+                $w = $e = null;
+                $wait = (int)max(1000, min(100000, ($deadline - microtime(true)) * 1e6));
+                @stream_select($r, $w, $e, 0, $wait);
+                continue;
+            }
+            $buf .= $chunk;
+            $pos = 0;
+            while (($nl = strpos($buf, "\n", $pos)) !== false) {
+                yield substr($buf, $pos, $nl - $pos);
+                $pos = $nl + 1;
+            }
+            $buf = substr($buf, $pos);
+            if (strlen($buf) > SHELL_LINE_MAX) $buf = '';
+        }
+    } finally {
+        if (proc_get_status($proc)['running']) proc_terminate($proc, 9);
+        foreach ($pipes as $p) { if (is_resource($p)) fclose($p); }
+        proc_close($proc);
+    }
+}
+
 // Like shell_run_timeout(), but runs several commands concurrently under ONE shared
 // deadline instead of one command alone. Deliberately NOT "background them inside one
 // shell script and shell_run_timeout() the wrapper" ("(cmd1 &); (cmd2 &); wait") — that

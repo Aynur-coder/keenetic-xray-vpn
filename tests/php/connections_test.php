@@ -81,7 +81,7 @@ function test_querylog_ip_map_newest_wins(): void {
         . _conn_ql_line('Chat.OpenAI.com.', ['1.2.3.4']) . "\n"
         . CONN_QL_BLOCKED . "\n"
         . _conn_ql_line('v6.example', ['2001:db8::1']) . "\n";
-    $map = querylog_ip_map($jsonl);
+    $map = querylog_ip_map(explode("\n", $jsonl));
     eq($map['1.2.3.4'] ?? null, 'chat.openai.com', 'later line wins; host lowercased, trailing dot dropped');
     eq($map['5.6.7.8'] ?? null, 'old.example', 'older mapping kept where not overridden');
     eq($map['2001:db8::1'] ?? null, 'v6.example', 'AAAA answers mapped too');
@@ -91,28 +91,51 @@ function test_querylog_ip_map_newest_wins(): void {
 function test_querylog_ip_map_skips_truncated_first_line(): void {
     $full = _conn_ql_line('a.example', ['9.9.9.9']);
     $jsonl = substr(_conn_ql_line('cut.example', ['7.7.7.7']), 20) . "\n" . $full . "\n{\"T\":";
-    $map = querylog_ip_map($jsonl);
+    $map = querylog_ip_map(explode("\n", $jsonl));
     eq($map, ['9.9.9.9' => 'a.example'], 'broken head/tail lines ignored, whole lines parsed');
 }
 
-function test_read_file_tail_drops_partial_first_line(): void {
+function test_file_tail_lines_drops_partial_first_line(): void {
     $f = tempnam(sys_get_temp_dir(), 'conn_tail_');
     $lines = [];
     for ($i = 0; $i < 50; $i++) $lines[] = _conn_ql_line("h$i.example", ["10.0.0.$i"]);
     file_put_contents($f, implode("\n", $lines) . "\n");
-    $tail = read_file_tail($f, 500);
+    $tail = iterator_to_array(file_tail_lines($f, 500), false);
     unlink($f);
-    eq(strlen($tail) <= 500, true, 'never returns more than asked');
-    eq(strpos($tail, '{') === 0, true, 'tail starts on a whole line');
+    eq(strlen(implode("\n", $tail)) <= 500, true, 'never returns more than asked');
+    eq(strpos($tail[0], '{') === 0, true, 'tail starts on a whole line');
     $map = querylog_ip_map($tail);
     eq($map['10.0.0.49'] ?? null, 'h49.example', 'newest line present');
     eq(isset($map['10.0.0.0']), false, 'oldest line not read');
 
     $small = tempnam(sys_get_temp_dir(), 'conn_tail_');
-    file_put_contents($small, "one\ntwo\n");
-    eq(read_file_tail($small, 1000), "one\ntwo\n", 'file smaller than the window is read whole, first line kept');
+    file_put_contents($small, "one\ntwo\r\nthree");
+    eq(iterator_to_array(file_tail_lines($small, 1000), false), ['one', 'two', 'three'],
+        'file smaller than the window is read whole, first line kept, line ends stripped');
     unlink($small);
-    eq(read_file_tail('/nonexistent/conn/file', 100), '', 'missing file yields empty string');
+    eq(iterator_to_array(file_tail_lines('/nonexistent/conn/file', 100), false), [],
+        'missing file yields no lines');
+}
+
+function test_querylog_ip_map_bounded_newest_win(): void {
+    $lines = [];
+    for ($i = 0; $i < 30; $i++) $lines[] = _conn_ql_line("h$i.example", ["10.0.1.$i"]);
+    $lines[] = _conn_ql_line('again.example', ['10.0.1.0']);
+    $map = querylog_ip_map($lines, null, 10);
+    eq(count($map), 10, 'map capped at $max IPs');
+    eq($map['10.0.1.0'] ?? null, 'again.example', 'a re-answered IP counts as newest');
+    eq($map['10.0.1.29'] ?? null, 'h29.example', 'newest answers kept');
+    eq(isset($map['10.0.1.19']), false, 'oldest answers dropped');
+}
+
+function test_querylog_ip_map_only_wanted_ips(): void {
+    $lines = [_conn_ql_line('a.example', ['1.1.1.1', '2.2.2.2']), _conn_ql_line('b.example', ['3.3.3.3'])];
+    eq(querylog_ip_map($lines, ['2.2.2.2' => true]), ['2.2.2.2' => 'a.example'], 'only looked-up IPs kept');
+}
+
+function test_xray_access_entries_only_wanted_keys(): void {
+    $e = xray_access_entries(explode("\n", CONN_ACCESS_LOG), ['192.168.1.77:40000' => true]);
+    eq(array_keys($e), ['192.168.1.77:40000'], 'only looked-up sources kept');
 }
 
 // ---- parse_conntrack() --------------------------------------------------------
@@ -145,20 +168,20 @@ function test_parse_conntrack_real_lines(): void {
 // ---- xray_access_outbounds() / xray_access_domains() ----------------------------
 
 function test_xray_access_outbounds(): void {
-    $map = xray_access_outbounds(CONN_ACCESS_LOG);
+    $map = xray_access_outbounds(xray_access_entries(explode("\n", CONN_ACCESS_LOG)));
     eq($map, [
         '192.168.1.126:53219' => 'sub-1f1c7155b9f316940d161d41c03f797b',
         '192.168.1.126:53025' => 'key-abc',
         '192.168.1.77:40000'  => 'key-xyz',
         '127.0.0.1:41000'     => 'direct',
     ], '-> and >> arrows, tcp/udp, IP and domain destinations');
-    $later = xray_access_outbounds(CONN_ACCESS_LOG
-        . "2026/09/30 01:00:00.000000 from 192.168.1.126:53025 accepted tcp:1.1.1.1:443 [tproxy-in -> direct]\n");
+    $later = xray_access_outbounds(xray_access_entries(explode("\n", CONN_ACCESS_LOG
+        . "2026/09/30 01:00:00.000000 from 192.168.1.126:53025 accepted tcp:1.1.1.1:443 [tproxy-in -> direct]\n")));
     eq($later['192.168.1.126:53025'], 'direct', 'a later line for the same source wins');
 }
 
 function test_xray_access_domains(): void {
-    eq(xray_access_domains(CONN_ACCESS_LOG), [
+    eq(xray_access_domains(xray_access_entries(explode("\n", CONN_ACCESS_LOG))), [
         '192.168.1.126:53025' => 'gemini.google.com',
         '127.0.0.1:41000'     => 'example.org',
     ], 'only sniffed/domain destinations are reported');
@@ -293,21 +316,21 @@ function _conn_io(array &$clock, array &$calls, array $cost, string $conntrack):
         $clock['t'] += $cost[$name] ?? 0.0;
     };
     return [
-        'conntrack' => function (float $timeout) use ($step, $conntrack): ?string {
+        'conntrack' => function (float $timeout) use ($step, $conntrack): ?iterable {
             $step('conntrack');
-            return $conntrack;
+            return explode("\n", $conntrack);
         },
         'ipset' => function (string $script, float $timeout) use ($step): ?string {
             $step('ipset');
             return "104.18.32.47\n";
         },
-        'access_log' => function () use ($step): string {
+        'access_log' => function () use ($step): iterable {
             $step('access_log');
-            return "2026/09/30 00:50:16.000001 from 192.168.1.126:53025 accepted tcp:gemini.google.com:443 [tproxy-in -> key-abc]\n";
+            yield "2026/09/30 00:50:16.000001 from 192.168.1.126:53025 accepted tcp:gemini.google.com:443 [tproxy-in -> key-abc]\n";
         },
-        'querylog' => function () use ($step): string {
+        'querylog' => function () use ($step): iterable {
             $step('querylog');
-            return _conn_ql_line('chatgpt.com', ['104.18.32.47']) . "\n";
+            yield _conn_ql_line('chatgpt.com', ['104.18.32.47']) . "\n";
         },
         'server_names' => ['key-abc' => 'Финляндия'],
         'device_names' => ['192.168.1.50' => 'MacBook'],
@@ -370,6 +393,18 @@ function test_connections_collect_limit(): void {
     $io = _conn_io($clock, $calls, [], CONN_CT_REDIRECTED . "\n" . CONN_CT_LEAK . "\n" . CONN_CT_UDP_FASTNAT);
     $r = connections_collect(2, $io, function () use (&$clock): float { return $clock['t']; });
     eq([count($r['connections']), $r['total'], $r['limit']], [2, 3, 2], 'limit applied, total counts all');
+}
+
+function test_connections_collect_conntrack_line_cap_is_partial(): void {
+    $clock = ['t' => 0.0];
+    $calls = [];
+    $io = _conn_io($clock, $calls, [], '');
+    $io['conntrack'] = function (float $timeout): iterable {
+        for ($i = 0; $i < CONNECTIONS_CONNTRACK_MAX_LINES + 5; $i++) yield CONN_CT_LEAK;
+    };
+    $r = connections_collect(3, $io, function () use (&$clock): float { return $clock['t']; });
+    eq([$r['partial'], $r['total'], count($r['connections'])],
+        [true, CONNECTIONS_CONNTRACK_MAX_LINES, 3], 'reading stops at the line cap, flagged partial');
 }
 
 // ---- lan_devices cache policy ------------------------------------------------
