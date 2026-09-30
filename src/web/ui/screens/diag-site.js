@@ -1,6 +1,8 @@
 // Диагностика → Проверка сайта: one domain → its IPs, the rule that routes it, the exit,
-// the exit country as Google and Cloudflare see it, and recent direct/QUIC flows to it
-// (api `site_check`, up to ~15 s on the router), summed up in one plain sentence.
+// the exit country as Google and Cloudflare see it through THAT exit (`country_via`: the
+// server the rule picks, or «Напрямую»), and recent direct/QUIC flows to it (api
+// `site_check`; up to ~30 s on the router when it has to probe a server), summed up in one
+// plain sentence.
 import { html, useState } from '../vendor/preact-htm.js';
 import { api, errorText } from '../api.js';
 import { useStore } from '../store.js';
@@ -11,16 +13,21 @@ import { explainQuery, ruleText, vpnSetText } from './routes.js';
 import { TARGET_PROXY } from './routes-common.js';
 import { flagOf } from './overview.js';
 
-const TIMEOUT_MS = 20000;
+// The backend may start a server probe (≤ ~25 s) on top of DNS/route/flow work.
+const TIMEOUT_MS = 40000;
+
+const DIRECT_NAME = 'Напрямую';
 
 function countryText(cc) {
   return cc ? `${flagOf(cc)} ${cc}`.trim() : 'не удалось определить';
 }
 
-// Name of the exit a VPN-routed site uses: a pinned server's own name, or for «VPN
-// (активный сервер)» the server that is actually carrying traffic now.
+// Name of the exit a VPN-routed site uses: the server the backend measured through
+// (country_via), else a pinned server's own name, or for «VPN (активный сервер)» the
+// server that is actually carrying traffic now.
 function exitName(result, overview) {
   const ex = result.explain || {};
+  if (result.country_via && result.country_via !== DIRECT_NAME) return result.country_via;
   if (ex.target === TARGET_PROXY || !ex.target) {
     const srv = overview && (overview.effective || overview.active);
     return srv && srv.name ? srv.name : '';
@@ -36,10 +43,17 @@ export function verdictText(result, overview) {
   return `Идёт через VPN${name ? ` (${name})` : ''}.${google}`;
 }
 
+// «Google видит (через 🇪🇪 Tallinn)» — which exit the country was measured through.
+function googleLabel(via) {
+  if (!via) return 'Google видит';
+  return via === DIRECT_NAME ? 'Google видит (напрямую)' : `Google видит (через ${via})`;
+}
+
 // Things worth a second look; each only when it actually happened.
 function warningsOf(result) {
   const list = [];
-  if (result.google_country === 'RU') {
+  // A direct site is expected to look Russian; only a VPN exit seen as RU is a problem.
+  if (result.via === 'vpn' && result.google_country === 'RU') {
     list.push({ tone: 'orange', text: 'Google считает выход российским',
       sub: 'Сервисы Google могут вести себя как в России (регион, ограничения).' });
   }
@@ -83,9 +97,13 @@ function SiteResult({ result }) {
         <div><dt>В VPN-наборе</dt><dd>${vpnSetText(result.in_vpn_set)}</dd></div>
         <div><dt>Выход</dt>
           <dd>${vpn ? (exitName(result, overview) || 'VPN') : 'Напрямую'}</dd></div>
-        <div><dt>Google видит</dt>
-          <dd class="site__google">${countryText(result.google_country)}</dd></div>
+        <div><dt>${googleLabel(result.country_via)}</dt>
+          <dd class="site__google">${countryText(result.google_country)}
+            ${result.country_error ? html` <span class="muted site__reason">
+              (${result.country_error})</span>` : null}</dd></div>
         <div><dt>Cloudflare видит</dt><dd>${countryText(result.exit_country)}</dd></div>
+        ${result.exit_ip ? html`<div><dt>IP выхода</dt>
+          <dd class="mono">${result.exit_ip}</dd></div>` : null}
         ${result.direct_flows != null ? html`<div><dt>Прямые соединения</dt>
           <dd>${result.direct_flows}</dd></div>` : null}
         ${result.quic_leaks != null ? html`<div><dt>QUIC-утечки</dt>
@@ -127,7 +145,7 @@ export function SiteCheckTab() {
       </form>
       <div class="site__out" aria-live="polite">
         ${state.busy ? html`<p class="muted"><span class="spinner"></span>
-            Проверяю — DNS, маршрут и выход через VPN, до 20 секунд…</p>`
+            Проверяю — DNS, маршрут и страну выхода, до 30 секунд…</p>`
           : state.error ? html`<p class="tone-red" id="site-error" role="alert">${state.error}</p>`
           : state.result ? html`<${SiteResult} result=${state.result} />`
           : html`<p class="muted">Покажу, куда уходит сайт, какую страну видят Google и

@@ -906,20 +906,86 @@ function connections_snapshot(int $limit): array {
     return connections_collect($limit, $io, fn(): float => microtime(true));
 }
 
-// Runs the two `site_check` probe fetches — Google's country marker and Cloudflare's
-// trace — through Xray's main socks inbound (127.0.0.1:1081, so the real routing rules
-// apply, unlike server_probe_run()'s throwaway instance) in parallel via
+// `server_probe` (Task 9), shared with `site_check`: $id's exit identity through a
+// temporary Xray running only that server's outbound (server_probe_run(), lib/probe.php).
+// Cached 3600s per id in xray-probe.json; while another probe holds the probe lock the
+// answer is an immediate {error} instead of queueing (a second temporary Xray would race
+// on the same loopback port and process bookkeeping). The caller sets
+// ignore_user_abort(true) first — a dropped client mid-probe (~22 s worst case) must not
+// abort the script with the lock held and a temp Xray running.
+function server_probe_cached(string $id): array {
+    global $KEYS_FILE, $CACHED_FILE;
+    $srv = null;
+    foreach (array_merge(json_read($KEYS_FILE), json_read($CACHED_FILE)) as $s) {
+        if (($s['id'] ?? '') === $id) { $srv = $s; break; }
+    }
+    if (!$srv) return ['error' => 'Сервер не найден'];
+
+    $probeCacheFile = '/opt/tmp/xray-probe.json';
+    $probeCache = json_read($probeCacheFile);
+    $cachedRow = $probeCache[$id] ?? null;
+    if (is_array($cachedRow) && isset($cachedRow['ts']) && (time() - (int)$cachedRow['ts']) < 3600) {
+        return [
+            'ok'             => empty($cachedRow['error']),
+            'delay_ms'       => $cachedRow['delay_ms'] ?? null,
+            'exit_ip'        => $cachedRow['exit_ip'] ?? null,
+            'google_country' => $cachedRow['google_country'] ?? null,
+            'exit_country'   => $cachedRow['exit_country'] ?? null,
+            'error'          => $cachedRow['error'] ?? null,
+        ];
+    }
+
+    // Non-blocking: apply_acquire_lock() with a 0s timeout returns immediately
+    // (success if free, null if another probe already holds it).
+    $probeLock = apply_acquire_lock('/opt/var/run/xray-probe.lock', 0);
+    if ($probeLock === null) return ['error' => 'Проверка уже идёт'];
+    try {
+        $row = server_probe_run($srv['link'] ?? '');
+    } finally {
+        flock($probeLock, LOCK_UN);
+        fclose($probeLock);
+    }
+
+    $probeCache[$id] = [
+        'ts'             => time(),
+        'delay_ms'       => $row['delay_ms'],
+        'exit_ip'        => $row['exit_ip'],
+        'google_country' => $row['google_country'],
+        'exit_country'   => $row['exit_country'],
+        'error'          => $row['error'],
+    ];
+    json_write($probeCacheFile, $probeCache);
+    return $row;
+}
+
+// The server a 'proxy' rule sends traffic to right now: what the last config build
+// recorded as effective (state.json), else what resolve_active() picks — the same
+// answer `list_servers` marks as active.
+function site_check_active_id(): ?string {
+    global $STATE_FILE, $KEYS_FILE, $CACHED_FILE, $SUBS_FILE;
+    $state = json_read($STATE_FILE);
+    if (array_key_exists('effective_outbound', $state)) {
+        $id = $state['effective_outbound'];
+    } else {
+        $id = resolve_active($state, json_read($KEYS_FILE), json_read($CACHED_FILE),
+            json_read($SUBS_FILE))['id'];
+    }
+    return is_string($id) && $id !== '' ? $id : null;
+}
+
+// `site_check`'s direct-exit fetches — Google's country marker and Cloudflare's trace —
+// with NO proxy, so they leave the router the way a direct-routed domain does (the
+// router's own traffic isn't redirected into Xray). Run in parallel via
 // shell_run_parallel_timeout() (lib/system.php): each curl is its own direct child
 // process, so a shared 8.5s deadline that's ever hit terminates both curls themselves
 // (not just a wrapping shell that backgrounded them, which would leave them as
 // orphans — see that function's own comment). Each curl already self-bounds at -m 8;
 // the PHP-level deadline is only a backstop for one that ignores it. A curl that
 // fails/times out reports null for its half — never fatal to the other fetch.
-function site_check_fetch_probes(): array {
-    $proxy = escapeshellarg('socks5h://127.0.0.1:1081');
-    $ytCmd = 'exec /opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 -A '
+function site_check_fetch_direct(): array {
+    $ytCmd = 'exec /opt/bin/curl -s --connect-timeout 8 -m 8 -A '
         . escapeshellarg(SITE_CHECK_DESKTOP_UA) . ' ' . escapeshellarg('https://www.youtube.com/');
-    $tfCmd = 'exec /opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 '
+    $tfCmd = 'exec /opt/bin/curl -s --connect-timeout 8 -m 8 '
         . escapeshellarg('https://www.cloudflare.com/cdn-cgi/trace');
     [$yt, $tf] = shell_run_parallel_timeout([$ytCmd, $tfCmd], 8.5);
     return [
@@ -931,7 +997,9 @@ function site_check_fetch_probes(): array {
 // `site_check` action: wires site_check_run() (lib/sitecheck.php) to the router — resolves
 // the domain once via nslookup (an IP literal resolves to itself, no lookup needed) and
 // reuses those IPs for the vpn1 ipset probe and flow matching, reuses route_explain_for()
-// for the routing verdict, and fetches through Xray's real socks inbound. With $withFlows
+// for the routing verdict, and measures the exit country through THAT route's own
+// outbound: server_probe_cached() for a server (or the active one for 'proxy'), a
+// proxy-less fetch for 'direct' (≤ ~25 s worst case, the probe's own). With $withFlows
 // (the «Соединения» tool is on) one connections_snapshot() counts recent direct/leaked flows
 // to the domain's IPs — $limit is generous (the ipset ceiling) since this runs on demand,
 // not polled; with it off, no conntrack work is done and the counts are null.
@@ -944,7 +1012,13 @@ function site_check_snapshot(string $domain, bool $withFlows): array {
         },
         'ip_in_vpn_set' => 'route_ip_in_vpn_set',
         'explain'     => 'route_explain_for',
-        'fetch'       => 'site_check_fetch_probes',
+        'active_id'   => 'site_check_active_id',
+        'server_name' => function (string $id): ?string {
+            global $KEYS_FILE, $CACHED_FILE;
+            return route_target_name($id, json_read($KEYS_FILE), json_read($CACHED_FILE));
+        },
+        'probe_server' => 'server_probe_cached',
+        'fetch_direct' => 'site_check_fetch_direct',
         'connections' => $withFlows ? function (): array {
             $snap = connections_snapshot(CONNECTIONS_MAX_LIMIT);
             return $snap['connections'] ?? [];
@@ -1465,50 +1539,7 @@ case 'server_probe':
 
     $id = $_POST['id'] ?? '';
     if ($id === '') { echo json_encode(['error' => 'Не указан id']); break; }
-
-    $srv = null;
-    foreach (array_merge(json_read($KEYS_FILE), json_read($CACHED_FILE)) as $s) {
-        if (($s['id'] ?? '') === $id) { $srv = $s; break; }
-    }
-    if (!$srv) { echo json_encode(['error' => 'Сервер не найден']); break; }
-
-    $probeCacheFile = '/opt/tmp/xray-probe.json';
-    $probeCache = json_read($probeCacheFile);
-    $cachedRow = $probeCache[$id] ?? null;
-    if (is_array($cachedRow) && isset($cachedRow['ts']) && (time() - (int)$cachedRow['ts']) < 3600) {
-        echo json_encode([
-            'ok'             => empty($cachedRow['error']),
-            'delay_ms'       => $cachedRow['delay_ms'] ?? null,
-            'exit_ip'        => $cachedRow['exit_ip'] ?? null,
-            'google_country' => $cachedRow['google_country'] ?? null,
-            'exit_country'   => $cachedRow['exit_country'] ?? null,
-            'error'          => $cachedRow['error'] ?? null,
-        ]);
-        break;
-    }
-
-    // Non-blocking: apply_acquire_lock() with a 0s timeout returns immediately
-    // (success if free, null if another probe already holds it).
-    $probeLock = apply_acquire_lock('/opt/var/run/xray-probe.lock', 0);
-    if ($probeLock === null) { echo json_encode(['error' => 'Проверка уже идёт']); break; }
-    try {
-        $row = server_probe_run($srv['link'] ?? '');
-    } finally {
-        flock($probeLock, LOCK_UN);
-        fclose($probeLock);
-    }
-
-    $probeCache[$id] = [
-        'ts'             => time(),
-        'delay_ms'       => $row['delay_ms'],
-        'exit_ip'        => $row['exit_ip'],
-        'google_country' => $row['google_country'],
-        'exit_country'   => $row['exit_country'],
-        'error'          => $row['error'],
-    ];
-    json_write($probeCacheFile, $probeCache);
-
-    echo json_encode($row);
+    echo json_encode(server_probe_cached($id));
     break;
 
 case 'set_server_flags':
@@ -2380,6 +2411,8 @@ case 'site_check':
     if (!route_query_is_valid($domain)) { echo json_encode(['error' => 'Введите домен']); break; }
     $withFlows = (get_features()['diag_connections'] ?? true) !== false;
     @ini_set('memory_limit', '32M'); // headroom only, as for `connections`
+    // It may start server_probe's temporary Xray: same abort hazard as `server_probe`.
+    ignore_user_abort(true);
     echo json_encode(run_exclusive(DIAG_LOCK_DIR . '/xray-diag-site_check.lock', DIAG_BUSY_ERROR,
         fn(): array => site_check_snapshot($domain, $withFlows)));
     break;

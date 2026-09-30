@@ -3,11 +3,11 @@ declare(strict_types=1);
 // "Site check" diagnostic: for one domain, shows which IPs it resolves to,
 // whether the active routing sends it through the VPN or direct
 // (route_explain(), reused from lib/routing.php via the caller's injected
-// 'explain'), what Google/Cloudflare think the exit country is when fetched
-// through Xray's own socks inbound (127.0.0.1:1081, so the real routing
-// rules apply), and how many recent flows to that domain's IPs went direct
-// or leaked as QUIC (from one connections_collect() snapshot, lib/connections.php,
-// only while the «Соединения» tool is on).
+// 'explain'), what Google/Cloudflare think the exit country is FOR THAT DOMAIN'S
+// OWN ROUTE (see site_check_exit_identity() — measured through the server its
+// rule picks, or directly for a direct domain), and how many recent flows to that
+// domain's IPs went direct or leaked as QUIC (from one connections_collect()
+// snapshot, lib/connections.php, only while the «Соединения» tool is on).
 //
 // Also home to the `logs?source=` whitelist: which shell command reads each
 // named log source, so an unknown source is rejected before anything reaches
@@ -15,7 +15,7 @@ declare(strict_types=1);
 //
 // Pure logic only: no globals, no file/network I/O beyond what's passed in
 // via $io, so this file can be require_once'd standalone from tests. The API
-// wires real nslookup/curl/connections_collect() calls into $io.
+// wires real nslookup/curl/server_probe/connections_collect() calls into $io.
 
 require_once __DIR__ . '/probe.php'; // parse_youtube_country(), parse_cf_trace()
 
@@ -79,6 +79,58 @@ function site_check_first_ipv4(array $ips): ?string {
     return null;
 }
 
+// Which outbound's exit site_check measures, from route_explain()'s target: 'direct',
+// a server id as is, or for 'proxy' (the active server) the active server's id —
+// $activeId is only called then. null when 'proxy' has no active server to name.
+function site_check_exit_target(string $target, callable $activeId): ?string {
+    if ($target === 'direct') return 'direct';
+    if ($target !== 'proxy') return $target;
+    $id = $activeId();
+    return ($id !== null && $id !== '') ? (string)$id : null;
+}
+
+// The exit identity (Google's country, Cloudflare's country, exit IP) of the outbound
+// the checked domain actually takes. Fetching youtube.com / cloudflare.com through
+// Xray's main socks inbound would measure THOSE domains' routes (their own rules),
+// not the checked domain's — so a server exit is measured through that one server
+// ($io['probe_server'], the cached server_probe machinery), a direct exit by fetching
+// without any proxy ($io['fetch_direct']). Anything not measured is null with a
+// reason in country_error — never a value borrowed from another route.
+function site_check_exit_identity(?string $exit, array $io): array {
+    $out = ['google_country' => null, 'exit_country' => null, 'exit_ip' => null,
+            'country_via' => null, 'country_error' => null];
+    if ($exit === null) {
+        $out['country_error'] = 'Активный сервер не определён';
+        return $out;
+    }
+
+    if ($exit === 'direct') {
+        $out['country_via'] = 'Напрямую';
+        $f = $io['fetch_direct']();
+        if (!empty($f['youtube'])) $out['google_country'] = parse_youtube_country($f['youtube']);
+        $trace = !empty($f['trace']) ? parse_cf_trace($f['trace']) : [];
+        $out['exit_country'] = ($trace['loc'] ?? '') !== '' ? $trace['loc'] : null;
+        $out['exit_ip'] = ($trace['ip'] ?? '') !== '' ? $trace['ip'] : null;
+        if ($out['google_country'] === null) {
+            $out['country_error'] = empty($f['youtube']) ? 'Google не ответил'
+                : 'Google не сообщил страну';
+        }
+        return $out;
+    }
+
+    $out['country_via'] = $io['server_name']($exit) ?? $exit;
+    $row = $io['probe_server']($exit);
+    if (!empty($row['error'])) {
+        $out['country_error'] = (string)$row['error'];
+        return $out;
+    }
+    $out['google_country'] = $row['google_country'] ?? null;
+    $out['exit_country'] = $row['exit_country'] ?? null;
+    $out['exit_ip'] = $row['exit_ip'] ?? null;
+    if ($out['google_country'] === null) $out['country_error'] = 'Google не сообщил страну';
+    return $out;
+}
+
 // The whole `site_check` request, with every I/O step injected so this stays
 // testable without touching the network or the router. The domain is resolved
 // ONCE; the ipset probe, route_explain()'s own in_vpn_set and the flow matching
@@ -92,8 +144,13 @@ function site_check_first_ipv4(array $ips): ?string {
 //     (target_name filled), built by the caller from the SAME domain/ip buckets the
 //     config generator uses; $inVpnSet is route_explain()'s ipset probe, here
 //     answering with the value already computed from the resolved IPs
-//   fetch(): array{youtube: ?string, trace: ?string} — raw bodies fetched THROUGH
-//     Xray's socks inbound (so routing applies); null means the fetch failed/timed out
+//   active_id(): ?string — the active server's id (only asked for a 'proxy' target)
+//   server_name(string $id): ?string — a server's display name, null if unknown
+//   probe_server(string $id): array — server_probe's row for that server
+//     ({google_country, exit_country, exit_ip, error, …}, or just {error} when the
+//     probe is busy / the server is gone)
+//   fetch_direct(): array{youtube: ?string, trace: ?string} — raw bodies fetched
+//     WITHOUT any proxy (the router's own direct exit); null = failed/timed out
 //   connections: null | callable(): array — one connections_collect() snapshot's
 //     'connections' rows; null when the «Соединения» tool is off, and then no flows
 //     are counted (direct_flows/quic_leaks are null, not 0)
@@ -101,12 +158,11 @@ function site_check_run(string $domain, array $io): array {
     $ips = $io['resolve_ips']($domain);
     $inVpnSet = $io['ip_in_vpn_set'](site_check_first_ipv4($ips));
     $explain = $io['explain']($domain, fn(string $kind, string $input): ?bool => $inVpnSet);
-    $via = ($explain['target'] ?? 'direct') === 'direct' ? 'direct' : 'vpn';
+    $target = (string)($explain['target'] ?? 'direct');
+    $via = $target === 'direct' ? 'direct' : 'vpn';
 
-    $probe = $io['fetch']();
-    $googleCountry = !empty($probe['youtube']) ? parse_youtube_country($probe['youtube']) : null;
-    $trace = !empty($probe['trace']) ? parse_cf_trace($probe['trace']) : [];
-    $exitCountry = ($trace['loc'] ?? '') !== '' ? $trace['loc'] : null;
+    $exit = site_check_exit_target($target, $io['active_id']);
+    $identity = site_check_exit_identity($exit, $io);
 
     $flows = ['direct_flows' => null, 'quic_leaks' => null];
     if (($io['connections'] ?? null) !== null) {
@@ -119,8 +175,11 @@ function site_check_run(string $domain, array $io): array {
         'in_vpn_set'     => $inVpnSet,
         'explain'        => $explain,
         'via'            => $via,
-        'google_country' => $googleCountry,
-        'exit_country'   => $exitCountry,
+        'google_country' => $identity['google_country'],
+        'exit_country'   => $identity['exit_country'],
+        'exit_ip'        => $identity['exit_ip'],
+        'country_via'    => $identity['country_via'],
+        'country_error'  => $identity['country_error'],
         'direct_flows'   => $flows['direct_flows'],
         'quic_leaks'     => $flows['quic_leaks'],
     ];

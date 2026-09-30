@@ -39,7 +39,13 @@ try {
         'resolve_ips'   => fn(string $d): array => ['104.16.0.3'],
         'ip_in_vpn_set' => fn(?string $ip): ?bool => false,
         'explain'       => fn(string $d, callable $inVpnSet): array => ['target' => 'direct'],
-        'fetch'         => fn(): array => ['youtube' => null, 'trace' => null],
+        'active_id'     => fn(): ?string => null,
+        'server_name'   => fn(string $id): ?string => null,
+        'probe_server'  => fn(string $id): array => ['error' => 'not probed here'],
+        // A youtube.com-sized page (~1 MB) with the country marker near the end, as the
+        // real direct fetch returns it.
+        'fetch_direct'  => fn(): array => ['youtube' => str_repeat('<div>x</div>', 87000)
+            . '"countryCode":"RU"', 'trace' => "ip=95.105.78.232\nloc=RU\n"],
         'connections'   => fn(): array => $collect(CONNECTIONS_MAX_LIMIT)['connections'] ?? [],
     ]);
 
@@ -50,7 +56,7 @@ try {
             => $r['domain'] !== null)),
         'connections_with_server' => count(array_filter($rows, fn(array $r): bool
             => $r['server'] !== null)),
-        'site_check_ok' => is_int($site['direct_flows']),
+        'site_check_ok' => is_int($site['direct_flows']) && $site['google_country'] === 'RU',
         'peak_real' => memory_get_peak_usage(true),
         'peak' => memory_get_peak_usage(),
     ]), "\n";
