@@ -262,7 +262,7 @@ const LEVEL_ICON = { info: ['info', 'Инфо'], warn: ['alert', 'Внимани
   error: ['alert', 'Ошибка'] };
 
 function EventsCard({ events }) {
-  const all = html`<a class="link" href="#/diagnostics">Все события</a>`;
+  const all = html`<a class="link" href="#/diagnostics/events">Все события</a>`;
   return html`
     <${Card} title="Последние события" actions=${all}>
       ${events === null ? html`<p class="muted">Загрузка…</p>`

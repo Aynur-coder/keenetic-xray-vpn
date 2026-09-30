@@ -1,0 +1,1 @@
+{"wireguard": true, "adguard": true, "auto_update": false, "logs_enabled": false, "theme": "auto", "diag_events": false, "diag_connections": false, "diag_site_check": false}

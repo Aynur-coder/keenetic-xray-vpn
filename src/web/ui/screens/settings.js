@@ -30,6 +30,15 @@ const FEATURES = {
     on: 'AdGuard включён', off: 'AdGuard выключен' },
   auto_update: { label: 'Автообновление', hint: 'Раз в сутки ставить новую версию самостоятельно',
     on: 'Автообновление включено', off: 'Автообновление выключено' },
+  diag_events: { label: 'Журнал событий',
+    hint: 'Запись и просмотр событий: смена сервера, перезапуски, ошибки, watchdog',
+    on: 'Журнал событий включён', off: 'Журнал событий выключен' },
+  diag_connections: { label: 'Соединения',
+    hint: 'Живые соединения устройств сети: домен, маршрут, утечки мимо VPN',
+    on: 'Соединения включены', off: 'Соединения выключены' },
+  diag_site_check: { label: 'Проверка сайта',
+    hint: 'Куда уходит сайт и какую страну видят Google и Cloudflare',
+    on: 'Проверка сайта включена', off: 'Проверка сайта выключена' },
   logs_enabled: { label: 'Сырые логи Xray',
     hint: 'Запись error/access-логов Xray. При переключении Xray перезапускается',
     on: 'Логи Xray включены', off: 'Логи Xray выключены' },
@@ -430,8 +439,12 @@ export function SettingsScreen() {
         <${Card} id="s-diagnostics" title="Диагностика" class="settings__card">
           ${featuresError
             ? html`<${FeatureLoadError} error=${featuresError} onRetry=${reloadFeatures} />`
-            : html`<${FeatureRow} id="logs_enabled" ...${rowProps} />`}
-          <p class="muted settings__note">Остальные инструменты диагностики появятся позже.</p>
+            : html`
+              <${FeatureRow} id="diag_events" ...${rowProps} />
+              <${FeatureRow} id="diag_connections" ...${rowProps} />
+              <${FeatureRow} id="diag_site_check" ...${rowProps} />
+              <${FeatureRow} id="logs_enabled" ...${rowProps} />
+            `}
         </${Card}>
         <${SecurityCard} id="s-security" auth=${auth} knSet=${knSet} reload=${loadAuth} />
         <${DangerCard} id="s-danger" updater=${updater} />

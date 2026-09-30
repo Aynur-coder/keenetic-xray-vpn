@@ -36,6 +36,8 @@ const PATHS = {
     d="M12 20h.01" />`,
   play: html`<path d="M7 4.5v15l12.5-7.5z" />`,
   stop: html`<rect x="6" y="6" width="12" height="12" rx="2" />`,
+  pause: html`<rect x="6.5" y="5" width="3.5" height="14" rx="1" /><rect x="14" y="5" width="3.5"
+    height="14" rx="1" />`,
   restart: html`<path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" />`,
   swap: html`<path d="M4 8h14l-4-4" /><path d="M20 16H6l4 4" />`,
   more: html`<circle cx="12" cy="5.5" r="1.3" /><circle cx="12" cy="12" r="1.3" /><circle

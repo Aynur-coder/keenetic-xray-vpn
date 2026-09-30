@@ -2,6 +2,7 @@
 import { html, render, useState, useEffect, useRef } from './vendor/preact-htm.js';
 import { api, OFFLINE_ERROR, refreshOverview, refreshIps } from './api.js';
 import { useStore } from './store.js';
+import { useVisiblePolling } from './poll.js';
 import { initTheme, adoptRouterTheme } from './theme.js';
 import { Icon } from './components/icons.js';
 import { Toasts } from './components/toast.js';
@@ -10,6 +11,7 @@ import { EmptyState } from './components/empty.js';
 import { OverviewScreen } from './screens/overview.js';
 import { ServersScreen } from './screens/servers.js';
 import { RoutesScreen } from './screens/routes.js';
+import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { SettingsScreen } from './screens/settings.js';
 import { LoginScreen } from './screens/login.js';
 import { LegacyScreen } from './screens/legacy.js';
@@ -23,7 +25,7 @@ const SECTIONS = [
   { id: 'servers', label: 'Серверы', icon: 'servers', screen: ServersScreen },
   { id: 'routes', label: 'Маршруты', icon: 'routes', screen: RoutesScreen },
   { id: 'devices', label: 'Устройства', icon: 'devices', legacy: 'devices' },
-  { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostics', legacy: 'logs' },
+  { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostics', screen: DiagnosticsScreen },
 ];
 const PAGES = [
   ...SECTIONS,
@@ -44,30 +46,6 @@ function useRoute() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   return route;
-}
-
-// Runs `task` now and every `ms` while the tab is visible; catches up when it becomes visible.
-function useVisiblePolling(task, ms, enabled) {
-  useEffect(() => {
-    if (!enabled) return undefined;
-    let timer = null;
-    const stop = () => {
-      clearInterval(timer);
-      timer = null;
-    };
-    const start = () => {
-      stop();
-      if (document.visibilityState !== 'visible') return;
-      task();
-      timer = setInterval(task, ms);
-    };
-    document.addEventListener('visibilitychange', start);
-    start();
-    return () => {
-      stop();
-      document.removeEventListener('visibilitychange', start);
-    };
-  }, [enabled]);
 }
 
 function NavLinks({ route, updateDot }) {

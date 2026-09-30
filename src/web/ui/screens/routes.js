@@ -28,7 +28,7 @@ export function explainQuery(text) {
   return s.replace(/^\*\./, '').replace(/^\.+|\.+$/g, '');
 }
 
-function ruleText(r) {
+export function ruleText(r) {
   if (!r.rule) return 'Ни одно правило не подошло — по умолчанию напрямую';
   if (r.rule.startsWith('list:')) return `Сервис «${r.rule.slice(5)}»`;
   const m = /^(domain|full|keyword|regexp):(.*)$/.exec(r.rule);
@@ -38,7 +38,7 @@ function ruleText(r) {
   return `Правило «${m[2]}» (${what})`;
 }
 
-function vpnSetText(v) {
+export function vpnSetText(v) {
   if (v === true) return 'да';
   if (v === false) return 'нет';
   return 'не удалось проверить';

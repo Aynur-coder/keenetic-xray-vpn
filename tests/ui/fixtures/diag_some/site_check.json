@@ -1,0 +1,1 @@
+{"domain": "ya.ru", "ips": ["77.88.55.242", "5.255.255.242"], "in_vpn_set": false, "explain": {"input": "ya.ru", "kind": "domain", "rule": null, "source": null, "target": "direct", "target_name": "Напрямую", "in_vpn_set": false}, "via": "direct", "google_country": null, "exit_country": "NL", "direct_flows": 4, "quic_leaks": 0}
