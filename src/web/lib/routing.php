@@ -160,8 +160,11 @@ function regroup_rule_entries_by_target(array $tagBuckets, array $id_to_tag, str
     return $out;
 }
 
-// Xray domain-rule matching semantics: full: exact, domain:/plain suffix on
-// a label boundary, keyword: substring, regexp: preg_match. v2fly lists can
+// Xray domain-rule matching semantics: full: exact, domain: suffix on a
+// label boundary, keyword: substring, regexp: preg_match. A plain token (no
+// prefix) is NOT a suffix match in Xray — it's the same substring match as
+// keyword: (the codebase calls this "legacy substring" for manual
+// domains.txt entries; see api.php's 'domains' action). v2fly lists can
 // contain any of these forms (bare_domain() already strips all four
 // prefixes elsewhere in the codebase), so the matcher supports every one of
 // them even though today's generated config only ever emits full:/domain:/
@@ -175,8 +178,7 @@ function domain_token_matches(string $token, string $host): bool {
         return _domain_suffix_match($host, strtolower(substr($token, 7)));
     }
     if (strncmp($token, 'keyword:', 8) === 0) {
-        $needle = strtolower(substr($token, 8));
-        return $needle !== '' && strpos($host, $needle) !== false;
+        return _domain_substring_match($host, strtolower(substr($token, 8)));
     }
     if (strncmp($token, 'regexp:', 7) === 0) {
         $pattern = substr($token, 7);
@@ -191,8 +193,16 @@ function domain_token_matches(string $token, string $host): bool {
         $result = @preg_match($delim . $pattern . $delim . 'i', $host);
         return $result === 1;
     }
-    // Plain token (no prefix): same as "domain:" — suffix on a label boundary.
-    return _domain_suffix_match($host, strtolower($token));
+    // Plain token (no prefix): legacy substring match, same as keyword: —
+    // NOT a suffix match. Xray really does route "notsina.com" through a
+    // plain "sina.com" rule; a suffix-only reading here would be a wrong
+    // answer from a tool whose whole job is to be truthful about Xray's
+    // actual behaviour.
+    return _domain_substring_match($host, strtolower($token));
+}
+
+function _domain_substring_match(string $host, string $needle): bool {
+    return $needle !== '' && strpos($host, $needle) !== false;
 }
 
 function _domain_suffix_match(string $host, string $base): bool {
@@ -223,6 +233,30 @@ function ip_token_matches(string $token, string $ip): bool {
     if ($remBits === 0) return true;
     $mask = (0xFF << (8 - $remBits)) & 0xFF;
     return (ord($ipBin[$fullBytes]) & $mask) === (ord($netBin[$fullBytes]) & $mask);
+}
+
+// Gate for route_explain()'s API entry point: true only for a bare hostname
+// (dot-separated labels of letters/digits/hyphens — this already covers
+// punycode, which encodes as plain ASCII with an "xn--" label prefix — each
+// label 1-63 chars, no leading/trailing hyphen, ≤253 chars total) or an IP
+// literal/CIDR (IPv4 or IPv6, via filter_var/inet_pton). Anything else
+// (an nslookup/ipset option like "-type=any", empty input, garbage) is
+// rejected here so it never reaches a shell command. Pure, no I/O.
+function route_query_is_valid(string $q): bool {
+    if ($q === '' || strlen($q) > 253) return false;
+
+    $slash = strpos($q, '/');
+    $addr = $slash === false ? $q : substr($q, 0, $slash);
+    if (filter_var($addr, FILTER_VALIDATE_IP) !== false) {
+        if ($slash === false) return true;
+        $bits = substr($q, $slash + 1);
+        return $bits !== '' && preg_match('/^\d{1,3}$/', $bits) === 1;
+    }
+
+    foreach (explode('.', $q) as $label) {
+        if (!preg_match('/^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/', $label)) return false;
+    }
+    return true;
 }
 
 /**

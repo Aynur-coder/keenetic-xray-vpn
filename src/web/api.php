@@ -794,7 +794,10 @@ function route_in_vpn_set(string $kind, string $input): ?bool {
     if ($kind === 'ip') {
         $ip = filter_var($input, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $input : null;
     } else {
-        $out = shell_run_timeout('nslookup ' . escapeshellarg($input) . ' 127.0.0.1', 1.5);
+        // `exec` replaces the shell with nslookup itself, so SIGKILL on timeout
+        // (shell_run_timeout()) hits the lookup directly instead of possibly
+        // leaving it running as an orphan under BusyBox ash.
+        $out = shell_run_timeout('exec nslookup ' . escapeshellarg($input) . ' 127.0.0.1', 1.5);
         if ($out !== null) {
             // BusyBox nslookup prints "Server:"/"Address 1:" for the resolver itself
             // first, then a "Name:"/"Address N:" pair per answer — only match
@@ -813,7 +816,7 @@ function route_in_vpn_set(string $kind, string $input): ?bool {
     }
     if ($ip === null) return null;
 
-    $out = shell_run_timeout('ipset test vpn1 ' . escapeshellarg($ip), 0.8);
+    $out = shell_run_timeout('exec ipset test vpn1 ' . escapeshellarg($ip), 0.8);
     if ($out === null) return null;
     if (stripos($out, 'is in set') !== false) return true;
     if (stripos($out, 'is NOT in set') !== false) return false;
@@ -1593,7 +1596,11 @@ case 'rule_targets': echo json_encode((object)rule_targets()); break;
 
 case 'route_explain':
     $q = trim($_GET['q'] ?? '');
-    if ($q === '') { echo json_encode(['error' => 'q required']); break; }
+    // Rejects anything that isn't a bare hostname or an IP/CIDR before it can
+    // reach nslookup/ipset — an nslookup "option" like "-type=any" would
+    // otherwise be option-injected past escapeshellarg (which only stops
+    // shell metacharacters, not a leading "-").
+    if (!route_query_is_valid($q)) { echo json_encode(['error' => 'Введите домен или IP']); break; }
 
     $built = build_outbound_tags();
     $id_to_tag = $built['id_to_tag'];

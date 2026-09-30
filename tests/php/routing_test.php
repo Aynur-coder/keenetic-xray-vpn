@@ -23,9 +23,16 @@ function test_domain_token_suffix_match(): void {
     eq(domain_token_matches('domain:google.com', 'notgoogle.com'), false, 'no label-boundary match for a mere substring');
 }
 
-function test_domain_token_plain_same_as_suffix(): void {
-    eq(domain_token_matches('google.com', 'sub.google.com'), true, 'bare token behaves like domain:');
-    eq(domain_token_matches('google.com', 'notgoogle.com'), false, 'bare token still respects label boundary');
+function test_domain_token_plain_is_legacy_substring_not_suffix(): void {
+    // Xray matches a plain (unprefixed) domains.txt entry as a substring
+    // anywhere in the host, NOT as a domain:-style suffix on a label
+    // boundary — the codebase's own "domains" action calls this mode
+    // "legacy substring" (api.php). "notsina.com" and "sina.com.cn" both
+    // route through a plain "sina.com" rule in real Xray.
+    eq(domain_token_matches('sina.com', 'sub.sina.com'), true, 'still matches a real subdomain');
+    eq(domain_token_matches('sina.com', 'notsina.com'), true, 'plain token matches mid-label too — substring, not suffix');
+    eq(domain_token_matches('sina.com', 'sina.com.cn'), true, 'plain token matches as a prefix substring too');
+    eq(domain_token_matches('sina.com', 'example.com'), false, 'absent when the substring is not present at all');
 }
 
 function test_domain_token_full_exact_only(): void {
@@ -64,6 +71,40 @@ function test_ip_token_exact_no_cidr(): void {
 function test_ip_token_family_mismatch(): void {
     eq(ip_token_matches('1.2.3.0/24', '::1'), false, 'a v4 net never matches a v6 literal');
     eq(ip_token_matches('::/0', '1.2.3.4'), false, 'a v6 net never matches a v4 literal');
+}
+
+// ---- route_query_is_valid() --------------------------------------------------
+
+function test_route_query_valid_hostnames(): void {
+    eq(route_query_is_valid('google.com'), true, 'plain hostname is valid');
+    eq(route_query_is_valid('sub.example.co.uk'), true, 'multi-label hostname is valid');
+    eq(route_query_is_valid('xn--80akhbyknj4f.xn--p1ai'), true, 'punycode (ASCII xn-- form) is valid');
+    eq(route_query_is_valid('a'), true, 'a single-char label is valid');
+}
+
+function test_route_query_valid_ip_and_cidr(): void {
+    eq(route_query_is_valid('1.2.3.4'), true, 'bare IPv4 is valid');
+    eq(route_query_is_valid('1.2.3.0/24'), true, 'IPv4 CIDR is valid');
+    eq(route_query_is_valid('2001:db8::1'), true, 'bare IPv6 is valid');
+    eq(route_query_is_valid('2001:db8::/32'), true, 'IPv6 CIDR is valid');
+}
+
+function test_route_query_invalid(): void {
+    eq(route_query_is_valid(''), false, 'empty string is invalid');
+    eq(route_query_is_valid('-type=any'), false, 'a leading "-" (option-injection shape) is invalid');
+    eq(route_query_is_valid('example .com'), false, 'a space is invalid');
+    eq(route_query_is_valid('exa mple.com'), false, 'a space mid-label is invalid');
+    eq(route_query_is_valid('example..com'), false, 'an empty label is invalid');
+    eq(route_query_is_valid('-example.com'), false, 'a label cannot start with a hyphen');
+    eq(route_query_is_valid('example-.com'), false, 'a label cannot end with a hyphen');
+    eq(route_query_is_valid('1.2.3.4/abc'), false, 'a non-numeric CIDR suffix is invalid');
+    // 127 single-char labels joined by dots = 127 + 126 = 253 chars, every
+    // label individually valid — isolates the *overall* length cap from the
+    // per-label one.
+    $atLimit = implode('.', array_fill(0, 127, 'a'));
+    eq(strlen($atLimit), 253, 'sanity: fixture is exactly 253 chars');
+    eq(route_query_is_valid($atLimit), true, 'exactly 253 chars is valid');
+    eq(route_query_is_valid($atLimit . '.a'), false, 'over 253 chars is invalid');
 }
 
 // ---- tag_to_target() --------------------------------------------------------
