@@ -889,32 +889,24 @@ function connections_snapshot(int $limit): array {
 
 // Runs the two `site_check` probe fetches — Google's country marker and Cloudflare's
 // trace — through Xray's main socks inbound (127.0.0.1:1081, so the real routing rules
-// apply, unlike server_probe_run()'s throwaway instance) in parallel: both curls are
-// backgrounded in one shell script, each writing its body to its own tmp file, so total
-// wait time is max(8s, 8s) rather than their sum. A curl that fails/times out just leaves
-// its tmp file empty, reported as null — never fatal to the other fetch.
+// apply, unlike server_probe_run()'s throwaway instance) in parallel via
+// shell_run_parallel_timeout() (lib/system.php): each curl is its own direct child
+// process, so a shared 8.5s deadline that's ever hit terminates both curls themselves
+// (not just a wrapping shell that backgrounded them, which would leave them as
+// orphans — see that function's own comment). Each curl already self-bounds at -m 8;
+// the PHP-level deadline is only a backstop for one that ignores it. A curl that
+// fails/times out reports null for its half — never fatal to the other fetch.
 function site_check_fetch_probes(): array {
-    $pid = getmypid();
-    $ytFile = "/opt/tmp/xray-sitecheck-yt-$pid";
-    $tfFile = "/opt/tmp/xray-sitecheck-tf-$pid";
-    @unlink($ytFile);
-    @unlink($tfFile);
     $proxy = escapeshellarg('socks5h://127.0.0.1:1081');
-    $script =
-        '(/opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 -A '
-        . escapeshellarg(SITE_CHECK_DESKTOP_UA) . ' ' . escapeshellarg('https://www.youtube.com/')
-        . ' -o ' . escapeshellarg($ytFile) . ' 2>/dev/null) &' . "\n"
-        . '(/opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 '
-        . escapeshellarg('https://www.cloudflare.com/cdn-cgi/trace')
-        . ' -o ' . escapeshellarg($tfFile) . ' 2>/dev/null) &' . "\n"
-        . "wait\n";
-    shell_run_timeout($script, 10.0);
-
-    $yt = is_file($ytFile) ? (string)(@file_get_contents($ytFile) ?: '') : '';
-    $tf = is_file($tfFile) ? (string)(@file_get_contents($tfFile) ?: '') : '';
-    @unlink($ytFile);
-    @unlink($tfFile);
-    return ['youtube' => $yt !== '' ? $yt : null, 'trace' => $tf !== '' ? $tf : null];
+    $ytCmd = 'exec /opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 -A '
+        . escapeshellarg(SITE_CHECK_DESKTOP_UA) . ' ' . escapeshellarg('https://www.youtube.com/');
+    $tfCmd = 'exec /opt/bin/curl -s -x ' . $proxy . ' --connect-timeout 8 -m 8 '
+        . escapeshellarg('https://www.cloudflare.com/cdn-cgi/trace');
+    [$yt, $tf] = shell_run_parallel_timeout([$ytCmd, $tfCmd], 8.5);
+    return [
+        'youtube' => ($yt !== null && $yt !== '') ? $yt : null,
+        'trace'   => ($tf !== null && $tf !== '') ? $tf : null,
+    ];
 }
 
 // `site_check` action: wires site_check_run() (lib/sitecheck.php) to the router — resolves
