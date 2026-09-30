@@ -1,7 +1,8 @@
 // Диагностика: tabs События / Соединения / Проверка сайта / Сырые логи, one per sub-route
 // (#/diagnostics/events|connections|site|logs). A tab whose tool is switched off in
-// «Настройки → Диагностика» is not shown at all; only the active tab is mounted, so its
-// auto-refresh stops as soon as another tab is picked.
+// «Настройки → Диагностика» is not shown at all; Сырые логи is always there (AdGuard,
+// manager and update logs don't depend on Xray logging — LogsTab handles logs_enabled).
+// Only the active tab is mounted, so its auto-refresh stops as soon as another tab is picked.
 import { html, useState, useEffect } from '../vendor/preact-htm.js';
 import { api, errorText } from '../api.js';
 import { Button } from '../components/button.js';
@@ -12,12 +13,12 @@ import { ConnectionsTab } from './diag-connections.js';
 import { SiteCheckTab } from './diag-site.js';
 import { LogsTab } from './diag-logs.js';
 
-// id = sub-route, flag = get_features key that switches the tool on.
+// id = sub-route, flag = get_features key that switches the tool on (none = always shown).
 const TABS = [
   { id: 'events', label: 'События', flag: 'diag_events', screen: EventsTab },
   { id: 'connections', label: 'Соединения', flag: 'diag_connections', screen: ConnectionsTab },
   { id: 'site', label: 'Проверка сайта', flag: 'diag_site_check', screen: SiteCheckTab },
-  { id: 'logs', label: 'Сырые логи', flag: 'logs_enabled', screen: LogsTab },
+  { id: 'logs', label: 'Сырые логи', screen: LogsTab },
 ];
 
 // '#/diagnostics/connections' → 'connections'; '#/diagnostics' → ''.
@@ -49,7 +50,8 @@ export function DiagnosticsScreen() {
   }
   useEffect(load, []);
 
-  const visible = features ? TABS.filter((t) => features[t.flag] !== false) : [];
+  const visible = features ? TABS.filter((t) => !t.flag || features[t.flag] !== false) : [];
+  const allToolsOff = visible.every((t) => !t.flag);
   const active = visible.find((t) => t.id === requested) || visible[0];
 
   // Keep the address in step with what is shown (bare #/diagnostics, a hidden or unknown tab).
@@ -65,20 +67,17 @@ export function DiagnosticsScreen() {
           text=${error} action=${html`<${Button} onClick=${load}>Повторить</${Button}>`} />`
       : html`<p class="muted srv-loading"><span class="spinner"></span> Загрузка…</p>`;
   }
-  if (!active) {
-    return html`<${EmptyState} icon="diagnostics" title="Инструменты диагностики выключены"
-      text="Журнал событий, соединения, проверку сайта и логи Xray можно включить в настройках."
-      action=${html`<a class="btn btn--secondary btn--md" href="#/settings">
-        Включить в настройках</a>`} />`;
-  }
 
   const Screen = active.screen;
   return html`
     <div class="diag">
       <${Tabs} label="Инструменты диагностики" tabs=${visible} value=${active.id}
         onChange=${(id) => { location.hash = `#/diagnostics/${id}`; }} />
+      ${allToolsOff ? html`<p class="muted diag__off">
+        Журнал событий, соединения и проверка сайта выключены.${' '}
+        <a class="link" href="#/settings">Включить в настройках</a></p>` : null}
       <div class="diag__panel" role="tabpanel" aria-label=${active.label}>
-        <${Screen} key=${active.id} />
+        <${Screen} key=${active.id} xrayLogs=${features.logs_enabled !== false} />
       </div>
     </div>
   `;

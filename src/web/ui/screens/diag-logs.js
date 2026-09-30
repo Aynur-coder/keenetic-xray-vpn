@@ -19,8 +19,8 @@ const SOURCES = [
   { value: 'update', label: 'Обновления' },
 ];
 const LINES = [50, 100, 200, 500];
-// clear_logs empties exactly these two files.
-const CLEARABLE = new Set(['xray_error', 'xray_access']);
+// Written only while «Сырые логи Xray» (logs_enabled) is on; clear_logs empties exactly these.
+const XRAY_SOURCES = new Set(['xray_error', 'xray_access']);
 // Within this many px of the bottom counts as «at the bottom».
 const STICK_PX = 24;
 
@@ -32,8 +32,10 @@ export function lineLevel(line) {
   return '';
 }
 
-export function LogsTab() {
-  const [source, setSource] = useState('xray_error');
+// xrayLogs: features.logs_enabled — when off, the Xray sources show a hint instead of a
+// (stale or empty) file, and the tab opens on AdGuard.
+export function LogsTab({ xrayLogs = true }) {
+  const [source, setSource] = useState(xrayLogs ? 'xray_error' : 'adguard');
   const [lines, setLines] = useState(100);
   const [auto, setAuto] = useState(false);
   const [state, setState] = useState({ lines: null, error: '' });
@@ -42,7 +44,10 @@ export function LogsTab() {
   const stick = useRef(true); // follow new lines (false once the user scrolls up)
   const seq = useRef(0);
 
+  const xrayOff = !xrayLogs && XRAY_SOURCES.has(source);
+
   async function load() {
+    if (xrayOff) return;
     const my = ++seq.current;
     const res = await api('logs', { source, lines }, { method: 'GET', quiet: true });
     if (my !== seq.current) return;
@@ -54,7 +59,7 @@ export function LogsTab() {
     while (list.length && list[list.length - 1].trim() === '') list.pop();
     setState({ lines: list, error: '' });
   }
-  useVisiblePolling(load, REFRESH_MS, auto, [source, lines]);
+  useVisiblePolling(load, REFRESH_MS, auto && !xrayOff, [source, lines]);
   useEffect(() => {
     if (!auto) load(); // without auto-refresh: once per source / line count
   }, [source, lines]);
@@ -119,13 +124,20 @@ export function LogsTab() {
           <label class="logs__auto-label" for="logs-auto">Автообновление</label>
         </div>
         <div class="logs__actions">
-          <${Button} icon="restart" onClick=${() => { stick.current = true; load(); }}>
-            Обновить</${Button}>
-          ${CLEARABLE.has(source) ? html`
+          <${Button} icon="restart" disabled=${xrayOff}
+            onClick=${() => { stick.current = true; load(); }}>Обновить</${Button}>
+          ${XRAY_SOURCES.has(source) && !xrayOff ? html`
             <${Button} variant="danger-outline" loading=${clearing} onClick=${onClear}>
               Очистить</${Button}>` : null}
         </div>
       </div>
+      ${xrayOff ? html`
+        <div class="logs__off" role="status">
+          <p><strong>Запись логов Xray выключена</strong></p>
+          <p class="muted">Включите «Сырые логи Xray» в настройках, чтобы Xray писал ошибки и
+            доступ. Логи AdGuard, менеджера и обновлений доступны и без этого.</p>
+          <a class="btn btn--secondary btn--md" href="#/settings">Открыть настройки</a>
+        </div>` : html`
       ${state.error ? html`<p class="tone-red diag__stale" role="alert">
         ${list ? 'Не удалось обновить' : 'Не удалось загрузить лог'}: ${state.error}</p>` : null}
       <div class="logs__box mono" ref=${box} onScroll=${onScroll} tabindex="0"
@@ -138,7 +150,7 @@ export function LogsTab() {
             return html`<div key=${i} class=${`logs__line ${lvl ? `logs__line--${lvl}` : ''}`}>${
               ln || ' '}</div>`;
           })}
-      </div>
+      </div>`}
     </${Card}>
   `;
 }
